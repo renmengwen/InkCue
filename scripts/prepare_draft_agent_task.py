@@ -84,9 +84,10 @@ CONTENT_ROLE_CONTRACT = """# contentDrafting frozen role contract
 - text+preserve 不改写语义；polish 不改变事实、数字、人物、结论、因果强度或责任主体。
 - 每个 imagePrompt 必须自含暖米黄纸张、线稿、配色、主体、构图、留白和禁字/禁水印要求，不引用前图。
 - cue 到 scene 按视觉状态变化拆分，不按具体名词类别机械拆分；允许通过增加 scene 降低单图叙事负担，但不得预设固定场景数量。
-- 每幕只表达一个核心视觉命题，默认只安排一个主要视觉簇；确有叙事必要时最多增加一个空间独立的辅助视觉簇。
-- 两个视觉簇之间必须保留明显、干净的纸面间隔，不得互相包含、嵌套、遮挡或重叠，也不得由跨簇的连续连接结构或共享连续基底串联。
-- 若多个概念在视觉上必须组成连续构图，则把它们视为同一个视觉簇整体绘制，不得强拆成多个揭示单元。
+- 每幕只表达一个核心视觉命题；当语义包含多个可依次呈现的状态或主体时，imagePrompt 应组织 2–3 个可独立揭示的视觉区域。只有不可分割的连续主体才合并，不设固定 scene 数量。
+- imagePrompt 应明确左到右或上到下的视觉阅读方向（只作为静态构图顺序，不是绘制元数据），为每个区域指定完整主体和真实、连续的暖米黄纸面留白；不得画漫画格、编号或标题。
+- 不得用跨区域的连续背景、共同底面、道路、长线、箭头、光束、河流、山脉或其他贯穿结构把区域连接起来；空间独立区域优先保持不遮挡，但局部接近不等于必须合并。
+- 若多个概念在视觉上确实必须组成不可分割的连续构图，则合并为一个视觉簇；不得为了凑数量强拆，也不得因为担心区域交叠把所有内容强行合并为一个簇。
 - 只写 allowedOutputs 中的 candidate.content-draft.json 与 result.json；不得运行 prepare_source.py、创建项目、调用 provider、写正式文件或批准。
 - result.json 使用 whiteboard-agent-result-v1，完整复制 task identity、taskSha256、role SHA、sequence 与全部 inputs 到 inspectedInputs；completed 时 outputs 列出候选相对路径及 SHA，findings/warnings 为数组，error 为 null。
 - 写完候选后把候选 UTF-8 JSON 送入 `python -B scripts/validate_content_draft.py --stdin`；不得使用仅限已确认输入的 `--draft`，只有只读校验退出码 0 才能 completed。
@@ -101,9 +102,10 @@ CONTENT_REVISION_ROLE_CONTRACT = """# contentDrafting frozen revision role contr
 - cue/scene 可因修改需要重新编号或调整映射，但最终仍须满足连续 cue、连续 scene 和每幕至少一个 cue 的完整合同。
 - 每个 imagePrompt 必须自含暖米黄纸张、线稿、配色、主体、构图、留白和禁字/禁水印要求，不引用前图。
 - cue 到 scene 按视觉状态变化拆分，不按具体名词类别机械拆分；允许通过增加 scene 降低单图叙事负担，但不得预设固定场景数量。
-- 每幕只表达一个核心视觉命题，默认只安排一个主要视觉簇；确有叙事必要时最多增加一个空间独立的辅助视觉簇。
-- 两个视觉簇之间必须保留明显、干净的纸面间隔，不得互相包含、嵌套、遮挡或重叠，也不得由跨簇的连续连接结构或共享连续基底串联。
-- 若多个概念在视觉上必须组成连续构图，则把它们视为同一个视觉簇整体绘制，不得强拆成多个揭示单元。
+- 每幕只表达一个核心视觉命题；当语义包含多个可依次呈现的状态或主体时，imagePrompt 应组织 2–3 个可独立揭示的视觉区域。只有不可分割的连续主体才合并，不设固定 scene 数量。
+- imagePrompt 应明确左到右或上到下的视觉阅读方向（只作为静态构图顺序，不是绘制元数据），为每个区域指定完整主体和真实、连续的暖米黄纸面留白；不得画漫画格、编号或标题。
+- 不得用跨区域的连续背景、共同底面、道路、长线、箭头、光束、河流、山脉或其他贯穿结构把区域连接起来；空间独立区域优先保持不遮挡，但局部接近不等于必须合并。
+- 若多个概念在视觉上确实必须组成不可分割的连续构图，则合并为一个视觉簇；不得为了凑数量强拆，也不得因为担心区域交叠把所有内容强行合并为一个簇。
 - 只写 allowedOutputs 中的 candidate.content-draft.json 与 result.json；不得覆盖旧 attempt、运行 prepare_source.py、创建项目、调用 provider、写正式文件或批准。
 - result.json 使用 whiteboard-agent-result-v1，完整复制 task identity、taskSha256、role SHA、sequence 与全部 inputs 到 inspectedInputs；completed 时 outputs 列出候选相对路径及 SHA，findings/warnings 为数组，error 为 null。
 - 写完候选后把候选 UTF-8 JSON 送入 `python -B scripts/validate_content_draft.py --stdin`；不得使用仅限已确认输入的 `--draft`，只有只读校验退出码 0 才能 completed。
@@ -116,9 +118,10 @@ STORYBOARD_ROLE_CONTRACT = """# storyboardPlanning frozen role contract
 - scenes 必须按 parsed-srt 顺序覆盖全部 cue；每幕包含 sceneId、name、cueRange、sceneDurationMs、outputFile、prompt、coreIdea、visualSubject。
 - prompt 必须是可独立生图的暖米黄纸张白板线稿提示词并禁止文字、水印；不得使用 imagePrompt 或 sourceCueRange 字段。
 - cue 到 scene 按视觉状态变化拆分，不按具体名词类别机械拆分；允许通过增加 scene 降低单图叙事负担，但不得预设固定场景数量。
-- 每幕只表达一个核心视觉命题，默认只安排一个主要视觉簇；确有叙事必要时最多增加一个空间独立的辅助视觉簇。
-- 两个视觉簇之间必须保留明显、干净的纸面间隔，不得互相包含、嵌套、遮挡或重叠，也不得由跨簇的连续连接结构或共享连续基底串联。
-- 若多个概念在视觉上必须组成连续构图，则把它们视为同一个视觉簇整体绘制，不得强拆成多个揭示单元。
+- 每幕只表达一个核心视觉命题；当语义包含多个可依次呈现的状态或主体时，imagePrompt 应组织 2–3 个可独立揭示的视觉区域。只有不可分割的连续主体才合并，不设固定 scene 数量。
+- imagePrompt 应明确左到右或上到下的视觉阅读方向（只作为静态构图顺序，不是绘制元数据），为每个区域指定完整主体和真实、连续的暖米黄纸面留白；不得画漫画格、编号或标题。
+- 不得用跨区域的连续背景、共同底面、道路、长线、箭头、光束、河流、山脉或其他贯穿结构把区域连接起来；空间独立区域优先保持不遮挡，但局部接近不等于必须合并。
+- 若多个概念在视觉上确实必须组成不可分割的连续构图，则合并为一个视觉簇；不得为了凑数量强拆，也不得因为担心区域交叠把所有内容强行合并为一个簇。
 - 只写 allowedOutputs 中的 candidate.generation-plan.json 与 result.json；不得修改 SRT、调用 provider、写策略批准或正式文件。
 - result.json 使用 whiteboard-agent-result-v1，完整复制 task identity、taskSha256、role SHA、sequence 与全部 inputs 到 inspectedInputs；completed 时 outputs 列出候选相对路径及 SHA，findings/warnings 为数组，error 为 null。
 """

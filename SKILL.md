@@ -22,10 +22,10 @@ description: 将主题、正文或 SRT 制作成暖米黄纸张底、按叙事�
 ## 视觉分幕、构图与标注首版合同
 
 - 分幕以视觉状态是否发生实质变化为依据；出现新的状态、因果阶段、构图中心或需要独立呈现的结果时可以增加 scene，不设固定 scene 数量，也不按名词数量机械切幕。每幕只表达一个核心视觉命题。
-- 每幕默认只有一个主要视觉簇；叙事确有需要时可以增加一个空间独立的辅助视觉簇。视觉簇之间必须有真实、连续的干净纸面留白，不得互相嵌套、遮挡，也不得由跨簇的连续背景、共同底面、长线或其他贯穿性结构连接。多个概念若在视觉上必须形成连续构图，必须合并为同一个视觉簇并整体揭示。
+- 每幕只表达一个核心视觉命题；当语义包含多个可依次呈现的状态或主体时，生图提示词应组织 2–3 个可独立揭示的视觉区域。区域之间应有真实、连续的干净纸面留白，不得由跨区连续背景、共同底面、道路、长线、箭头、光束或其他贯穿结构连接；不可分割的连续构图才合并为一个视觉簇。
 - 上述约束描述的是通用空间关系，不得把某类场景对象写成固定提示词或固定分类。`imagePrompt` 仍须按每幕实际语义具体描述画面，但不能依赖硬编码对象清单来满足分区要求。
-- annotation 按视觉上连续、应当一起落墨的墨迹簇划分，不按字幕中的叙事名词逐项拆框。一幕允许只有 1 个元素，默认 1–2 个，最多 3 个；第 2 或第 3 个元素只在各墨迹簇空间独立时成立。
-- region 之间不得嵌套、交叉，不得横穿其他 region 的有效墨迹；同一连续主体、共享背景或连接结构必须归入同一 region。`protectedRegions` 只处理正确分区后仍不可避免的局部保护，禁止用它遮盖本应合并的连续墨迹或错误 region。
+- annotation 按视觉上连续、应当一起落墨的墨迹簇划分，不按字幕中的叙事名词逐项拆框。一幕允许只有 1 个元素；当实际图片包含多个可依次呈现的墨迹簇时，优先 2–3 个，最多 3 个，不为凑数强拆。
+- reveal 时间必须严格串行且不得重叠；空间上的 region 可在真实遮挡、主体交界或连续构图需要时适度重叠，但不得让矩形边界横穿其他 region 的有效墨迹，也不得用一个大框合并多个独立簇。`protectedRegions` 只处理正确分区后仍不可避免的局部保护。
 
 这些是现有 scene、`imagePrompt` 与 annotation `elements` 的编写约束，不新增 schema 字段，不改变人工关卡、时序合同、允许掩码公式或正式渲染算法。
 
@@ -145,7 +145,7 @@ Phase 1A 的配置、task/result schema、路径逃逸、attempt 冻结 role con
    - `polish/generate` 口播不得出现暴露加工过程或素材来源的元话语，例如“原文认为／原文提到／按照原文”“在这段叙述里”“这份材料说明／无法回答”“正文中”等。需要保留归因、限定或不确定性时，直接写具体主体、条件和判断边界，例如“单伟建判断……”“当时审核已经收紧”“目前无法下结论”，不得把“原文／材料／叙述”当作主语或证据替身。只有用户的主题本身就是文本解读、作品分析、原文对比，或用户明确要求讨论素材来源时例外。
    - 不得为了“像人”添加口头禅、错别字、虚构经历、未经证实的例子或多余情绪，也不得刻意堆砌“其实吧”“你知道吗”“说白了”等假口语。
    - 生成审阅 artifact 前做两遍回读：先核对信息、target、cue 与 scene，再完整朗读旁白，只局部修正重复、拗口、抽象堆叠和过度整齐的句子。该回读只处理旁白，不得把 `coreIdea`、`visualSubject` 或 `imagePrompt` “口语化”。
-   - 每幕图片都由彼此独立的 provider 请求生成；每个 `imagePrompt` 必须自包含地重复画布、纸张、线稿、配色、按该幕实际语义确定的造型锚点、构图、留白和禁字/禁水印要求。提示词必须落实“一个核心视觉命题、默认一个主要视觉簇、必要时一个空间独立辅助簇、簇间真实纸面留白”的视觉拓扑；禁止簇间嵌套、遮挡和贯穿性连续结构，必须连续构图的概念合并为一个簇。不得使用“延续”“沿用”“同上”“上一幕”“参照前图”等跨请求指代，也不得因运行时会拼接 `globalPrompt` 而省略单幕成立所需的视觉约束。
+   - 每幕图片都由彼此独立的 provider 请求生成；每个 `imagePrompt` 必须自包含地重复画布、纸张、线稿、配色、按该幕实际语义确定的造型锚点、构图、留白和禁字/禁水印要求。提示词必须落实“一个核心视觉命题、必要时 2–3 个可独立揭示区域、区域间真实纸面留白、无贯穿性连接结构”的视觉拓扑；视觉阅读方向只描述静态构图顺序，不是绘制元数据。不得使用“延续”“沿用”“同上”“上一幕”“参照前图”等跨请求指代，也不得因运行时会拼接 `globalPrompt` 而省略单幕成立所需的视觉约束。
 3. coordinator 收到的普通消息只能包含 result 路径、status、validator 状态和精简摘要；完整草案留在 attempt。把 candidate 的 UTF-8 JSON 送入 `validate_content_draft.py --stdin`，或调用同一纯函数只读校验；只有退出码为 0、`valid:true` 且 `writesPerformed:false` 才可继续。`candidate.content-draft.json` 是阶段 0 唯一机器权威源；未确认 candidate 只能作为 attempt 证据存在，不得写入 source 准备包或正式项目，`--draft` 仅限已获用户确认的输入或测试 fixture。
 4. 校验通过后，由 coordinator 从 candidate 确定性生成 `drafts/<draft-id>/reviews/content-review-<contentDraftIdentity前12位>.md`。Markdown 是绑定完整 identity 的只读审阅视图，不是第二份机器权威源；child 不得直接写它或任何正式路径。主窗口只交付可点击文件链接、完整 identity、cue/scene 计数和短摘要，不把完整 Markdown 读回工具输出或粘贴进聊天。
 5. 用户要求实质修改时，coordinator 把意见冻结为绑定 current `baseContentDraftIdentitySha256` 的 revision request，创建新 attempt 并 spawn 新鲜 `contentDrafting` child；新 candidate 重新校验并生成新 identity、新 Markdown，旧 candidate/review 保留为历史证据且判为 stale。只有同一冻结 attempt 的缺 result、schema 或漏项等执行性补正才可 followup 原 child；改文案、cue、scene 或图片提示词不是 followup。
@@ -197,7 +197,7 @@ Edge TTS 不需要 API Key，但依赖外网和微软语音服务，不是离线
 2. 线稿必须为 1920×1080、暖米黄旧纸底、深灰草图线，统一人物与配色；场景源图禁止文字、字母、数字、标签、水印、标志、写实摄影感、3D 和复杂纹理。该限制只约束生成或导入的场景源图，不约束下述已批准的内置手部覆盖层。
    - 内置 `assets/drawing-hand.png` 的马克笔杆包含用户版权标识 `@moveR`。该标识属于受控绘制覆盖层中的合法版权标识，必须原样保留；不得将其判断为场景源图文字、水印污染或质量缺陷，也不得擦除、替换、重绘或重新生成无字版本。
    - 正式渲染、standalone 诊断和 `assets/preview.html` 默认都必须使用同一份 `assets/drawing-hand.png`。除非用户明确要求更换版权素材，不得静默切换到其他手部图片。
-   - 每幕构图必须遵守视觉拓扑首版合同：默认一个主要视觉簇，必要时一个空间独立辅助簇；簇间保留真实纸面留白，不允许嵌套、遮挡或贯穿性连续结构。需要构成连续整体的内容不得为了增加揭示步骤而强行拆簇。
+   - 每幕构图必须遵守视觉拓扑首版合同：一个核心命题可以包含 2–3 个可独立揭示的区域；区域间保留真实纸面留白，不允许跨区贯穿性连续结构。只有不可分割的连续整体才合并，不得为了增加步骤强拆，也不得因为担心局部空间接近而把所有内容合并。
 3. 部分失败时保留成功幕，只重试外部结果明确 failed 的幕；`unknown_external_outcome` 不自动重试，也不自动切换供应商。
 4. 运行 `validate_generated_images.py`：先串行冻结 project/plan/manifest，再按 `imageValidation` 对独立 PNG 有界并发且每图只完整解码一次；之后用本地图片查看能力实际检查每一幕。
 5. 可准备一个覆盖全部 current scene 的 global `visualReview` task 检查人物、配色、纸张和构图一致性。宿主条件满足时由具备真实图片查看能力的新鲜 child 读取冻结文件并写 attempt findings，否则由具备相同能力的 coordinator fallback。findings 只作辅助证据，不能批准线稿、修改图片或触发自动重生成。
@@ -208,7 +208,7 @@ Edge TTS 不需要 API Key，但依赖外网和微软语音服务，不是离线
 仅在线稿确认后开始：
 
 1. 再次验证 generation plan、manifest、图片 SHA 和尺寸；构建一个 `FormalValidationContext`，让本批 timing/audio 全局 evidence 只深验一次，并以 `resolve_formal_scenes(..., context=...)` 解析全部目标幕。
-2. coordinator 为每幕冻结独立 `annotationDrafting` task，并按 plan 顺序把最多 3 个独立 task 组成一个 `dispatchUnit`，一次填满 effective child 并发；宿主条件不足时由具备相同能力的 coordinator fallback。child 在 unit 内逐 task 写各自 candidate/result，单幕失败后继续后续幕；审计分别记录 task 数、dispatch unit 数、每 unit task 数与真实 peak child。每幕都必须同时阅读字幕并实际查看原图：字幕只决定叙事先后，元素边界必须按连续墨迹簇划分，不能按叙事名词或坐标机械拆框。一幕允许 1 个元素，默认 1–2 个，最多 3 个且各簇必须空间独立；连续构图必须合并为一个元素。reveal 顺序仍按“场景铺垫 → 关键主体 → 动作/变化 → 反应/结果”组织可独立元素。
+2. coordinator 为每幕冻结独立 `annotationDrafting` task，并按 plan 顺序把最多 3 个独立 task 组成一个 `dispatchUnit`，一次填满 effective child 并发；宿主条件不足时由具备相同能力的 coordinator fallback。child 在 unit 内逐 task 写各自 candidate/result，单幕失败后继续后续幕；审计分别记录 task 数、dispatch unit 数、每 unit task 数与真实 peak child。每幕都必须同时阅读字幕并实际查看原图：字幕只决定叙事先后，元素边界必须按连续墨迹簇划分，不能按叙事名词或坐标机械拆框。一幕允许 1 个元素；当实际图片包含多个可依次呈现的墨迹簇时优先 2–3 个，最多 3 个。reveal 时间必须串行；空间 region 可在真实交界处适度重叠，但不得横穿其他视觉簇的有效墨迹。reveal 顺序仍按“场景铺垫 → 关键主体 → 动作/变化 → 反应/结果”组织可独立元素。
 3. 批量 validator 先复核 task/result/SHA/current binding，再校验每幕图片、candidate annotation、frame range、timing source、整数像素 region、`protectedRegions` 与局部 reveal 时序。`sequence` 必须连续，元素串行，最后元素结束时间不晚于 `sceneDurationMs - 500`。
 4. annotation 绑定 current timing plan、render profile；Edge 还必须绑定 current audio/timeline SHA 和全局 scene 范围。元素 `startMs/durationMs` 始终是从本幕 0 开始的局部时间。
 5. coordinator 按 generation plan 顺序把通过 validator 的 candidate 单文件原子发布到扁平 `scenes/` 的同名 `.annotation.json`；失败 candidate 不覆盖旧 current。部分发布时 batch 仍为 `FAIL` 且 `partialSuccess:true`，不得启动全量区域预览或写任何批准。
@@ -276,8 +276,8 @@ globalFrameCount       = 最后一幕 sceneEndFrameExclusive
 
 - `canvas` 必须等于 1920×1080 正式源图尺寸；所有 region/protectedRegions 使用左上角原点的整数像素坐标。
 - `sequence` 从 1 起连续；`narrativeRole` 与 `subtitle` 必须反映对应字幕事件。annotation 的 `subtitle` 是语义映射，不是正式烧录字幕时间源。
-- `elements` 按连续墨迹簇而非叙事名词划分；允许 1 个，默认 1–2 个，最多 3 个且仅限彼此空间独立的墨迹簇。必须连续呈现的构图合并为同一个元素。
-- region 之间不得嵌套、交叉或横穿其他 region 的有效墨迹；不得把共享背景、共同底面或贯穿性连接结构拆到不同 region。`protectedRegions` 不能作为错误分区的补丁。
+- `elements` 按连续墨迹簇而非叙事名词划分；允许 1 个，实际存在多个可依次呈现的墨迹簇时优先 2–3 个，最多 3 个。必须连续呈现的不可分割构图合并为同一个元素。
+- reveal 时间必须严格串行；region 可在真实遮挡或交界处适度重叠，但不得横穿其他 region 的有效墨迹，也不得把多个独立簇用一个大框吞并。`protectedRegions` 不能作为错误分区的补丁。
 - 同一幕内元素串行作画；每区 `durationMs` 按 `ink:color = 2:1` 分配。
 - 每个区域的允许掩码 = 本区域 `region` 扣除所有后续区域和本区域 `protectedRegions`。未开始内容不得露线。
 - 未揭示区域与已揭示区域中的普通纸纹必须规范到同一张确定性暖米黄画布底色；中途不得出现因纸纹色差形成的纯白或异色矩形遮罩块。正式 `paper-content-mask-v3` 必须在墨迹检测前，以深色线稿和显著色彩为内容种子，移除小型纸纹连通块，并抑制触碰画布边缘但缺少深色线稿的浅色组件；人物、物体、箭头、浅色光束和主要水彩色块必须保留。
