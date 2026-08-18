@@ -1,0 +1,80 @@
+{
+  "sceneId": "scene-02",
+  "canvas": { "width": 1920, "height": 1080 },
+  "storyBasis": "嫩芽成长为结果累累的大树，为路人提供树荫，并让种子飘向远方形成新的起点。",
+  "sceneDurationMs": 30000,
+  "elements": [
+    {
+      "id": "landscape",
+      "label": "延伸向远方的土地",
+      "sequence": 1,
+      "narrativeRole": "建立成长和影响向外扩散的空间场景",
+      "subtitle": "时间继续向前，嫩芽长成一棵枝叶舒展的小树。",
+      "type": "structure",
+      "region": { "x": 55, "y": 815, "width": 1840, "height": 215 },
+      "reveal": {
+        "direction": "left_to_right",
+        "startMs": 0,
+        "durationMs": 3200,
+        "maskPaddingPx": 22,
+        "protectedRegions": [
+          { "x": 465, "y": 670, "width": 280, "height": 275 },
+          { "x": 1470, "y": 755, "width": 150, "height": 155 }
+        ]
+      },
+      "handPath": { "start": [65, 923], "end": [1885, 923], "easing": "easeInOut" }
+    },
+    {
+      "id": "fruit-tree",
+      "label": "枝叶舒展的果树",
+      "sequence": 2,
+      "narrativeRole": "表现时间累积后由嫩芽形成的主要成长成果",
+      "subtitle": "时间继续向前，嫩芽长成一棵枝叶舒展的小树。",
+      "type": "structure",
+      "region": { "x": 60, "y": 75, "width": 850, "height": 870 },
+      "reveal": {
+        "direction": "bottom_to_top",
+        "startMs": 3400,
+        "durationMs": 7100,
+        "maskPaddingPx": 22,
+        "protectedRegions": [
+          { "x": 465, "y": 670, "width": 280, "height": 275 }
+        ]
+      },
+      "handPath": { "start": [485, 935], "end": [485, 85], "easing": "easeInOut" }
+    },
+    {
+      "id": "resting-person",
+      "label": "树荫下停步的人",
+      "sequence": 3,
+      "narrativeRole": "表现一个人的坚持开始为他人带来直接益处",
+      "subtitle": "路过的人在树荫下停步，感受到一阵清凉。",
+      "type": "character",
+      "region": { "x": 465, "y": 670, "width": 280, "height": 275 },
+      "reveal": { "direction": "top_to_bottom", "startMs": 10700, "durationMs": 5800, "maskPaddingPx": 20, "protectedRegions": [] },
+      "handPath": { "start": [605, 680], "end": [605, 935], "easing": "easeInOut" }
+    },
+    {
+      "id": "drifting-seeds",
+      "label": "飘向远方的种子",
+      "sequence": 4,
+      "narrativeRole": "表现果实产生的新种子把影响继续向外传递",
+      "subtitle": "树上结出果实，又把新的种子送到更远的土地。",
+      "type": "effect",
+      "region": { "x": 845, "y": 425, "width": 660, "height": 350 },
+      "reveal": { "direction": "left_to_right", "startMs": 16700, "durationMs": 6800, "maskPaddingPx": 18, "protectedRegions": [] },
+      "handPath": { "start": [855, 600], "end": [1495, 600], "easing": "easeInOut" }
+    },
+    {
+      "id": "distant-sprout",
+      "label": "远方的新嫩芽",
+      "sequence": 5,
+      "narrativeRole": "把扩散的改变收束为新的成长起点和复利循环",
+      "subtitle": "一个人的坚持，逐渐为更多人带来改变。真正的复利，就是让今天的小行动成为明天的起点。",
+      "type": "result",
+      "region": { "x": 1470, "y": 755, "width": 150, "height": 155 },
+      "reveal": { "direction": "bottom_to_top", "startMs": 23700, "durationMs": 5800, "maskPaddingPx": 18, "protectedRegions": [] },
+      "handPath": { "start": [1545, 900], "end": [1545, 765], "easing": "easeInOut" }
+    }
+  ]
+}

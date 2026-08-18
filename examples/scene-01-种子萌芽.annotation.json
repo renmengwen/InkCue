@@ -1,0 +1,82 @@
+{
+  "sceneId": "scene-01",
+  "canvas": { "width": 1920, "height": 1080 },
+  "storyBasis": "窗边的人持续播种、浇水并等待阳光，种子最终萌芽，表现微小行动成为可见成长。",
+  "sceneDurationMs": 30000,
+  "elements": [
+    {
+      "id": "window-setting",
+      "label": "窗边环境",
+      "sequence": 1,
+      "narrativeRole": "建立每天清晨播种行动发生的窗边场景",
+      "subtitle": "每天清晨，一个人都会在窗边放下一颗小小的种子。",
+      "type": "structure",
+      "region": { "x": 170, "y": 90, "width": 390, "height": 640 },
+      "reveal": { "direction": "top_to_bottom", "startMs": 0, "durationMs": 3800, "maskPaddingPx": 22, "protectedRegions": [] },
+      "handPath": { "start": [365, 100], "end": [365, 720], "easing": "easeInOut" }
+    },
+    {
+      "id": "person-seed",
+      "label": "播种的人与种子",
+      "sequence": 2,
+      "narrativeRole": "呈现每天重复发生的核心播种行动",
+      "subtitle": "每天清晨，一个人都会在窗边放下一颗小小的种子。",
+      "type": "character",
+      "region": { "x": 480, "y": 310, "width": 530, "height": 620 },
+      "reveal": { "direction": "top_to_bottom", "startMs": 4000, "durationMs": 5800, "maskPaddingPx": 22, "protectedRegions": [] },
+      "handPath": { "start": [745, 320], "end": [745, 920], "easing": "easeInOut" }
+    },
+    {
+      "id": "pot-soil",
+      "label": "花盆与安静泥土",
+      "sequence": 3,
+      "narrativeRole": "表现第一天尚无明显变化的等待阶段",
+      "subtitle": "第一天，花盆里没有变化，只有安静的泥土。",
+      "type": "object",
+      "region": { "x": 890, "y": 655, "width": 295, "height": 305 },
+      "reveal": {
+        "direction": "top_to_bottom",
+        "startMs": 10000,
+        "durationMs": 4500,
+        "maskPaddingPx": 22,
+        "protectedRegions": [
+          { "x": 980, "y": 645, "width": 105, "height": 115 }
+        ]
+      },
+      "handPath": { "start": [1038, 665], "end": [1038, 950], "easing": "easeInOut" }
+    },
+    {
+      "id": "watering-can",
+      "label": "持续浇水",
+      "sequence": 4,
+      "narrativeRole": "表现稳定重复的照料行动",
+      "subtitle": "他仍然每天浇一点水，让阳光落在同一个地方。",
+      "type": "object",
+      "region": { "x": 1180, "y": 675, "width": 390, "height": 290 },
+      "reveal": { "direction": "left_to_right", "startMs": 14700, "durationMs": 3800, "maskPaddingPx": 22, "protectedRegions": [] },
+      "handPath": { "start": [1190, 820], "end": [1560, 820], "easing": "easeInOut" }
+    },
+    {
+      "id": "sunlight",
+      "label": "阳光照向花盆",
+      "sequence": 5,
+      "narrativeRole": "补充照料条件并推动变化发生",
+      "subtitle": "他仍然每天浇一点水，让阳光落在同一个地方。",
+      "type": "effect",
+      "region": { "x": 1030, "y": 75, "width": 650, "height": 565 },
+      "reveal": { "direction": "top_to_bottom", "startMs": 18700, "durationMs": 3600, "maskPaddingPx": 22, "protectedRegions": [] },
+      "handPath": { "start": [1355, 85], "end": [1355, 630], "easing": "easeInOut" }
+    },
+    {
+      "id": "new-sprout",
+      "label": "破土嫩芽",
+      "sequence": 6,
+      "narrativeRole": "把持续行动转化为最终可见的成长结果",
+      "subtitle": "几天以后，一株嫩芽终于穿过土壤，伸向窗外。微小而稳定的行动，开始变成看得见的成长。",
+      "type": "result",
+      "region": { "x": 980, "y": 645, "width": 105, "height": 115 },
+      "reveal": { "direction": "bottom_to_top", "startMs": 22500, "durationMs": 7000, "maskPaddingPx": 18, "protectedRegions": [] },
+      "handPath": { "start": [1033, 750], "end": [1033, 655], "easing": "easeInOut" }
+    }
+  ]
+}

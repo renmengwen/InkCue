@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "activeProvider": "primary",
+  "providers": {
+    "primary": {
+      "protocol": "openai-images-generations",
+      "baseUrl": "https://api.example-a.com/v1",
+      "apiKey": "replace-with-real-key",
+      "model": "image-model-a",
+      "request": {
+        "size": "1792x1024",
+        "responseFormat": "b64_json",
+        "timeoutSeconds": 180
+      },
+      "download": {
+        "timeoutSeconds": 120,
+        "maxBytes": 52428800
+      },
+      "extraBody": {
+        "quality": "standard"
+      }
+    },
+    "backup": {
+      "protocol": "openai-images-generations",
+      "baseUrl": "https://api.example-b.com/v1",
+      "apiKey": "replace-with-real-key",
+      "model": "image-model-b",
+      "request": {
+        "size": "1536x1024",
+        "responseFormat": "url",
+        "timeoutSeconds": 180
+      },
+      "download": {
+        "timeoutSeconds": 120,
+        "maxBytes": 52428800
+      },
+      "extraBody": {}
+    }
+  }
+}

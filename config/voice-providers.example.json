@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "activeProvider": "edge-tts",
+  "providers": {
+    "edge-tts": {
+      "protocol": "edge-tts",
+      "packageVersion": "7.2.8",
+      "contractVersion": "edge-tts-python-7.2.8-v1",
+      "voice": "zh-CN-YunjianNeural",
+      "language": "zh-CN",
+      "rate": "+0%",
+      "pitch": "+0Hz",
+      "volume": "+0%",
+      "outputFormat": "audio-24khz-48kbitrate-mono-mp3",
+      "requestTimeoutSeconds": 60,
+      "queueIntervalMs": 1800,
+      "maxRetries": 2
+    }
+  }
+}

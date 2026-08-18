@@ -1,0 +1,4 @@
+interface:
+  display_name: "主题 / 正文 / SRT 白板动画"
+  short_description: "将主题、正文或 SRT 制作为带字幕与可选 Edge 旁白的白板动画"
+  default_prompt: "使用 $srt-whiteboard-animation 将这份主题、正文或 SRT 制作成白板动画，并在每个人工关卡等待我逐项确认。"

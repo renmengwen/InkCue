@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+tmp/
+.test-*/
+
+# 本地配置（可能包含凭据或机器专属路径）
+config/image-providers.local.json
+config/workspace.local.json
+config/*.local.json
+
+# 本地产物（成片体积大，不入库；banana 示例视频保留）
+*.mp4
+!examples/scene-01-monkey-mountain-banana-whiteboard.mp4
+
+# OS
+Thumbs.db
+.DS_Store
