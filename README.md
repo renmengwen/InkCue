@@ -6,7 +6,7 @@ InkCue（墨序）可以把主题、正文或 SRT 制作为 1920x1080、60fps �
 
 本项目基于 [geeklee/srt-whiteboard-animation](https://github.com/geeklee/srt-whiteboard-animation) 二次开发，感谢原作者提供的创意与实现基础。
 
-![InkCue 白板动画效果](examples/scene-01-monkey-mountain-stream.gif)
+[在 Bilibili 观看 InkCue 白板动画演示](https://www.bilibili.com/video/BV1ik836ME8B/)
 
 > 当前版本面向 Windows 本地工作流。内容、声音、线稿、标注、场景和最终成片都保留明确的人工确认关卡，不是无人值守的一键生成器。
 
