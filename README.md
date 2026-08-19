@@ -151,6 +151,8 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 & $envPy scripts\generate_images.py --project <项目根目录>
 & $envPy scripts\validate_generated_images.py --project <项目根目录> `
   --review-policy user_first
+# 技术 PASS 后自动生成 identity 绑定的 reviews/line-art-review-*.md；
+# 主窗口只交付文件链接、identity 和异常摘要，不逐图嵌入聊天
 # 改为 agent_first 时，技术验证后只准备 global visualReview 宿主 spawn package
 
 # 标注预览
@@ -171,7 +173,7 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 & $envPy scripts\validate_final_media.py --project <项目根目录>
 ```
 
-上述三个阶段都支持 `--review-policy user_first|agent_first`。`user_first` 在必要技术校验后记录 `semanticReview.status=skipped_by_user` 并直接交给用户；`agent_first` 只准备宿主可消费的 spawn package，不创建 child，也不自动批准。两种策略都保留对应人工确认关卡。
+上述三个阶段都支持 `--review-policy user_first|agent_first`。线稿验证成功后自动生成 `reviews/line-art-review-<identity>.md` 与 current technical manifest，主窗口只交付文件链接、identity 和异常摘要。`user_first` 在必要技术校验后记录 `semanticReview.status=skipped_by_user` 并直接交给用户；`agent_first` 只准备宿主可消费的 spawn package，由 child 通过 findings/result 文件交接完整意见，不自动批准。两种策略都保留对应人工确认关卡。
 
 Edge TTS 的样音、完整旁白和真实时长流程见 [语音合同](references/voiceover.md)。人工批准、annotation candidate 和恢复流程的完整命令见 [SKILL.md](SKILL.md)。
 
@@ -193,6 +195,7 @@ Edge TTS 的样音、完整旁白和真实时长流程见 [语音合同](referen
 |-- scenes/                   # 图片、annotation、单幕视频
 |-- audio/                    # Edge 旁白、SRT、timeline
 |-- previews/
+|-- reviews/                  # identity 绑定的线稿 Markdown 交接
 |-- manifests/
 `-- output/
     |-- final-video-only.mp4

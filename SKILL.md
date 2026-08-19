@@ -56,7 +56,7 @@ Edge 模式缺少 current narration SRT、timeline、完整旁白批准或 ident
 - 场景联合审阅批准：正式 batch 按 `sceneRender` 有界并行生成并技术检查彼此独立的单幕候选，coordinator 仍按 generation plan 顺序单写发布；全部 current scene 组成有序 review bundle 后，`scene_review.py` 输出 `sceneReviewIdentityHash`，用户一次确认全部场景或指出拒绝的 scene。`approve_scene_review.py` 只批准该 current identity，并把 `sceneReviewApproval` 写入 `manifests/render-manifest.json` 顶层；合并前必须硬校验该批准。
 - 最终成片批准：技术验证之后，用户完整看片；Edge 模式还要完整听音。`approve_final_media.py` 只批准 current final identity。
 
-线稿仍是独立聊天关卡；标注内容、区域预览、重叠保护与 reveal 时序合并为一次 identity 绑定的联合关卡；全部正式单幕合并为一次有序 scene review bundle 关卡。它们不能被 manifest 的技术 `validated` 状态替代。尤其是：**current scene review approval 通过后才能进入合并、字幕烧录和封装链路。** `final-video-only.mp4` 只是内部技术工件，不设独立人工确认；正常链路不得在生成 clean master 后停下询问用户。样音、完整旁白与真实时长、线稿和最终成片仍为彼此独立的关卡；`unknown_external_outcome` 后是否重新调用 provider 仍须在异常发生时取得单独授权，不能并入任何批量批准。
+线稿仍是独立聊天关卡，但必须以 identity 绑定的 Markdown 文件交接：主窗口只交付 review 文件链接、identity、场景计数和异常摘要，不得把全部原图、完整提示词或逐幕长说明重新嵌入聊天。标注内容、区域预览、重叠保护与 reveal 时序合并为一次 identity 绑定的联合关卡；全部正式单幕合并为一次有序 scene review bundle 关卡。它们不能被 manifest 的技术 `validated` 状态替代。尤其是：**current scene review approval 通过后才能进入合并、字幕烧录和封装链路。** `final-video-only.mp4` 只是内部技术工件，不设独立人工确认；正常链路不得在生成 clean master 后停下询问用户。样音、完整旁白与真实时长、线稿和最终成片仍为彼此独立的关卡；`unknown_external_outcome` 后是否重新调用 provider 仍须在异常发生时取得单独授权，不能并入任何批量批准。
 
 默认不得为了查看图片、试听、读写 JSON、字幕烧录或最终验证而启动浏览器、文件选择框或电脑控制。图片用本地图片查看能力检查；音频直接播放本地文件；JSON 用文件工具；字幕和媒体用命令行。`assets/preview.html` 只用于 current annotation 的用户预览或用户明确要求的手工拖拽；当全量 AI annotation 已发布且技术 current 时，必须按下述“项目预览链接交付合同”启动/复用本地预览服务并把具体项目 URL 交给用户，不能只在代码层声明已支持。
 
@@ -189,7 +189,7 @@ Edge TTS 不需要 API Key，但依赖外网和微软语音服务，不是离线
 7. `approve-full` 只传 current `--identity-hash`。阈值内不传 `--duration-decision`，manifest 记录 `within_threshold`；偏差超过 10% 时还必须显式传 `accept_actual`，或修改 voice/rate/文本后重做。
 8. 批准成功后原子更新 timing plan，使 audio timeline 成为权威时钟；generation plan 不变。
 
-配音批准完成、进入阶段 5 前，coordinator 必须向用户展示并等待一次本次运行的生成后审阅选择：`user_first`（生图、annotation preview 与 scene bundle 完成后直接交付用户）或 `agent_first`（各阶段先准备一次对应的 AI 语义预审，再交付用户）。用户的选择必须分别传给阶段 5 的 `validate_generated_images.py`、阶段 6 的 `generate_annotation_previews.py` 和阶段 7 的 `scene_review.py`；若用户未另行指定，本次运行默认使用 `user_first`。该选择不改变技术验证、人工批准或任何作品 identity。
+交付完整旁白并等待用户确认时，coordinator 必须在同一条确认请求中同时展示本次运行的生成后审阅选择：`user_first`（生图、annotation preview 与 scene bundle 完成后直接交付用户）或 `agent_first`（各阶段先准备一次对应的 AI 语义预审，再交付用户）。用户的一次回复应能同时表达完整旁白与真实时长决定以及审阅策略，例如“确认完整旁白，选择 user_first”；不得在 `approve-full` 成功后再设置一次只为选择策略的聊天停顿。收到回复后，coordinator 必须先核对 current `FULL_IDENTITY` 并成功执行 `approve-full`，再采用该策略并进入阶段 5；旁白未获批准时不得因用户同时给出了策略而开始生图。用户的选择必须分别传给阶段 5 的 `validate_generated_images.py`、阶段 6 的 `generate_annotation_previews.py` 和阶段 7 的 `scene_review.py`；若用户确认旁白但未另行指定策略，本次运行默认使用 `user_first`。该选择不构成旁白或视觉批准，也不改变技术验证、人工批准或任何作品 identity。
 
 中断后可用 `--retry-failed` 只处理失败或未完成 unit。current、validated 且 synthesis identity 不变的段不得重复请求或覆盖。
 
@@ -201,10 +201,10 @@ Edge TTS 不需要 API Key，但依赖外网和微软语音服务，不是离线
    - 正式渲染、standalone 诊断和 `assets/preview.html` 默认都必须使用同一份 `assets/drawing-hand.png`。除非用户明确要求更换版权素材，不得静默切换到其他手部图片。
    - 每幕构图必须遵守视觉拓扑首版合同：一个核心命题可以包含 2–3 个可独立揭示的区域；区域间保留真实纸面留白，不允许跨区贯穿性连续结构。只有不可分割的连续整体才合并，不得为了增加步骤强拆，也不得因为担心局部空间接近而把所有内容合并。
 3. 部分失败时保留成功幕，只重试外部结果明确 failed 的幕；`unknown_external_outcome` 不自动重试，也不自动切换供应商。
-4. 运行 `validate_generated_images.py --review-policy user_first|agent_first`：先串行冻结 project/plan/manifest，再按 `imageValidation` 对独立 PNG 有界并发且每图只完整解码一次。`user_first` 在技术 PASS 后记录 `semanticReview.status=skipped_by_user` 并直接交用户查看；`agent_first` 额外准备覆盖全部 current scene 的 global `visualReview` 宿主 spawn package，检查人物、配色、纸张和构图一致性。
-5. `agent_first` 只 prepare，不自动创建 child；coordinator 必须按 spawn package 完成真实宿主派发。findings 只作辅助证据，不能批准线稿、修改图片或触发自动重生成。两种策略都保留技术验证和线稿人工批准，审阅策略不进入图片内容 identity。
+4. 运行 `validate_generated_images.py --review-policy user_first|agent_first`：先串行冻结 project/plan/manifest，再按 `imageValidation` 对独立 PNG 有界并发且每图只完整解码一次。全量技术 PASS 后，该命令必须确定性生成 `reviews/line-art-review-<identity前12位>.md` 与 `manifests/line-art-review-manifest.json`，摘要返回 `lineArtReviewIdentitySha256`、review 文件路径和场景数；文件绑定 generation plan、generation manifest、场景顺序与每张 current PNG 的 SHA/bytes，只是审阅视图和技术证据，不写人工批准。
+5. `user_first` 记录 `semanticReview.status=skipped_by_user`，coordinator 不得为了介绍线稿而在主窗口逐张查看或嵌入全部图片，只交付 current review Markdown 链接、identity、计数和异常摘要。`agent_first` 额外准备覆盖全部 current scene 的 global `visualReview` 宿主 spawn package；child 在新鲜短上下文中查看图片并把完整意见留在 `findings.json/result.json`，coordinator 只接收路径、状态和精简摘要，不得再重复逐图审阅。
 6. 生图成功后可显式运行 `generate_images.py --cover`，生成由整条视频主题、核心观点/结论、旁白 cues 与全部 scene 语义共同驱动的独立 `previews/social-cover.png`，并写入 `manifests/cover-manifest.json`。封面允许本地确定性排版文字，但不属于普通 scene，不改变 `constraints.forbidText=true` 或场景图片 identity。
-7. **停止，等待用户明确确认线稿。** 技术 `validated` 和 visualReview findings 都不能代替人工判断。
+7. **交付可点击的 current review Markdown 后停止，等待用户以当前 identity 明确确认线稿，或按 scene ID 指出需要修改的幕。** 打开文件、打开原图、技术 `validated`、visualReview findings 或用户没有反对都不能代替人工判断。任何 generation plan、generation manifest、场景顺序或 PNG 字节变化都会产生新的 review identity；旧确认不得用于新 bundle。进入阶段 6 前，coordinator 必须复核用户确认的 identity 仍与 `manifests/line-art-review-manifest.json` current identity 一致。
 
 ### 阶段 6：标注、区域预览与联合批准
 
@@ -316,8 +316,11 @@ globalFrameCount       = 最后一幕 sceneEndFrameExclusive
     voice-sample.wav                # Edge 按需
     scene-01-<名称>-annotation-preview.png
     final-subtitle-contact-sheet.png
+  reviews/
+    line-art-review-<identity前12位>.md
   manifests/
     generation-manifest.json
+    line-art-review-manifest.json
     voice-manifest.json             # Edge 按需
     annotation-review-manifest.json
     annotation-review-approval.json
@@ -431,7 +434,7 @@ python scripts/prepare_env.py
   --review-policy agent_first
 ```
 
-`user_first` 固定保留技术验证并输出 `semanticReview.status=skipped_by_user`；`agent_first` 返回的 `visualReview.spawnPackage.spawnAgentCall` 非空时立即调用宿主真实 `spawn_agent`。`preparedOnly:true`、`hostSpawnExecuted:false` 与 `peakChildAgents:0` 表示尚未派发，不能继续阅读 Python 源码代替宿主调用，也不能把 prepare 写成 dispatch PASS。旧 `--prepare-visual-review` 仍作为 `agent_first` 兼容入口；两条策略都不得写线稿批准。
+两种策略在全量技术 PASS 后都必须输出 `lineArtReview.reviewFile`、`lineArtReview.lineArtReviewIdentitySha256` 与 `lineArtReview.manifestFile`。主窗口必须把 review 文件作为线稿交接入口，只发送可点击文件链接、identity、计数和异常摘要，不得把其中全部图片或完整内容重新粘贴进聊天。`user_first` 固定输出 `semanticReview.status=skipped_by_user`；`agent_first` 返回的 `visualReview.spawnPackage.spawnAgentCall` 非空时立即调用宿主真实 `spawn_agent`，child 通过 `findings.json/result.json` 文件交接完整审阅意见。`preparedOnly:true`、`hostSpawnExecuted:false` 与 `peakChildAgents:0` 表示尚未派发，不能继续阅读 Python 源码代替宿主调用，也不能把 prepare 写成 dispatch PASS。旧 `--prepare-visual-review` 仍作为 `agent_first` 兼容入口；两条策略都不得写线稿批准。
 
 Edge 样音、完整旁白、状态与技术验证：
 

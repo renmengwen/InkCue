@@ -10,6 +10,7 @@
 - [JSON 并发配置](#json-并发配置)
 - [生成、覆盖与失败重试](#生成覆盖与失败重试)
 - [标注前消费验证](#标注前消费验证)
+- [线稿文件交接](#线稿文件交接)
 - [Global visualReview 初检](#global-visualreview-初检)
 - [机器摘要与退出码](#机器摘要与退出码)
 - [合并](#合并)
@@ -26,6 +27,8 @@ source/source.srt
 planning/generation-plan.json
 scenes/*.png
 manifests/generation-manifest.json
+manifests/line-art-review-manifest.json
+reviews/line-art-review-<identity前12位>.md
 previews/*
 output/final.mp4
 .work/<运行 ID>/*
@@ -214,6 +217,17 @@ coordinator 先冻结 `attemptId`、image input identity、candidate/receipt/for
 
 脚本向标准输出写单个 JSON 摘要。`validated` 只表示文件技术上完整且与计划一致，不能代替第 2 步结束后的用户明确确认。只有技术验证通过且用户确认画面语义和视觉质量后，才可开始标注。
 
+## 线稿文件交接
+
+全量图片技术验证 PASS 后，`validate_generated_images.py` 必须在同一次运行中确定性生成：
+
+- `manifests/line-art-review-manifest.json`：current 技术证据，绑定 project、generation plan SHA、generation manifest SHA、场景顺序，以及每张 current PNG 的相对路径、SHA 和 bytes；输出 `lineArtReviewIdentitySha256`，但不写人工批准。
+- `reviews/line-art-review-<identity前12位>.md`：面向用户的有序审阅文件，按 scene ID 展示 current 图片、全分辨率相对链接和必要的场景语义/提示词。它只是由 manifest identity 派生的审阅视图，不是第二份机器权威源。
+
+coordinator 面向用户只能交付可点击 review 文件链接、完整 identity、场景计数和异常 scene 摘要；不得把全部 PNG、完整提示词或 Markdown 全文重新嵌入主聊天。`user_first` 时 coordinator 不为介绍文件而逐张打开图片；`agent_first` 时 visualReview child 在新鲜短上下文中查看 current PNG，把完整意见留在 attempt 的 `findings.json/result.json`，coordinator 只接收结果路径、status、validator 状态和精简摘要，不得重复逐图审阅。
+
+用户仍须回到聊天，以 current identity 明确确认全部线稿，或按 scene ID 指出需要修改的幕。打开 Markdown、点击原图、技术 PASS、child completed、findings 无问题或用户没有反对都不构成批准。generation plan、generation manifest、场景顺序或任一 PNG 字节变化都会生成新 identity 和新 review 文件；旧文件可保留为历史证据，但旧聊天确认不得用于 current bundle。进入 annotation 前必须复核用户确认的 identity 与 current `line-art-review-manifest.json.identityHash` 一致。
+
 ### 可选 Global visualReview 初检
 
 技术验证始终执行；图片完成后必须显式选择直接交用户，或先准备 global review：
@@ -226,7 +240,7 @@ coordinator 先冻结 `attemptId`、image input identity、candidate/receipt/for
   --review-policy agent_first
 ```
 
-`user_first` 不创建或派发 visualReview，在机器摘要记录 `reviewPolicy=user_first`、`semanticReview.status=skipped_by_user`、`approvalWritten=false` 和 `userConfirmationRequired=true`，随后直接交用户逐图查看。`agent_first` 通过现有 `whiteboard-agent-task-v1` 合同创建并重验 `visualReview` task：task 冻结 generation plan、generation manifest、全部 current PNG/SHA、role contract 与 current bindings；只允许写 attempt 内 `findings.json/result.json`，`formalWritesAllowed=false`、`approvalWritesAllowed=false`。旧 `--prepare-visual-review` 保留为 `agent_first` 兼容入口。
+`user_first` 不创建或派发 visualReview，在机器摘要记录 `reviewPolicy=user_first`、`semanticReview.status=skipped_by_user`、`approvalWritten=false` 和 `userConfirmationRequired=true`，随后直接交付 current 线稿 review 文件。`agent_first` 通过现有 `whiteboard-agent-task-v1` 合同创建并重验 `visualReview` task：task 冻结 generation plan、generation manifest、全部 current PNG/SHA、role contract 与 current bindings；只允许写 attempt 内 `findings.json/result.json`，`formalWritesAllowed=false`、`approvalWritesAllowed=false`。旧 `--prepare-visual-review` 保留为 `agent_first` 兼容入口。
 
 命令返回 `visualReview.spawnPackage`，其中 `spawnAgentCall` 已包含宿主真实 `spawn_agent` 所需的短 task name、`fork_turns:none` 和最小冻结 prompt。`preparedOnly:true`、`hostSpawnExecuted:false`、`peakChildAgents:0` 明确表示 Python 只准备了 attempt，没有创建 child、没有伪造 agentId。coordinator 收到该包后应立即调用宿主协作工具，不得再阅读 Python 源码重新研究派发方式；真实 agent/task 标识只能在宿主派发后补入审计。child 或 fallback coordinator 都必须实际具备 `viewImage`，否则报告 `BLOCKED`。
 
@@ -236,7 +250,7 @@ visualReview findings 只用于提示跨幕人物、配色、纸张、构图漂�
 
 ## 机器摘要与退出码
 
-生成和验证脚本都输出机器可读 JSON 摘要，不输出密钥、完整 API 响应或临时 URL。生成摘要包含配置/实际并发、task 数、采用 candidate 数和 unknown 外部结果数；验证摘要包含配置/实际并发、task 数，并固定输出 `userConfirmationRequired: true`、`approvalWritten: false`。
+生成和验证脚本都输出机器可读 JSON 摘要，不输出密钥、完整 API 响应或临时 URL。生成摘要包含配置/实际并发、task 数、采用 candidate 数和 unknown 外部结果数；验证摘要包含配置/实际并发、task 数，并固定输出 `userConfirmationRequired: true`、`approvalWritten: false`。全量技术 PASS 时还输出 `lineArtReview.reviewFile`、`lineArtReview.manifestFile`、`lineArtReview.lineArtReviewIdentitySha256` 与 `lineArtReview.sceneCount`；审阅文件生成失败时整次验证不得报告成功或启动 visualReview。
 
 - `0`：全部目标场景成功，或全部待消费图片验证成功。
 - `1`：批量已执行，但至少一幕失败。

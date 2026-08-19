@@ -211,6 +211,73 @@ class ImageGenerationCliTests(unittest.TestCase):
         self.assertTrue(summary["ok"])
         self.assertEqual(summary["validated"], 1)
         self.assertTrue(summary["userConfirmationRequired"])
+        self.assertEqual(summary["lineArtReview"]["sceneCount"], 1)
+        self.assertFalse(summary["lineArtReview"]["approvalWritten"])
+
+    def test_validation_writes_identity_bound_line_art_file_handoff(self) -> None:
+        self._write_valid_scene()
+        stdout = io.StringIO()
+        with self._configured_workspace(validate_generated_images), contextlib.redirect_stdout(stdout):
+            exit_code = validate_generated_images.main(["--project", str(self.root)])
+        summary = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0, summary)
+
+        review = summary["lineArtReview"]
+        identity = review["lineArtReviewIdentitySha256"]
+        self.assertEqual(len(identity), 64)
+        self.assertRegex(review["reviewFile"], rf"^reviews/line-art-review-{identity[:12]}\.md$")
+        review_path = self.root / Path(review["reviewFile"])
+        technical_path = self.root / Path(review["manifestFile"])
+        self.assertTrue(review_path.is_file())
+        self.assertTrue(technical_path.is_file())
+
+        markdown = review_path.read_text(encoding="utf-8")
+        self.assertIn(f"lineArtReviewIdentitySha256: {identity}", markdown)
+        self.assertIn("打开全分辨率原图", markdown)
+        self.assertIn("确认线稿", markdown)
+        self.assertNotRegex(markdown, r"(?i)[a-z]:[\\/]")
+
+        technical = json.loads(technical_path.read_text(encoding="utf-8"))
+        self.assertEqual(technical["status"], "current_technical")
+        self.assertEqual(technical["identityHash"], identity)
+        self.assertEqual(technical["identityPayload"]["sceneOrder"], ["scene-01"])
+        self.assertFalse(technical["approvalWritten"])
+        self.assertTrue(technical["userConfirmationRequired"])
+
+    def test_line_art_review_identity_changes_with_current_image_bytes(self) -> None:
+        image_path, _ = self._write_valid_scene()
+        first_stdout = io.StringIO()
+        with self._configured_workspace(validate_generated_images), contextlib.redirect_stdout(first_stdout):
+            first_exit = validate_generated_images.main(["--project", str(self.root)])
+        first = json.loads(first_stdout.getvalue())
+        self.assertEqual(first_exit, 0, first)
+        first_review_path = self.root / Path(first["lineArtReview"]["reviewFile"])
+
+        Image.new("RGB", (1920, 1080), "#EAD8B8").save(image_path, "PNG")
+        manifest_path = self.root / "manifests" / "generation-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["scenes"][0]["imageSha256"] = _sha256(image_path)
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+        second_stdout = io.StringIO()
+        with self._configured_workspace(validate_generated_images), contextlib.redirect_stdout(second_stdout):
+            second_exit = validate_generated_images.main(["--project", str(self.root)])
+        second = json.loads(second_stdout.getvalue())
+        self.assertEqual(second_exit, 0, second)
+        self.assertNotEqual(
+            first["lineArtReview"]["lineArtReviewIdentitySha256"],
+            second["lineArtReview"]["lineArtReviewIdentitySha256"],
+        )
+        self.assertTrue(first_review_path.is_file())
+        current = json.loads(
+            (self.root / "manifests" / "line-art-review-manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            current["identityHash"],
+            second["lineArtReview"]["lineArtReviewIdentitySha256"],
+        )
 
     def test_validate_generated_images_defaults_to_user_first(self) -> None:
         self._write_valid_scene()

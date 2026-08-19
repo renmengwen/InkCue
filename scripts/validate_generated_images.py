@@ -31,6 +31,7 @@ from agent_task_contract import (
     validate_agent_task,
 )
 from bounded_execution import CONTINUE_INDEPENDENT, WorkerFailure, WorkerOutcome, execute_bounded
+from line_art_review import LineArtReviewError, create_line_art_review
 from project_workspace import (
     ProjectValidationError,
     ProjectWorkspace,
@@ -99,6 +100,7 @@ def _summary(
     visual_review: dict[str, Any] | None = None,
     review_policy: str | None = None,
     semantic_review: dict[str, Any] | None = None,
+    line_art_review: dict[str, Any] | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
     value: dict[str, Any] = {
@@ -123,6 +125,8 @@ def _summary(
         value["reviewPolicy"] = review_policy
     if semantic_review is not None:
         value["semanticReview"] = semantic_review
+    if line_art_review is not None:
+        value["lineArtReview"] = line_art_review
     if error:
         value["error"] = error
     return value
@@ -575,8 +579,16 @@ def main(argv: list[str] | None = None) -> int:
             assert result.outcome.value is not None
             consumable.append(result.outcome.value)
 
+    line_art_review: dict[str, Any] | None = None
+    handoff_error: str | None = None
+    if not failures:
+        try:
+            line_art_review = create_line_art_review(project, manifest, manifest_path)
+        except (OSError, ProjectValidationError, LineArtReviewError, ValueError) as exc:
+            handoff_error = f"线稿文件交接生成失败: {exc}"
+
     visual_review: dict[str, Any] | None = None
-    if not failures and review_policy == "agent_first":
+    if not failures and handoff_error is None and review_policy == "agent_first":
         try:
             _, visual_review = prepare_visual_review_dispatch(
                 workspace=workspace,
@@ -593,7 +605,13 @@ def main(argv: list[str] | None = None) -> int:
             }
 
     semantic_review: dict[str, Any] | None = None
-    if review_policy == "user_first":
+    if handoff_error is not None:
+        semantic_review = {
+            "status": "not_started_due_to_handoff_failure",
+            "approvalWritten": False,
+            "userConfirmationRequired": True,
+        }
+    elif review_policy == "user_first":
         # user_first 明确跳过额外 AI 语义审阅，但不跳过上面的 PNG/manifest
         # 技术校验。这里不创建 visualReview task，也不写任何批准文件。
         semantic_review = {
@@ -617,10 +635,10 @@ def main(argv: list[str] | None = None) -> int:
                 "userConfirmationRequired": True,
             }
 
-    exit_code = 1 if failures else 0
+    exit_code = 1 if failures or handoff_error is not None else 0
     _emit(
         _summary(
-            ok=not failures,
+            ok=not failures and handoff_error is None,
             exit_code=exit_code,
             project=str(project.root),
             total=len(plan_scenes),
@@ -634,6 +652,8 @@ def main(argv: list[str] | None = None) -> int:
             visual_review=visual_review,
             review_policy=review_policy,
             semantic_review=semantic_review,
+            line_art_review=line_art_review,
+            error=handoff_error,
         )
     )
     return exit_code

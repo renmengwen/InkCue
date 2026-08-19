@@ -132,8 +132,10 @@ Phase 4 只能在线稿已获用户明确确认后开始。coordinator 先构建
 
 生图消费验证、annotation preview bundle 和 scene review bundle 都接受 `--review-policy user_first|agent_first`。两种策略都必须先完成当前阶段的确定性技术验证，并保留对应人工批准；策略只决定用户关卡之前是否多一次 AI 语义预审，不进入作品内容 identity，也不得写批准。
 
-- `user_first`：不创建或派发额外 `visualReview`，机器摘要记录 `semanticReview.status=skipped_by_user`，直接把 current artifact 交给用户。
-- `agent_first`：只冻结 `visualReview` task 并准备宿主 `spawnPackage`；`preparedOnly:true` 和 `hostSpawnExecuted:false` 不能报告成真实派发或 review 完成。coordinator 必须调用宿主协作工具完成真实 spawn/wait，再把 advisory findings 与 artifact 一并交用户。
+该策略应在交付完整旁白、等待用户确认的同一条消息中征询，使用户一次回复即可同时表达完整旁白与真实时长决定以及 `user_first|agent_first` 选择。coordinator 必须先成功写入 current `approve-full`，再采用策略并开始视觉阶段；不得在旁白批准后另设一次只用于选择策略的聊天停顿，也不得在旁白未获批准时仅凭策略选择启动生图。用户确认旁白但未指定时默认 `user_first`。
+
+- `user_first`：不创建或派发额外 `visualReview`，机器摘要记录 `semanticReview.status=skipped_by_user`，只把 current 线稿 review Markdown 链接、identity、计数和异常摘要交给用户；不得把全部图片重新嵌入主聊天。
+- `agent_first`：只冻结 `visualReview` task 并准备宿主 `spawnPackage`；`preparedOnly:true` 和 `hostSpawnExecuted:false` 不能报告成真实派发或 review 完成。coordinator 必须调用宿主协作工具完成真实 spawn/wait，child 把完整意见写入 attempt 的 `findings.json/result.json`；coordinator 只接收路径、status、validator 状态和精简摘要，不得再次逐图审阅，再把 advisory findings 摘要与 current review 文件一并交用户。
 - 生图复用覆盖全部 current PNG 的 global `visualReview`；annotation 只复查已生成的 preview bundle，不能跳过 `annotationDrafting` 对原图的实际查看；scene 只在全部 current 单幕形成一次有序 bundle 后预审，每幕仅抽首帧、中段和完成帧等少量关键帧，不逐幕重复 AI review。
 
 ## 9. 人工关卡
