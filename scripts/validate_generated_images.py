@@ -97,6 +97,8 @@ def _summary(
     consumable: list[dict[str, str]] | None = None,
     failures: list[dict[str, str]] | None = None,
     visual_review: dict[str, Any] | None = None,
+    review_policy: str | None = None,
+    semantic_review: dict[str, Any] | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
     value: dict[str, Any] = {
@@ -117,6 +119,10 @@ def _summary(
     }
     if visual_review is not None:
         value["visualReview"] = visual_review
+    if review_policy is not None:
+        value["reviewPolicy"] = review_policy
+    if semantic_review is not None:
+        value["semanticReview"] = semantic_review
     if error:
         value["error"] = error
     return value
@@ -462,6 +468,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="技术验证通过后冻结 global visualReview task，并输出宿主可直接消费的 spawn 包；不实际创建 child",
     )
+    parser.add_argument(
+        "--review-policy",
+        choices=("user_first", "agent_first"),
+        default=None,
+        help=(
+            "图片技术验证后的语义审阅策略：user_first 直接交用户；"
+            "agent_first 准备现有 global visualReview 宿主派发包"
+        ),
+    )
     return parser
 
 
@@ -475,6 +490,30 @@ def main(argv: list[str] | None = None) -> int:
     except SystemExit as exc:
         return int(exc.code)
     project_arg = str(Path(args.project).resolve(strict=False))
+
+    # --prepare-visual-review 是历史兼容入口，等价于 agent_first。显式
+    # user_first 与它组合会产生互相矛盾的要求，必须在任何项目写入前拒绝。
+    review_policy = args.review_policy
+    if review_policy == "user_first" and args.prepare_visual_review:
+        _emit(
+            _summary(
+                ok=False,
+                exit_code=2,
+                project=project_arg,
+                review_policy=review_policy,
+                semantic_review={
+                    "status": "invalid_combination",
+                    "approvalWritten": False,
+                    "userConfirmationRequired": True,
+                },
+                error="--review-policy user_first 不能与 --prepare-visual-review 同时使用",
+            )
+        )
+        return 2
+    if review_policy is None:
+        # 未传策略时本次运行默认 user_first；历史兼容入口仍明确等价于
+        # agent_first，避免把旧 --prepare-visual-review 误判为冲突。
+        review_policy = "agent_first" if args.prepare_visual_review else "user_first"
 
     try:
         workspace = ProjectWorkspace.from_config()
@@ -537,7 +576,7 @@ def main(argv: list[str] | None = None) -> int:
             consumable.append(result.outcome.value)
 
     visual_review: dict[str, Any] | None = None
-    if not failures and args.prepare_visual_review:
+    if not failures and review_policy == "agent_first":
         try:
             _, visual_review = prepare_visual_review_dispatch(
                 workspace=workspace,
@@ -551,6 +590,31 @@ def main(argv: list[str] | None = None) -> int:
                 "status": "blocked",
                 "reason": str(exc),
                 "approvalWritten": False,
+            }
+
+    semantic_review: dict[str, Any] | None = None
+    if review_policy == "user_first":
+        # user_first 明确跳过额外 AI 语义审阅，但不跳过上面的 PNG/manifest
+        # 技术校验。这里不创建 visualReview task，也不写任何批准文件。
+        semantic_review = {
+            "status": "skipped_by_user",
+            "approvalWritten": False,
+            "userConfirmationRequired": True,
+        }
+    elif review_policy == "agent_first":
+        if visual_review is None:
+            semantic_review = {
+                "status": "not_started_due_to_validation_failure",
+                "taskKind": "visualReview",
+                "approvalWritten": False,
+                "userConfirmationRequired": True,
+            }
+        else:
+            semantic_review = {
+                "status": visual_review.get("status", "unknown"),
+                "taskKind": "visualReview",
+                "approvalWritten": False,
+                "userConfirmationRequired": True,
             }
 
     exit_code = 1 if failures else 0
@@ -568,6 +632,8 @@ def main(argv: list[str] | None = None) -> int:
             consumable=consumable,
             failures=failures,
             visual_review=visual_review,
+            review_policy=review_policy,
+            semantic_review=semantic_review,
         )
     )
     return exit_code

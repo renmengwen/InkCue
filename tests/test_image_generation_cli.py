@@ -212,6 +212,98 @@ class ImageGenerationCliTests(unittest.TestCase):
         self.assertEqual(summary["validated"], 1)
         self.assertTrue(summary["userConfirmationRequired"])
 
+    def test_validate_generated_images_defaults_to_user_first(self) -> None:
+        self._write_valid_scene()
+        stdout = io.StringIO()
+        with self._configured_workspace(validate_generated_images), contextlib.redirect_stdout(stdout):
+            exit_code = validate_generated_images.main(["--project", str(self.root)])
+        summary = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0, summary)
+        self.assertEqual(summary["reviewPolicy"], "user_first")
+        self.assertEqual(summary["semanticReview"]["status"], "skipped_by_user")
+        self.assertNotIn("visualReview", summary)
+
+    def test_validate_review_policy_user_first_skips_visual_review(self) -> None:
+        self._write_valid_scene()
+        stdout = io.StringIO()
+        with self._configured_workspace(validate_generated_images), mock.patch.object(
+            validate_generated_images,
+            "prepare_visual_review_dispatch",
+            side_effect=AssertionError("user_first 不应创建 visualReview"),
+        ), contextlib.redirect_stdout(stdout):
+            exit_code = validate_generated_images.main(
+                ["--project", str(self.root), "--review-policy", "user_first"]
+            )
+        summary = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0, summary)
+        self.assertEqual(summary["reviewPolicy"], "user_first")
+        self.assertEqual(summary["semanticReview"]["status"], "skipped_by_user")
+        self.assertFalse(summary["semanticReview"]["approvalWritten"])
+        self.assertTrue(summary["semanticReview"]["userConfirmationRequired"])
+        self.assertNotIn("visualReview", summary)
+
+    def test_validate_review_policy_agent_first_prepares_visual_review(self) -> None:
+        self._write_valid_scene()
+        stdout = io.StringIO()
+        with self._configured_workspace(validate_generated_images), contextlib.redirect_stdout(stdout):
+            exit_code = validate_generated_images.main(
+                ["--project", str(self.root), "--review-policy", "agent_first"]
+            )
+        summary = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0, summary)
+        self.assertEqual(summary["reviewPolicy"], "agent_first")
+        self.assertIn(summary["semanticReview"]["status"], {"ready_for_host_spawn", "pending_child_result"})
+        self.assertFalse(summary["semanticReview"]["approvalWritten"])
+        self.assertEqual(summary["visualReview"]["taskKind"], "visualReview")
+
+    def test_prepare_visual_review_remains_agent_first_compatibility_alias(self) -> None:
+        self._write_valid_scene()
+        stdout = io.StringIO()
+        with self._configured_workspace(validate_generated_images), contextlib.redirect_stdout(stdout):
+            exit_code = validate_generated_images.main(
+                ["--project", str(self.root), "--prepare-visual-review"]
+            )
+        summary = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0, summary)
+        self.assertEqual(summary["reviewPolicy"], "agent_first")
+        self.assertEqual(summary["visualReview"]["taskKind"], "visualReview")
+
+    def test_agent_first_accepts_redundant_legacy_prepare_flag(self) -> None:
+        self._write_valid_scene()
+        stdout = io.StringIO()
+        with self._configured_workspace(validate_generated_images), contextlib.redirect_stdout(stdout):
+            exit_code = validate_generated_images.main(
+                [
+                    "--project",
+                    str(self.root),
+                    "--review-policy",
+                    "agent_first",
+                    "--prepare-visual-review",
+                ]
+            )
+        summary = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0, summary)
+        self.assertEqual(summary["reviewPolicy"], "agent_first")
+        self.assertEqual(summary["semanticReview"]["status"], "ready_for_host_spawn")
+
+    def test_review_policy_user_first_conflicts_with_legacy_prepare_flag(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            exit_code = validate_generated_images.main(
+                [
+                    "--project",
+                    str(self.root),
+                    "--review-policy",
+                    "user_first",
+                    "--prepare-visual-review",
+                ]
+            )
+        summary = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 2, summary)
+        self.assertEqual(summary["reviewPolicy"], "user_first")
+        self.assertEqual(summary["semanticReview"]["status"], "invalid_combination")
+        self.assertFalse(summary["approvalWritten"])
+
     def test_validate_detects_modified_image(self) -> None:
         image_path, _ = self._write_valid_scene()
         Image.new("RGB", (1920, 1080), "black").save(image_path, "PNG")

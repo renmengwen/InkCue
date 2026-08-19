@@ -23,6 +23,17 @@ try:
         WorkerOutcome,
         execute_bounded,
     )
+    from .agent_task_contract import (
+        ROLE_CONTRACT_VERSION,
+        TASK_CONTRACT_VERSION,
+        TrustedTaskContext,
+        ValidatedAgentTask,
+        build_agent_batch_audit,
+        build_agent_prompt,
+        decide_agent_dispatch,
+        sha256_file as agent_sha256_file,
+        validate_agent_task,
+    )
     from .annotation_review import write_annotation_review_technical
     from .project_workspace import (
         Project,
@@ -33,6 +44,7 @@ try:
         load_workspace_config,
         sha256_file,
         sha256_json,
+        write_json_atomic,
     )
     from .render_annotation_preview import render_annotation_preview
     from .render_timing import (
@@ -49,6 +61,17 @@ except ImportError:  # pragma: no cover - direct script execution
         WorkerOutcome,
         execute_bounded,
     )
+    from agent_task_contract import (
+        ROLE_CONTRACT_VERSION,
+        TASK_CONTRACT_VERSION,
+        TrustedTaskContext,
+        ValidatedAgentTask,
+        build_agent_batch_audit,
+        build_agent_prompt,
+        decide_agent_dispatch,
+        sha256_file as agent_sha256_file,
+        validate_agent_task,
+    )
     from annotation_review import write_annotation_review_technical
     from project_workspace import (
         Project,
@@ -59,6 +82,7 @@ except ImportError:  # pragma: no cover - direct script execution
         load_workspace_config,
         sha256_file,
         sha256_json,
+        write_json_atomic,
     )
     from render_annotation_preview import render_annotation_preview
     from render_timing import (
@@ -72,6 +96,24 @@ except ImportError:  # pragma: no cover - direct script execution
 
 PREVIEW_BATCH_CONTRACT = "whiteboard-annotation-preview-batch-v1"
 EXPECTED_SIZE = (1920, 1080)
+REVIEW_POLICIES = frozenset({"user_first", "agent_first"})
+HOST_SPAWN_PACKAGE_VERSION = "whiteboard-host-spawn-package-v1"
+ANNOTATION_VISUAL_REVIEW_ROLE_CONTRACT = """# annotation preview visualReview frozen role contract
+
+- 只读 task.json 冻结的 generation/timing plan、current source PNG、annotation JSON、
+  annotation preview、contact sheet 与 technical manifest。
+- 必须真实查看全量 current annotation preview bundle；检查区域是否覆盖正确墨迹簇、
+  标签/叙事角色是否与画面一致，以及跨幕区域表达是否明显异常。
+- annotationDrafting 已完成；本 task 只做 post-generation 额外语义预审，不得修改
+  annotation、preview、contact sheet、technical manifest 或任何正式项目文件。
+- 只写 findings.json/result.json；findings 仅供用户确认时参考，绝不代表批准，也不得
+  写 annotation review approval。
+"""
+HOST_ANNOTATION_VISUAL_REVIEW_CAPABILITIES = (
+    "readFiles",
+    "viewImage",
+    "writeCandidateJson",
+)
 _WINDOWS_PATH_RE = re.compile(r"(?i)(?:[a-z]:[\\/][^\s\"']+)")
 _SENSITIVE_RE = re.compile(
     r"(?i)(api[_-]?key|access[_-]?token|authorization|cookie|password|secret)\s*[:=]\s*[^\s,;}]+"
@@ -100,6 +142,204 @@ class AnnotationPreviewCandidate:
     task: AnnotationPreviewTask
     sha256: str
     byte_count: int
+
+
+def _annotation_semantic_review_skipped() -> dict[str, Any]:
+    return {
+        "taskKind": "visualReview",
+        "scope": "annotation_preview_bundle",
+        "status": "skipped_by_user",
+        "preparedOnly": False,
+        "hostSpawnExecuted": False,
+        "spawnPackage": None,
+        "findingsAreAdvisory": True,
+        "approvalWritten": False,
+    }
+
+
+def _annotation_review_bindings(project: Project, context: Any) -> dict[str, str | None]:
+    return {
+        "generationPlanSha256": agent_sha256_file(project.plan_path),
+        "timingPlanSha256": context.timing_plan_sha256,
+        "renderProfileSha256": context.render_profile_sha256,
+        "activeTimelineSha256": sha256_json(context.active_timeline),
+        "audioSha256": context.audio_sha256,
+        "fullApprovalIdentityHash": context.full_approval_identity_hash,
+    }
+
+
+def _annotation_review_input_paths(
+    project: Project,
+    formals: Sequence[FormalSceneRender],
+    role_contract: Path,
+) -> list[Path]:
+    paths = [role_contract, project.plan_path]
+    if project.timing_plan_persisted:
+        paths.append(project.timing_plan_path)
+    paths.append(project.path("manifests/annotation-review-manifest.json"))
+    for formal in formals:
+        scene = next(
+            item for item in project.plan["scenes"] if item["sceneId"] == formal.scene_id
+        )
+        stem = Path(scene["outputFile"]).stem
+        paths.extend(
+            [
+                formal.image_path,
+                formal.annotation_path,
+                project.path(f"previews/{stem}-annotation-preview.png"),
+            ]
+        )
+    paths.append(project.path("previews/annotation-preview-contact-sheet.png"))
+    return paths
+
+
+def _build_annotation_visual_review_spawn_package(
+    task: ValidatedAgentTask,
+    audit: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    if not audit.get("dispatchAllowed"):
+        return None
+    role_contract = (task.context.task_dir / "role-contract.md").resolve()
+    task_json = task.context.task_json.resolve()
+    attempt_dir = task.context.task_dir.resolve()
+    result_json = task.context.result_json.resolve()
+    prompt = build_agent_prompt(
+        task_json=task_json,
+        role_contract=role_contract,
+        task_kind=str(task.data["taskKind"]),
+        task_sha256=task.task_sha256,
+        role_contract_sha256=str(task.data["roleContractSha256"]),
+    )
+    run_suffix = re.sub(r"[^a-z0-9_]", "_", task.context.run_id.lower())
+    task_name = f"annotation_review_{run_suffix}"[:64].rstrip("_")
+    return {
+        "contractVersion": HOST_SPAWN_PACKAGE_VERSION,
+        "preparedOnly": True,
+        "hostSpawnRequired": True,
+        "hostSpawnExecuted": False,
+        "taskId": task.data["taskId"],
+        "taskKind": task.data["taskKind"],
+        "taskJsonPath": str(task_json),
+        "taskSha256": task.task_sha256,
+        "roleContractPath": str(role_contract),
+        "roleContractSha256": task.data["roleContractSha256"],
+        "allowedAttemptDir": str(attempt_dir),
+        "resultJsonPath": str(result_json),
+        "requiredCapabilities": list(task.data["requiredCapabilities"]),
+        "spawnAgentCall": {
+            "task_name": task_name,
+            "fork_turns": "none",
+            "message": prompt,
+        },
+        "completionContract": {
+            "resultJsonPath": str(result_json),
+            "returnFields": [
+                "TASK_STATUS",
+                "RESULT_JSON",
+                "VALIDATOR_STATUS",
+                "SUMMARY",
+            ],
+        },
+    }
+
+
+def prepare_annotation_visual_review_dispatch(
+    workspace: WorkspaceConfig,
+    project: Project,
+    formals: Sequence[FormalSceneRender],
+    context: Any,
+) -> tuple[ValidatedAgentTask, dict[str, Any]]:
+    """Freeze a post-generation annotation review task; never spawn or approve."""
+
+    run_id = f"annotation-vr-{uuid.uuid4().hex[:12]}"
+    project.create_run_dir(run_id)
+    trusted = TrustedTaskContext(
+        workspace_root=workspace.root,
+        scope_root=project.root,
+        scope_kind="project",
+        run_id=run_id,
+        task_id="annotation-review-global",
+        attempt=1,
+    )
+    trusted.task_dir.mkdir(parents=True, exist_ok=False)
+    role_contract = trusted.task_dir / "role-contract.md"
+    role_contract.write_text(
+        ANNOTATION_VISUAL_REVIEW_ROLE_CONTRACT,
+        encoding="utf-8",
+        newline="\n",
+    )
+    inputs = [
+        {"file": trusted.relative_posix(path), "sha256": agent_sha256_file(path)}
+        for path in _annotation_review_input_paths(project, formals, role_contract)
+    ]
+    bindings = _annotation_review_bindings(project, context)
+    findings = trusted.task_dir / "findings.json"
+    task_data = {
+        "contractVersion": TASK_CONTRACT_VERSION,
+        "taskId": trusted.task_id,
+        "taskKind": "visualReview",
+        "scopeKind": "project",
+        "roleContractVersion": ROLE_CONTRACT_VERSION,
+        "roleContractSha256": agent_sha256_file(role_contract),
+        "attempt": 1,
+        "sequence": 1,
+        "inputs": inputs,
+        "currentBindings": bindings,
+        "requiredCapabilities": list(HOST_ANNOTATION_VISUAL_REVIEW_CAPABILITIES),
+        "allowedOutputs": [
+            trusted.relative_posix(findings),
+            trusted.relative_posix(trusted.result_json),
+        ],
+        "formalWritesAllowed": False,
+        "approvalWritesAllowed": False,
+    }
+    write_json_atomic(trusted.task_json, task_data)
+    task = validate_agent_task(
+        trusted.task_json,
+        trusted,
+        expected_current_bindings=bindings,
+    )
+    decision = decide_agent_dispatch(
+        task,
+        configured=workspace.for_role("visualReview"),
+        ready_tasks=1,
+        runtime_child_slots=1,
+        resource_budget=1,
+        runtime_role_capabilities=HOST_ANNOTATION_VISUAL_REVIEW_CAPABILITIES,
+        coordinator_capabilities=HOST_ANNOTATION_VISUAL_REVIEW_CAPABILITIES,
+    )
+    audit = build_agent_batch_audit(
+        stage="visualReview",
+        configured=workspace.for_role("visualReview"),
+        task_count=1,
+        decision=decision,
+    )
+    audit.update(
+        {
+            "taskKind": "visualReview",
+            "scope": "annotation_preview_bundle",
+            "status": (
+                "pending_child_result"
+                if decision.mode == "dispatch"
+                else "pending_coordinator_findings"
+                if decision.mode == "fallback"
+                else "blocked"
+            ),
+            "taskFile": trusted.relative_posix(trusted.task_json),
+            "preparedOnly": True,
+            "hostSpawnExecuted": False,
+            "findingsAreAdvisory": True,
+            "approvalWritten": False,
+        }
+    )
+    spawn_package = _build_annotation_visual_review_spawn_package(task, audit)
+    audit.update(
+        {
+            "status": "ready_for_host_spawn" if spawn_package is not None else audit["status"],
+            "spawnPackage": spawn_package,
+        }
+    )
+    return task, audit
 
 
 def annotation_binding_sha256(formals: Sequence[FormalSceneRender]) -> str:
@@ -243,10 +483,16 @@ def generate_annotation_preview_batch(
     workspace: WorkspaceConfig,
     project: Project,
     *,
+    review_policy: str = "user_first",
     allow_v1_disabled_compat: bool = False,
     executor_factory: Callable[[int], Any] | None = None,
 ) -> dict[str, Any]:
     """Validate the complete Phase 4 technical gate, render, and publish in plan order."""
+
+    if review_policy not in REVIEW_POLICIES:
+        raise AnnotationPreviewBatchError(
+            "review_policy 必须是 user_first 或 agent_first"
+        )
 
     context = build_formal_validation_context(project)
     scene_ids = [scene["sceneId"] for scene in project.plan["scenes"]]
@@ -356,15 +602,45 @@ def generate_annotation_preview_batch(
 
     all_passed = failed_count == 0 and len(published_candidates) == len(tasks) and contact_file is not None
     annotation_review_identity: str | None = None
+    semantic_review: dict[str, Any] = {
+        "taskKind": "visualReview",
+        "scope": "annotation_preview_bundle",
+        "status": "not_started_technical_failure",
+        "preparedOnly": False,
+        "hostSpawnExecuted": False,
+        "spawnPackage": None,
+        "findingsAreAdvisory": True,
+        "approvalWritten": False,
+    }
     if all_passed:
         try:
             _current_bindings_unchanged(project, tasks, context)
             technical = write_annotation_review_technical(project, formals, context)
             annotation_review_identity = technical["identityHash"]
+            if review_policy == "user_first":
+                semantic_review = _annotation_semantic_review_skipped()
+            else:
+                _, semantic_review = prepare_annotation_visual_review_dispatch(
+                    workspace,
+                    project,
+                    formals,
+                    context,
+                )
         except Exception as exc:
             all_passed = False
             failed_count += 1
             contact_error = _sanitize_error(exc)
+            semantic_review = {
+                "taskKind": "visualReview",
+                "scope": "annotation_preview_bundle",
+                "status": "blocked",
+                "preparedOnly": False,
+                "hostSpawnExecuted": False,
+                "spawnPackage": None,
+                "findingsAreAdvisory": True,
+                "approvalWritten": False,
+                "error": contact_error,
+            }
     return {
         "contractVersion": PREVIEW_BATCH_CONTRACT,
         "status": "PASS" if all_passed else "FAIL",
@@ -382,6 +658,8 @@ def generate_annotation_preview_batch(
         "contactSheetError": contact_error,
         "annotationBindingSha256": annotation_binding_sha256(formals),
         "annotationReviewIdentitySha256": annotation_review_identity,
+        "reviewPolicy": review_policy,
+        "semanticReview": semantic_review,
         "userConfirmationRequired": True,
         "previewConfirmationWritten": False,
         "approvalWritten": False,
@@ -394,6 +672,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--project", required=True)
     parser.add_argument("--all", action="store_true", dest="all_scenes")
     parser.add_argument("--config")
+    parser.add_argument(
+        "--review-policy",
+        choices=sorted(REVIEW_POLICIES),
+        default="user_first",
+        help="annotation preview 完成后直接交用户，或先准备一次 AI 语义预审",
+    )
     parser.add_argument("--allow-v1-disabled-compat", action="store_true")
     return parser
 
@@ -420,6 +704,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         summary = generate_annotation_preview_batch(
             workspace,
             project,
+            review_policy=args.review_policy,
             allow_v1_disabled_compat=args.allow_v1_disabled_compat,
         )
         exit_code = 0 if summary["status"] == "PASS" else 1
@@ -436,6 +721,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             "publishedCount": 0,
             "failedCount": 0,
             "partialSuccess": False,
+            "reviewPolicy": args.review_policy,
+            "semanticReview": {
+                "taskKind": "visualReview",
+                "scope": "annotation_preview_bundle",
+                "status": "not_started_technical_failure",
+                "preparedOnly": False,
+                "hostSpawnExecuted": False,
+                "spawnPackage": None,
+                "findingsAreAdvisory": True,
+                "approvalWritten": False,
+            },
             "userConfirmationRequired": True,
             "previewConfirmationWritten": False,
             "approvalWritten": False,
@@ -451,8 +747,10 @@ if __name__ == "__main__":
 __all__ = [
     "AnnotationPreviewBatchError",
     "PREVIEW_BATCH_CONTRACT",
+    "REVIEW_POLICIES",
     "annotation_binding_sha256",
     "build_annotation_preview_contact_sheet",
     "generate_annotation_preview_batch",
+    "prepare_annotation_visual_review_dispatch",
     "main",
 ]

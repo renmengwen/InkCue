@@ -5,12 +5,25 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import re
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 try:
     from .cover_review import CoverReviewError, load_cover_review
+    from .agent_task_contract import (
+        ROLE_CONTRACT_VERSION,
+        TASK_CONTRACT_VERSION,
+        AgentContractError,
+        TrustedTaskContext,
+        build_agent_batch_audit,
+        build_agent_prompt,
+        decide_agent_dispatch,
+        sha256_file as agent_sha256_file,
+        validate_agent_task,
+    )
     from .media_validation import MediaValidationError, bind_validated_video, validate_video
     from .project_workspace import (
         Project,
@@ -19,6 +32,7 @@ try:
         WorkspaceError,
         sha256_file,
         sha256_json,
+        write_json_atomic,
     )
     from .render_timing import (
         RENDER_MANIFEST_FILE,
@@ -29,6 +43,17 @@ try:
     )
 except ImportError:  # pragma: no cover - direct script execution
     from cover_review import CoverReviewError, load_cover_review
+    from agent_task_contract import (
+        ROLE_CONTRACT_VERSION,
+        TASK_CONTRACT_VERSION,
+        AgentContractError,
+        TrustedTaskContext,
+        build_agent_batch_audit,
+        build_agent_prompt,
+        decide_agent_dispatch,
+        sha256_file as agent_sha256_file,
+        validate_agent_task,
+    )
     from media_validation import MediaValidationError, bind_validated_video, validate_video
     from project_workspace import (
         Project,
@@ -37,6 +62,7 @@ except ImportError:  # pragma: no cover - direct script execution
         WorkspaceError,
         sha256_file,
         sha256_json,
+        write_json_atomic,
     )
     from render_timing import (
         RENDER_MANIFEST_FILE,
@@ -48,6 +74,15 @@ except ImportError:  # pragma: no cover - direct script execution
 
 
 SCENE_REVIEW_CONTRACT_VERSION = "whiteboard-scene-review-bundle-v1"
+SCENE_REVIEW_POLICIES = frozenset({"user_first", "agent_first"})
+HOST_SPAWN_PACKAGE_VERSION = "whiteboard-host-spawn-package-v1"
+SCENE_VISUAL_REVIEW_ROLE_CONTRACT = """# scene visualReview frozen role contract
+
+- 只读 task.json 列出的 current scene review bundle、timing/render bindings 与单幕视频。
+- 对每幕只抽取首帧、中段、完成帧等少量关键帧，检查落墨顺序、完成状态和跨幕一致性。
+- 只写 findings.json/result.json；findings 仅为辅助信息，不得批准 scene review、修改 manifest 或合并视频。
+- 必须按冻结 bundle 的 sceneOrder 报告；不得重复抽取或审阅每幕之外的媒体。
+"""
 
 
 class SceneReviewStaleError(ValueError):
@@ -120,9 +155,12 @@ def build_scene_review_bundle(
     *,
     force_deep: bool = False,
     include_bound_media: bool = False,
+    review_policy: str = "user_first",
 ) -> dict[str, Any]:
     """重算全部正式 scene 的 current bundle；不读取或写入人工批准。"""
 
+    if review_policy not in SCENE_REVIEW_POLICIES:
+        raise SceneReviewStaleError("review_policy 必须是 user_first 或 agent_first")
     _, manifest = load_render_manifest(project)
     try:
         cover_review = load_cover_review(project)
@@ -261,8 +299,132 @@ def build_scene_review_bundle(
     return result
 
 
-def inspect_scene_review(project: Project) -> dict[str, Any]:
-    bundle = build_scene_review_bundle(project)
+def _scene_review_spawn_package(
+    *, workspace: Any, project: Project, bundle: Mapping[str, Any]
+) -> dict[str, Any]:
+    """冻结 current scene bundle 并准备一次宿主 visualReview spawn package。"""
+
+    run_id = f"scene-vr-{uuid.uuid4().hex[:12]}"
+    project.create_run_dir(run_id)
+    context = TrustedTaskContext(
+        workspace_root=workspace.config.root,
+        scope_root=project.root,
+        scope_kind="project",
+        run_id=run_id,
+        task_id="vr-scenes",
+        attempt=1,
+    )
+    context.task_dir.mkdir(parents=True, exist_ok=False)
+    role_contract = context.task_dir / "role-contract.md"
+    role_contract.write_text(SCENE_VISUAL_REVIEW_ROLE_CONTRACT, encoding="utf-8", newline="\n")
+    bundle_path = context.task_dir / "scene-review-bundle.json"
+    write_payload = copy.deepcopy(dict(bundle))
+    write_payload.pop("validatedSceneMedia", None)
+    write_json_atomic(bundle_path, write_payload)
+    manifest_path = project.path(RENDER_MANIFEST_FILE)
+    input_paths = [role_contract, bundle_path, project.plan_path]
+    if project.timing_plan_persisted:
+        input_paths.append(project.timing_plan_path)
+    input_paths.append(manifest_path)
+    input_paths.extend(project.path(item["outputFile"]) for item in bundle["scenes"])
+    inputs = [
+        {"file": context.relative_posix(path), "sha256": agent_sha256_file(path)}
+        for path in input_paths
+    ]
+    findings = context.task_dir / "findings.json"
+    timing_sha = bundle["timingPlan"].get("sha256")
+    current_bindings = {
+        "generationPlanSha256": bundle["generationPlanSha256"],
+        "timingPlanSha256": timing_sha,
+        "renderProfileSha256": bundle["renderProfileSha256"],
+    }
+    task_data = {
+        "contractVersion": TASK_CONTRACT_VERSION,
+        "taskId": context.task_id,
+        "taskKind": "visualReview",
+        "scopeKind": "project",
+        "roleContractVersion": ROLE_CONTRACT_VERSION,
+        "roleContractSha256": agent_sha256_file(role_contract),
+        "attempt": 1,
+        "sequence": 1,
+        "inputs": inputs,
+        "currentBindings": current_bindings,
+        "requiredCapabilities": ["readFiles", "viewImage", "writeCandidateJson"],
+        "allowedOutputs": [context.relative_posix(findings), context.relative_posix(context.result_json)],
+        "formalWritesAllowed": False,
+        "approvalWritesAllowed": False,
+    }
+    write_json_atomic(context.task_json, task_data)
+    task = validate_agent_task(context.task_json, context, expected_current_bindings=current_bindings)
+    decision = decide_agent_dispatch(
+        task,
+        configured=workspace.config.for_role("visualReview"),
+        ready_tasks=1,
+        runtime_child_slots=1,
+        resource_budget=1,
+        runtime_role_capabilities=("readFiles", "viewImage", "writeCandidateJson"),
+        coordinator_capabilities={"readFiles", "writeCandidateJson"},
+    )
+    audit = build_agent_batch_audit(
+        stage="visualReview",
+        configured=workspace.config.for_role("visualReview"),
+        task_count=1,
+        decision=decision,
+    )
+    role_path = role_contract.resolve()
+    task_path = context.task_json.resolve()
+    package = None
+    if decision.dispatch_allowed:
+        suffix = re.sub(r"[^a-z0-9_]", "_", run_id.lower())
+        package = {
+            "contractVersion": HOST_SPAWN_PACKAGE_VERSION,
+            "preparedOnly": True,
+            "hostSpawnRequired": True,
+            "hostSpawnExecuted": False,
+            "taskId": task.data["taskId"],
+            "taskKind": task.data["taskKind"],
+            "taskJsonPath": str(task_path),
+            "taskSha256": task.task_sha256,
+            "roleContractPath": str(role_path),
+            "roleContractSha256": task.data["roleContractSha256"],
+            "allowedAttemptDir": str(context.task_dir.resolve()),
+            "resultJsonPath": str(context.result_json.resolve()),
+            "requiredCapabilities": list(task.data["requiredCapabilities"]),
+            "spawnAgentCall": {
+                "task_name": f"visual_review_{suffix}"[:64].rstrip("_"),
+                "fork_turns": "none",
+                "message": build_agent_prompt(
+                    task_json=task_path,
+                    role_contract=role_path,
+                    task_kind="visualReview",
+                    task_sha256=task.task_sha256,
+                    role_contract_sha256=str(task.data["roleContractSha256"]),
+                ),
+            },
+            "completionContract": {
+                "resultJsonPath": str(context.result_json.resolve()),
+                "returnFields": ["TASK_STATUS", "RESULT_JSON", "VALIDATOR_STATUS", "SUMMARY"],
+            },
+        }
+    audit.update(
+        {
+            "status": "ready_for_host_spawn" if package else audit["mode"],
+            "preparedOnly": True,
+            "hostSpawnExecuted": False,
+            "spawnPackage": package,
+            "sceneReviewIdentityHash": bundle["identityHash"],
+        }
+    )
+    return audit
+
+
+def inspect_scene_review(
+    project: Project,
+    *,
+    review_policy: str = "user_first",
+    workspace: Any | None = None,
+) -> dict[str, Any]:
+    bundle = build_scene_review_bundle(project, review_policy=review_policy)
     _, manifest = load_render_manifest(project)
     approval = manifest.get("sceneReviewApproval")
     approved = bool(
@@ -271,6 +433,20 @@ def inspect_scene_review(project: Project) -> dict[str, Any]:
         and approval.get("identityHash") == bundle["identityHash"]
         and approval.get("contractVersion") == SCENE_REVIEW_CONTRACT_VERSION
     )
+    if review_policy == "user_first":
+        semantic_review: dict[str, Any] = {
+            "status": "skipped_by_user",
+            "findings": None,
+            "spawnPackage": None,
+        }
+    else:
+        if workspace is None:
+            raise SceneReviewStaleError("agent_first 需要可信 workspace 上下文")
+        semantic_review = _scene_review_spawn_package(
+            workspace=workspace,
+            project=project,
+            bundle=bundle,
+        )
     return {
         "ok": True,
         "projectId": project.project_id,
@@ -281,6 +457,8 @@ def inspect_scene_review(project: Project) -> dict[str, Any]:
         "bundle": bundle,
         "approvalWritten": False,
         "userConfirmationRequired": not approved,
+        "reviewPolicy": review_policy,
+        "semanticReview": semantic_review,
     }
 
 
@@ -315,6 +493,12 @@ def assert_current_scene_review_approval(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="检查正式场景批量 review bundle current identity")
     parser.add_argument("--project", required=True, help="项目根目录")
+    parser.add_argument(
+        "--review-policy",
+        choices=sorted(SCENE_REVIEW_POLICIES),
+        default="user_first",
+        help="全部 current 单幕 bundle 完成后的视觉预审策略",
+    )
     return parser
 
 
@@ -323,14 +507,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         workspace = ProjectWorkspace.from_config()
         project = workspace.load_project(args.project)
-        result = inspect_scene_review(project)
+        result = inspect_scene_review(
+            project,
+            review_policy=args.review_policy,
+            workspace=workspace,
+        )
     except (WorkspaceError, ProjectValidationError) as exc:
         print(f"ERROR={exc}", file=sys.stderr)
         return 2
     except SceneReviewStaleError as exc:
         print(f"ERROR={exc}", file=sys.stderr)
         return 5
-    except (MediaValidationError, OSError, RuntimeError, KeyError, TypeError) as exc:
+    except (AgentContractError, MediaValidationError, OSError, RuntimeError, KeyError, TypeError) as exc:
         print(f"ERROR={exc}", file=sys.stderr)
         return 4
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))

@@ -274,6 +274,82 @@ class AnnotationPreviewBatchTests(AnnotationBatchFixture):
         self.assertFalse((project.root / annotation_review.APPROVAL_FILE).exists())
         self.assertNotIn(str(project.root), serialized)
 
+    def test_user_first_skips_only_semantic_review_and_keeps_human_gate(self) -> None:
+        project = self.make_current_project(2)
+        summary = previews.generate_annotation_preview_batch(
+            self.workspace_for_preview(2),
+            project,
+            review_policy="user_first",
+        )
+        self.assertEqual(summary["status"], "PASS")
+        self.assertEqual(summary["reviewPolicy"], "user_first")
+        self.assertEqual(
+            summary["semanticReview"]["status"], "skipped_by_user"
+        )
+        self.assertFalse(summary["semanticReview"]["preparedOnly"])
+        self.assertIsNone(summary["semanticReview"]["spawnPackage"])
+        self.assertTrue(summary["userConfirmationRequired"])
+        self.assertEqual(summary["nextHumanGate"], "annotation_review_confirmation")
+        self.assertTrue(
+            (project.root / annotation_review.TECHNICAL_MANIFEST_FILE).is_file()
+        )
+        self.assertFalse((project.root / annotation_review.APPROVAL_FILE).exists())
+
+    def test_agent_first_freezes_full_preview_bundle_without_changing_review_identity(self) -> None:
+        project = self.make_current_project(2)
+        direct = previews.generate_annotation_preview_batch(
+            self.workspace_for_preview(2),
+            project,
+            review_policy="user_first",
+        )
+        reviewed = previews.generate_annotation_preview_batch(
+            self.workspace_for_preview(2),
+            project_workspace.load_project(project.root),
+            review_policy="agent_first",
+        )
+        self.assertEqual(reviewed["status"], "PASS")
+        self.assertEqual(reviewed["reviewPolicy"], "agent_first")
+        self.assertEqual(
+            reviewed["annotationReviewIdentitySha256"],
+            direct["annotationReviewIdentitySha256"],
+        )
+        semantic = reviewed["semanticReview"]
+        self.assertEqual(semantic["stage"], "visualReview")
+        self.assertEqual(semantic["taskKind"], "visualReview")
+        self.assertEqual(semantic["scope"], "annotation_preview_bundle")
+        self.assertEqual(semantic["status"], "ready_for_host_spawn")
+        self.assertTrue(semantic["preparedOnly"])
+        self.assertFalse(semantic["hostSpawnExecuted"])
+        self.assertTrue(semantic["findingsAreAdvisory"])
+        self.assertFalse(semantic["approvalWritten"])
+
+        package = semantic["spawnPackage"]
+        self.assertEqual(
+            package["contractVersion"], "whiteboard-host-spawn-package-v1"
+        )
+        self.assertEqual(package["taskKind"], "visualReview")
+        task_path = Path(package["taskJsonPath"])
+        self.assertTrue(task_path.is_absolute())
+        task = json.loads(task_path.read_text(encoding="utf-8"))
+        input_files = [item["file"] for item in task["inputs"]]
+        self.assertIn("manifests/annotation-review-manifest.json", input_files)
+        self.assertIn("scenes/scene-01.annotation.json", input_files)
+        self.assertIn("scenes/scene-02.annotation.json", input_files)
+        self.assertIn("previews/scene-01-annotation-preview.png", input_files)
+        self.assertIn("previews/scene-02-annotation-preview.png", input_files)
+        self.assertIn(
+            "previews/annotation-preview-contact-sheet.png", input_files
+        )
+        self.assertNotIn("reviewPolicy", task)
+        self.assertNotIn("agent_first", json.dumps(task, ensure_ascii=False))
+        self.assertFalse((project.root / annotation_review.APPROVAL_FILE).exists())
+
+    def test_cli_exposes_annotation_review_policy(self) -> None:
+        help_text = previews._parser().format_help()
+        self.assertIn("--review-policy", help_text)
+        self.assertIn("agent_first", help_text)
+        self.assertIn("user_first", help_text)
+
     def test_preview_generation_needs_only_full_technical_current_gate(self) -> None:
         project = self.make_current_project(2)
         summary = previews.generate_annotation_preview_batch(

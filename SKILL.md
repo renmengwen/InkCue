@@ -189,6 +189,8 @@ Edge TTS 不需要 API Key，但依赖外网和微软语音服务，不是离线
 7. `approve-full` 只传 current `--identity-hash`。阈值内不传 `--duration-decision`，manifest 记录 `within_threshold`；偏差超过 10% 时还必须显式传 `accept_actual`，或修改 voice/rate/文本后重做。
 8. 批准成功后原子更新 timing plan，使 audio timeline 成为权威时钟；generation plan 不变。
 
+配音批准完成、进入阶段 5 前，coordinator 必须向用户展示并等待一次本次运行的生成后审阅选择：`user_first`（生图、annotation preview 与 scene bundle 完成后直接交付用户）或 `agent_first`（各阶段先准备一次对应的 AI 语义预审，再交付用户）。用户的选择必须分别传给阶段 5 的 `validate_generated_images.py`、阶段 6 的 `generate_annotation_previews.py` 和阶段 7 的 `scene_review.py`；若用户未另行指定，本次运行默认使用 `user_first`。该选择不改变技术验证、人工批准或任何作品 identity。
+
 中断后可用 `--retry-failed` 只处理失败或未完成 unit。current、validated 且 synthesis identity 不变的段不得重复请求或覆盖。
 
 ### 阶段 5：生成并确认统一线稿
@@ -199,8 +201,8 @@ Edge TTS 不需要 API Key，但依赖外网和微软语音服务，不是离线
    - 正式渲染、standalone 诊断和 `assets/preview.html` 默认都必须使用同一份 `assets/drawing-hand.png`。除非用户明确要求更换版权素材，不得静默切换到其他手部图片。
    - 每幕构图必须遵守视觉拓扑首版合同：一个核心命题可以包含 2–3 个可独立揭示的区域；区域间保留真实纸面留白，不允许跨区贯穿性连续结构。只有不可分割的连续整体才合并，不得为了增加步骤强拆，也不得因为担心局部空间接近而把所有内容合并。
 3. 部分失败时保留成功幕，只重试外部结果明确 failed 的幕；`unknown_external_outcome` 不自动重试，也不自动切换供应商。
-4. 运行 `validate_generated_images.py`：先串行冻结 project/plan/manifest，再按 `imageValidation` 对独立 PNG 有界并发且每图只完整解码一次；之后用本地图片查看能力实际检查每一幕。
-5. 可准备一个覆盖全部 current scene 的 global `visualReview` task 检查人物、配色、纸张和构图一致性。宿主条件满足时由具备真实图片查看能力的新鲜 child 读取冻结文件并写 attempt findings，否则由具备相同能力的 coordinator fallback。findings 只作辅助证据，不能批准线稿、修改图片或触发自动重生成。
+4. 运行 `validate_generated_images.py --review-policy user_first|agent_first`：先串行冻结 project/plan/manifest，再按 `imageValidation` 对独立 PNG 有界并发且每图只完整解码一次。`user_first` 在技术 PASS 后记录 `semanticReview.status=skipped_by_user` 并直接交用户查看；`agent_first` 额外准备覆盖全部 current scene 的 global `visualReview` 宿主 spawn package，检查人物、配色、纸张和构图一致性。
+5. `agent_first` 只 prepare，不自动创建 child；coordinator 必须按 spawn package 完成真实宿主派发。findings 只作辅助证据，不能批准线稿、修改图片或触发自动重生成。两种策略都保留技术验证和线稿人工批准，审阅策略不进入图片内容 identity。
 6. 生图成功后可显式运行 `generate_images.py --cover`，生成由整条视频主题、核心观点/结论、旁白 cues 与全部 scene 语义共同驱动的独立 `previews/social-cover.png`，并写入 `manifests/cover-manifest.json`。封面允许本地确定性排版文字，但不属于普通 scene，不改变 `constraints.forbidText=true` 或场景图片 identity。
 7. **停止，等待用户明确确认线稿。** 技术 `validated` 和 visualReview findings 都不能代替人工判断。
 
@@ -213,7 +215,7 @@ Edge TTS 不需要 API Key，但依赖外网和微软语音服务，不是离线
 3. 批量 validator 先复核 task/result/SHA/current binding，再校验每幕图片、candidate annotation、frame range、timing source、整数像素 region、`protectedRegions` 与局部 reveal 时序。`sequence` 必须连续，元素串行，最后元素结束时间不晚于 `sceneDurationMs - 500`。
 4. annotation 绑定 current timing plan、render profile；Edge 还必须绑定 current audio/timeline SHA 和全局 scene 范围。元素 `startMs/durationMs` 始终是从本幕 0 开始的局部时间。
 5. coordinator 按 generation plan 顺序把通过 validator 的 candidate 单文件原子发布到扁平 `scenes/` 的同名 `.annotation.json`；失败 candidate 不覆盖旧 current。部分发布时 batch 仍为 `FAIL` 且 `partialSuccess:true`，不得启动全量区域预览或写任何批准。
-6. 只有全部必需 scene 都是 current 且 validator PASS，才运行 `serve_preview.py --ensure --project <项目根目录>`，确认服务与项目 API、ready scene 全量通过；随后无需先停顿，直接运行 `generate_annotation_previews.py --project <项目根目录> --all`。该命令先通过全 plan technical current Gate，再用一个 `FormalValidationContext`、JSON `annotationPreview` 有界并发、候选完整 PNG 重开验证和 generation plan 顺序原子发布生成各幕编号/方向预览及有序 contact sheet；成功路径调用 `annotation_review.py` 生成/验证 `manifests/annotation-review-manifest.json`，并在摘要输出 `annotationReviewIdentitySha256`。
+6. 只有全部必需 scene 都是 current 且 validator PASS，才运行 `serve_preview.py --ensure --project <项目根目录>`，确认服务与项目 API、ready scene 全量通过；随后无需先停顿，直接运行 `generate_annotation_previews.py --project <项目根目录> --all --review-policy user_first|agent_first`。该命令先通过全 plan technical current Gate，再用一个 `FormalValidationContext`、JSON `annotationPreview` 有界并发、候选完整 PNG 重开验证和 generation plan 顺序原子发布生成各幕编号/方向预览及有序 contact sheet；成功路径调用 `annotation_review.py` 生成/验证 `manifests/annotation-review-manifest.json`，并在摘要输出 `annotationReviewIdentitySha256`。`user_first` 在 preview 后跳过额外 AI 复查并记录 `skipped_by_user`；`agent_first` 只准备 annotation preview bundle 的一次额外 visualReview 宿主 spawn package。annotationDrafting 生成标注时仍必须实际查看原图，不受该 post-review 策略影响。
 7. 完整展示标注摘要、命令输出的可点击 `PREVIEW_URL`、contact sheet、必要的全分辨率预览、`protectedRegions`、叙事顺序与 reveal 时序，说明链接打开后无需手动导入。**只在这里停止一次，等待用户对 current 联合 review bundle 明确确认。** 技术 current、result completed、validator PASS、URL 已打开、页面已保存或用户未反对都不能替代人工批准。
 8. 收到确认后，以 current `annotationReviewIdentitySha256` 执行 `approve_annotation_review.py`，把持久化批准写入 `manifests/annotation-review-approval.json`，绑定有序 annotation/preview bundle、timing/render 与 Edge 按需 evidence。未获批准或 identity stale 时 `annotation_review_confirmation` 及正式渲染必须以退出码 5 拒绝。
 9. 用户要求修改时直接编辑并重验受影响 JSON，只重新生成受影响 scene 的 preview；未变化且 binding current 的 preview 保留。任何受绑定字节变化都会使旧 annotation review approval stale，重建 current bundle 后重新执行一次联合确认。仅当用户明确要求时才打开预览台拖拽。
@@ -224,10 +226,10 @@ Edge TTS 不需要 API Key，但依赖外网和微软语音服务，不是离线
 2. 不得用 `--fps`、`--total-ms` 或尺寸参数覆盖正式项目合同；这些参数仅属 standalone/预览路径。
 3. 渲染器把每帧 BGR24 直接写入 FFmpeg stdin，由 libx264 `medium`/CRF18 一次编码为 H.264/yuv420p candidate；禁止 `cv2.VideoWriter`、MP4V 中间文件和二次转码。stderr 必须并发 drain，错误 tail 必须去敏；早退、BrokenPipe、非零退出、磁盘/管道错误、关闭异常、欠写或超写帧数全部 fail closed，不能覆盖旧正式 scene。
 4. candidate 验证 H.264、1920×1080、60fps、yuv420p、0 音频流、权威目标帧数并完整解码一次；原子发布后只以该 deep receipt 复核 SHA/bytes binding，不重复 full decode。binding 失败时恢复旧正式 scene，不能写成功 identity/manifest。
-5. 抽查首帧、重叠模块中段和最终完整画面。
+5. 逐幕始终完成技术验证；额外视觉语义抽查推迟到全部 current 单幕形成 bundle 后统一选择，不在每幕发布时重复执行。
 6. 正式 `render-manifest.json` 必须记录并绑定 current `handSha256`。使用内置 `drawing-hand.png` 时，马克笔杆上的 `@moveR` 应按合法版权标识判定为通过，不得作为拒绝该幕或触发无字重渲染的理由。
 7. coordinator 一次调用正式 batch render，按共享 loader 返回的 `sceneRender` 有界并行渲染、技术验证独立单幕 candidate；coordinator 按 generation plan 顺序复核 binding、原子发布并单写 manifest，不在每一幕完成后停止等待用户。摘要记录 configured/effective/peak worker 与 task count；这些并发字段不进入作品 identity。局部重做使用同一入口的 `--scene-ids`。
-8. 全部必需 scene current 后运行 `scene_review.py --project <项目根目录>`，按 generation plan 顺序形成 bundle 并取得 `sceneReviewIdentityHash`；交付有序场景列表与可完整播放的 current 单幕媒体。**只在这里停止一次，等待用户确认全部场景，或明确指出不通过的 scene ID。** 技术 PASS 不得写成人工批准。
+8. 全部必需 scene current 后运行 `scene_review.py --project <项目根目录> --review-policy user_first|agent_first`，按 generation plan 顺序形成一次全量 bundle 并取得 `sceneReviewIdentityHash`。`user_first` 记录 `skipped_by_user` 并直接交付有序 current 单幕媒体；`agent_first` 只准备一次 bundle 级 visualReview 宿主 spawn package，每幕仅抽首帧、中段、完成帧等少量关键帧，不逐幕重复 review。**只在这里停止一次，等待用户确认全部场景，或明确指出不通过的 scene ID。** 技术 PASS 和 Agent findings 都不得写成人工批准。
 9. 用户拒绝部分 scene 时只重做受影响 scene，并重建 bundle；未变化且 render identity current 的 scene 保留。全部 scene 获确认后，以 current `sceneReviewIdentityHash` 执行 `approve_scene_review.py`，把 `sceneReviewApproval` 写入 `manifests/render-manifest.json` 顶层。未获批准、bundle identity stale、scene 集合或输入顺序不匹配时，`merge_scenes.py` 必须在写 concat/candidate 前以退出码 5 拒绝。
 
 ### 阶段 8：静音画面母版技术合并
@@ -420,15 +422,16 @@ python scripts/prepare_env.py
 
 ```powershell
 <ENV_PY> scripts/generate_images.py --project <项目根目录>
-<ENV_PY> scripts/validate_generated_images.py --project <项目根目录>
+<ENV_PY> scripts/validate_generated_images.py --project <项目根目录> `
+  --review-policy user_first
 
 # 技术验证通过后冻结 global visualReview task，并输出可直接交给宿主的 spawn package；
 # 此命令只 prepare，不创建 child，也不批准线稿：
 <ENV_PY> scripts/validate_generated_images.py --project <项目根目录> `
-  --prepare-visual-review
+  --review-policy agent_first
 ```
 
-`visualReview.spawnPackage.spawnAgentCall` 非空时立即调用宿主真实 `spawn_agent`；`preparedOnly:true`、`hostSpawnExecuted:false` 与 `peakChildAgents:0` 表示尚未派发，不能继续阅读 Python 源码代替宿主调用，也不能把 prepare 写成 dispatch PASS。spawn call 为空时由具备真实图片查看能力的 coordinator fallback；两条路径都不得写线稿批准。
+`user_first` 固定保留技术验证并输出 `semanticReview.status=skipped_by_user`；`agent_first` 返回的 `visualReview.spawnPackage.spawnAgentCall` 非空时立即调用宿主真实 `spawn_agent`。`preparedOnly:true`、`hostSpawnExecuted:false` 与 `peakChildAgents:0` 表示尚未派发，不能继续阅读 Python 源码代替宿主调用，也不能把 prepare 写成 dispatch PASS。旧 `--prepare-visual-review` 仍作为 `agent_first` 兼容入口；两条策略都不得写线稿批准。
 
 Edge 样音、完整旁白、状态与技术验证：
 
@@ -488,7 +491,12 @@ Edge 样音、完整旁白、状态与技术验证：
 
 # 全量 annotation 技术 current 后即可生成本地区域预览，无需先人工确认；
 # 成功摘要直接给出 annotationReviewIdentitySha256：
-<ENV_PY> scripts/generate_annotation_previews.py --project <项目根目录> --all
+<ENV_PY> scripts/generate_annotation_previews.py --project <项目根目录> --all `
+  --review-policy user_first
+
+# 如需先做一次 annotation preview bundle AI 预审，只 prepare 宿主 spawn package：
+<ENV_PY> scripts/generate_annotation_previews.py --project <项目根目录> --all `
+  --review-policy agent_first
 
 # 仅在用户一次确认 current 标注、区域预览、protectedRegions 与 reveal 时序后：
 <ENV_PY> scripts/approve_annotation_review.py --project <项目根目录> `
@@ -510,7 +518,12 @@ Edge 样音、完整旁白、状态与技术验证：
   --scene-id scene-01 --ink-path grid --color-fill contour-wipe
 
 # 全部单幕渲染/检查并按 plan 发布完成后，形成有序 bundle 并取得 sceneReviewIdentityHash：
-<ENV_PY> scripts/scene_review.py --project <项目根目录>
+<ENV_PY> scripts/scene_review.py --project <项目根目录> `
+  --review-policy user_first
+
+# 如需先做一次全量 bundle AI 预审（每幕只取少量关键帧），只 prepare 宿主 spawn package：
+<ENV_PY> scripts/scene_review.py --project <项目根目录> `
+  --review-policy agent_first
 
 # 仅在用户联合确认 current bundle 后：
 <ENV_PY> scripts/approve_scene_review.py --project <项目根目录> `

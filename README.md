@@ -149,21 +149,29 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 
 # 图片
 & $envPy scripts\generate_images.py --project <项目根目录>
-& $envPy scripts\validate_generated_images.py --project <项目根目录>
+& $envPy scripts\validate_generated_images.py --project <项目根目录> `
+  --review-policy user_first
+# 改为 agent_first 时，技术验证后只准备 global visualReview 宿主 spawn package
 
 # 标注预览
 & $envPy scripts\serve_preview.py --ensure --project <项目根目录>
-& $envPy scripts\generate_annotation_previews.py --project <项目根目录> --all
+& $envPy scripts\generate_annotation_previews.py --project <项目根目录> --all `
+  --review-policy user_first
+# agent_first 只在 preview bundle 完成后增加一次预审；annotationDrafting 仍须查看原图
 
 # 场景渲染与联合审阅
 & $envPy scripts\render_stream_whiteboard.py --project <项目根目录> --all
-& $envPy scripts\scene_review.py --project <项目根目录>
+& $envPy scripts\scene_review.py --project <项目根目录> `
+  --review-policy user_first
+# agent_first 只准备一次全量 bundle 预审，每幕仅抽少量关键帧
 
 # 合并、字幕与验证
 & $envPy scripts\merge_scenes.py --project <项目根目录> --inputs <场景视频...>
 & $envPy scripts\burn_subtitles.py --project <项目根目录>
 & $envPy scripts\validate_final_media.py --project <项目根目录>
 ```
+
+上述三个阶段都支持 `--review-policy user_first|agent_first`。`user_first` 在必要技术校验后记录 `semanticReview.status=skipped_by_user` 并直接交给用户；`agent_first` 只准备宿主可消费的 spawn package，不创建 child，也不自动批准。两种策略都保留对应人工确认关卡。
 
 Edge TTS 的样音、完整旁白和真实时长流程见 [语音合同](references/voiceover.md)。人工批准、annotation candidate 和恢复流程的完整命令见 [SKILL.md](SKILL.md)。
 

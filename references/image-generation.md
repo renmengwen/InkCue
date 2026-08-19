@@ -197,7 +197,8 @@ coordinator 先冻结 `attemptId`、image input identity、candidate/receipt/for
 每次进入第 3 步标注前都必须重新执行：
 
 ```powershell
-<ENV_PY> scripts/validate_generated_images.py --project <项目根目录>
+<ENV_PY> scripts/validate_generated_images.py --project <项目根目录> `
+  --review-policy user_first
 ```
 
 验证器先串行冻结 project/plan/manifest 全局合同，再按 `imageValidation` 对独立 PNG 有界并发。每张 PNG 只在同一个 `Image.open()` 周期执行一次完整 `load()`，并在该周期检查 format/mode/1920×1080 与截断、CRC/解码损坏；随后核对文件 SHA，禁止 `verify()` 后重新打开造成双重解码。
@@ -213,20 +214,25 @@ coordinator 先冻结 `attemptId`、image input identity、candidate/receipt/for
 
 脚本向标准输出写单个 JSON 摘要。`validated` 只表示文件技术上完整且与计划一致，不能代替第 2 步结束后的用户明确确认。只有技术验证通过且用户确认画面语义和视觉质量后，才可开始标注。
 
-### Global visualReview 初检
+### 可选 Global visualReview 初检
 
-技术验证通过后，coordinator 可显式准备 global review：
+技术验证始终执行；图片完成后必须显式选择直接交用户，或先准备 global review：
 
 ```powershell
 <ENV_PY> scripts/validate_generated_images.py --project <项目根目录> `
-  --prepare-visual-review
+  --review-policy user_first
+
+<ENV_PY> scripts/validate_generated_images.py --project <项目根目录> `
+  --review-policy agent_first
 ```
 
-入口只通过现有 `whiteboard-agent-task-v1` 合同创建并重验 `visualReview` task：task 冻结 generation plan、generation manifest、全部 current PNG/SHA、role contract 与 current bindings；只允许写 attempt 内 `findings.json/result.json`，`formalWritesAllowed=false`、`approvalWritesAllowed=false`。
+`user_first` 不创建或派发 visualReview，在机器摘要记录 `reviewPolicy=user_first`、`semanticReview.status=skipped_by_user`、`approvalWritten=false` 和 `userConfirmationRequired=true`，随后直接交用户逐图查看。`agent_first` 通过现有 `whiteboard-agent-task-v1` 合同创建并重验 `visualReview` task：task 冻结 generation plan、generation manifest、全部 current PNG/SHA、role contract 与 current bindings；只允许写 attempt 内 `findings.json/result.json`，`formalWritesAllowed=false`、`approvalWritesAllowed=false`。旧 `--prepare-visual-review` 保留为 `agent_first` 兼容入口。
 
 命令返回 `visualReview.spawnPackage`，其中 `spawnAgentCall` 已包含宿主真实 `spawn_agent` 所需的短 task name、`fork_turns:none` 和最小冻结 prompt。`preparedOnly:true`、`hostSpawnExecuted:false`、`peakChildAgents:0` 明确表示 Python 只准备了 attempt，没有创建 child、没有伪造 agentId。coordinator 收到该包后应立即调用宿主协作工具，不得再阅读 Python 源码重新研究派发方式；真实 agent/task 标识只能在宿主派发后补入审计。child 或 fallback coordinator 都必须实际具备 `viewImage`，否则报告 `BLOCKED`。
 
 visualReview findings 只用于提示跨幕人物、配色、纸张、构图漂移和建议重点重生成的 scene；它不修改图片、不调用 provider、不写 generation manifest、不重试生图，也绝不写线稿批准。即使 result 为 completed，仍须等待用户逐图明确确认。
+
+同一策略也用于后续两个视觉 bundle，但不改变各阶段的生成职责：`generate_annotation_previews.py --all --review-policy user_first|agent_first` 只控制 preview 生成后的额外 AI 复查，`annotationDrafting` 仍必须查看原图；`scene_review.py --review-policy user_first|agent_first` 在全部 current 单幕形成一次有序 bundle 后决定是否准备预审，`agent_first` 每幕只抽首帧、中段和完成帧等少量关键帧。两者的 `agent_first` 同样只准备宿主 spawn package，不自动批准；技术验证和人工批准始终保留。
 
 ## 机器摘要与退出码
 
@@ -241,7 +247,7 @@ visualReview findings 只用于提示跨幕人物、配色、纸张、构图漂�
 
 ## 成片链路中的技术合并
 
-全部正式单幕仍按 generation plan 串行渲染和逐幕技术/视觉检查，但不在每幕之间等待用户。全部 current scene 由 `scene_review.py` 形成有序 review bundle 并输出 `sceneReviewIdentityHash`；用户一次明确确认后，`approve_scene_review.py` 把批准持久化为 `manifests/render-manifest.json.sceneReviewApproval`。bundle 绑定 generation plan SHA、sceneOrder、timing plan file/SHA/activeTimeline、render profile SHA，以及逐幕 render identity、MP4 SHA/bytes/frameRange；`merge_scenes.py` 必须在创建 concat 列表或候选前硬校验该批准，缺失、stale、scene 集合或输入顺序不符时返回 5。输入、输出必须属于同一项目；FFmpeg concat 列表只写入该项目本次 `.work/merge-<运行 ID>` 目录。clean master 是字幕烧录所需的内部技术工件，不是独立人工关卡。
+全部正式单幕按 generation plan 有界并行渲染、逐幕技术验证并按 plan 顺序发布，但不在每幕之间等待用户，也不逐幕重复 AI 视觉复查。全部 current scene 由 `scene_review.py --review-policy user_first|agent_first` 形成一次有序 review bundle 并输出 `sceneReviewIdentityHash`；`agent_first` 只准备一次少量关键帧预审的宿主 spawn package。用户一次明确确认后，`approve_scene_review.py` 把批准持久化为 `manifests/render-manifest.json.sceneReviewApproval`。bundle 绑定 generation plan SHA、sceneOrder、timing plan file/SHA/activeTimeline、render profile SHA，以及逐幕 render identity、MP4 SHA/bytes/frameRange；`merge_scenes.py` 必须在创建 concat 列表或候选前硬校验该批准，缺失、stale、scene 集合或输入顺序不符时返回 5。输入、输出必须属于同一项目；FFmpeg concat 列表只写入该项目本次 `.work/merge-<运行 ID>` 目录。clean master 是字幕烧录所需的内部技术工件，不是独立人工关卡。
 
 ```powershell
 <ENV_PY> scripts/merge_scenes.py --project <项目根目录> `

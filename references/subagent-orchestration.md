@@ -25,7 +25,7 @@
 
 - `contentDrafting`：阶段 0 的 topic/text 内容草案；输出 attempt 内的 `candidate.content-draft.json`、`result.json` 和可选 `agent.log`。
 - `storyboardPlanning`：传统 SRT 分镜；输出 attempt 内的 `candidate.generation-plan.json`、`result.json` 和可选 `agent.log`。
-- `visualReview`：全局查看 current scene 图片的一致性；输出 attempt 内的 `findings.json`、`result.json` 和可选 `agent.log`。
+- `visualReview`：按冻结 scope 查看 current scene 图片、annotation preview bundle，或全部 current 单幕的少量关键帧；输出 attempt 内的 `findings.json`、`result.json` 和可选 `agent.log`。
 - `annotationDrafting`：每个 task 只处理一幕；输出 attempt 内的 `candidate.annotation.json`、`result.json` 和可选 `agent.log`。
 
 视觉 role 必须实际具备 `viewImage`；只读取文件名、尺寸、metadata 或 SHA 不算查看图片。
@@ -127,6 +127,14 @@ Phase 4 只能在线稿已获用户明确确认后开始。coordinator 先构建
 每个 ready scene 建立独立 `annotationDrafting` task。child 只负责 `elements` 视觉判断；sceneId、canvas、duration、frame range、timing/render/timeline binding 与 timingSource 由 coordinator 从 current evidence 确定性注入。
 
 候选可有界并行校验，但正式 annotation 必须按 generation plan 顺序逐幕原子发布。任一必需 scene 失败、缺失或 stale 时 batch 为 `FAIL`；已有发布则记录 `partialSuccess:true`，不得启动全量预览或写批准。全部 scene current 且 validator PASS 后，才启动项目预览与区域预览并进入聊天人工确认。
+
+## 8.1 生成后审阅策略
+
+生图消费验证、annotation preview bundle 和 scene review bundle 都接受 `--review-policy user_first|agent_first`。两种策略都必须先完成当前阶段的确定性技术验证，并保留对应人工批准；策略只决定用户关卡之前是否多一次 AI 语义预审，不进入作品内容 identity，也不得写批准。
+
+- `user_first`：不创建或派发额外 `visualReview`，机器摘要记录 `semanticReview.status=skipped_by_user`，直接把 current artifact 交给用户。
+- `agent_first`：只冻结 `visualReview` task 并准备宿主 `spawnPackage`；`preparedOnly:true` 和 `hostSpawnExecuted:false` 不能报告成真实派发或 review 完成。coordinator 必须调用宿主协作工具完成真实 spawn/wait，再把 advisory findings 与 artifact 一并交用户。
+- 生图复用覆盖全部 current PNG 的 global `visualReview`；annotation 只复查已生成的 preview bundle，不能跳过 `annotationDrafting` 对原图的实际查看；scene 只在全部 current 单幕形成一次有序 bundle 后预审，每幕仅抽首帧、中段和完成帧等少量关键帧，不逐幕重复 AI review。
 
 ## 9. 人工关卡
 
