@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from audio_normalization import AudioNormalizationError, validate_canonical_wav
+from cover_review import CoverReviewError, load_cover_review
 from generate_voiceover import ApprovalGateError, VoiceoverStateError, validate_current_voiceover
 from media_validation import MediaValidationError, validate_video
 from mux_voiceover import EDGE_MUX_CONTRACT_VERSION, validate_edge_mux_media
@@ -34,6 +35,7 @@ from subtitle_delivery import (
     select_authoritative_srt,
 )
 from voiceover import VoiceoverValidationError
+from cover_frame import COVER_FRAME_RANGE, COVER_RELATIVE_PATH, cover_record
 
 
 DELIVERY_MANIFEST_KEYS = {
@@ -46,7 +48,9 @@ DELIVERY_MANIFEST_KEYS = {
     "captionedVideo",
     "final",
     "finalApproval",
+    "cover",
 }
+DELIVERY_MANIFEST_OPTIONAL_KEYS = {"coverReview"}
 FINAL_TECHNICAL_VALIDATION_VERSION = "final-technical-validation-v1"
 
 
@@ -68,7 +72,9 @@ def _load_manifest(project: Project) -> tuple[Path, dict[str, Any]]:
         raise FinalMediaStaleError("缺少 delivery manifest") from exc
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise FinalMediaStaleError(f"delivery manifest 无法读取: {exc}") from exc
-    if not isinstance(manifest, dict) or set(manifest) != DELIVERY_MANIFEST_KEYS:
+    if not isinstance(manifest, dict) or not DELIVERY_MANIFEST_KEYS.issubset(manifest) or (
+        set(manifest) - DELIVERY_MANIFEST_KEYS - DELIVERY_MANIFEST_OPTIONAL_KEYS
+    ):
         raise FinalMediaStaleError("delivery manifest 顶层字段不符合冻结合同")
     if (
         manifest.get("schemaVersion") != 1
@@ -77,6 +83,29 @@ def _load_manifest(project: Project) -> tuple[Path, dict[str, Any]]:
     ):
         raise FinalMediaStaleError("delivery manifest 项目身份 stale")
     return path, manifest
+
+
+def _assert_cover_review(
+    project: Project,
+    manifest: Mapping[str, Any],
+    expected_frames: int,
+) -> dict[str, Any] | None:
+    """验证封面证据；只校验边界，不减少任何正式媒体 expected frame count。"""
+    try:
+        cover = load_cover_review(project)
+    except CoverReviewError as exc:
+        raise FinalMediaStaleError(f"cover review evidence stale: {exc}") from exc
+    if cover is None:
+        if manifest.get("coverReview") is not None:
+            raise FinalMediaStaleError("delivery manifest 声明了 coverReview，但 current 封面 manifest 缺失")
+        return None
+    frame_range = cover["frameRange"]
+    if frame_range["startFrame"] < 0 or frame_range["endFrameExclusive"] > expected_frames:
+        raise FinalMediaStaleError("coverFrameRange 超出 current final 总帧数")
+    stored = manifest.get("coverReview")
+    if stored is not None and stored != cover:
+        raise FinalMediaStaleError("delivery manifest.coverReview 与 current 封面证据不一致")
+    return cover
 
 
 def _timing_plan_sha(project: Project) -> str:
@@ -107,6 +136,24 @@ def _assert_current_timing(project: Project, record: Any) -> None:
     active_path = project.path(active["file"])
     if not active_path.is_file() or sha256_file(active_path) != active["sha256"]:
         raise FinalMediaStaleError("current active timeline 文件缺失或 SHA-256 不一致")
+
+
+def _assert_cover(project: Project, record: Any) -> None:
+    """Validate optional cover identity without weakening media checks."""
+    current = cover_record(project)
+    if current is None:
+        if record not in (None, {}):
+            raise FinalMediaStaleError("delivery cover 记录存在但封面文件已缺失")
+        return
+    stored = _require_mapping(record, "cover")
+    if stored.get("file") != COVER_RELATIVE_PATH:
+        raise FinalMediaStaleError("cover.file 路径无效")
+    if stored.get("sha256") != current["sha256"] or stored.get("bytes") != current["bytes"]:
+        raise FinalMediaStaleError("cover 文件 SHA-256 或大小与 current 不一致")
+    if stored.get("frameRange") != COVER_FRAME_RANGE:
+        raise FinalMediaStaleError("cover.frameRange 必须为首帧 [0,1)")
+    if stored.get("visualReviewExcluded") is not True:
+        raise FinalMediaStaleError("cover.visualReviewExcluded 必须为 true")
 
 
 def _assert_record_identity(
@@ -332,7 +379,9 @@ def inspect_project_final_media(
     project = load_project(project_root)
     manifest_path, manifest = _load_manifest(project)
     _assert_current_timing(project, manifest.get("timingPlan"))
+    _assert_cover(project, manifest.get("cover"))
     expected_frames = project.timing_plan["scenes"][-1]["endFrameExclusive"]
+    cover_review = _assert_cover_review(project, manifest, expected_frames)
 
     if isinstance(configured_concurrency, bool) or not isinstance(configured_concurrency, int) or not 1 <= configured_concurrency <= 16:
         raise FinalMediaStaleError("finalMediaValidation concurrency 必须位于 1–16")
@@ -455,6 +504,7 @@ def inspect_project_final_media(
         "finalMedia": final_media,
         "finalIdentitySha256": expected_identity,
         "frameCount": expected_frames,
+        "coverReview": cover_review,
         "outputs": {
             "cleanVideoSha256": clean_media["sha256"],
             "captionedVideoSha256": captioned_media["sha256"],
@@ -504,6 +554,9 @@ def validate_project_final_media(
     manifest["cleanVideo"] = clean_entry
     manifest["captionedVideo"] = captioned_entry
     manifest["final"] = final_entry
+    if inspection.get("coverReview") is not None:
+        # 仅记录视觉检查豁免证据；不会改变 final identity 或技术 expected frame count。
+        manifest["coverReview"] = dict(inspection["coverReview"])
     if manifest.get("finalApproval") != previous_approval:
         raise RuntimeError("技术验证不得修改 finalApproval")
     write_json_atomic(manifest_path, manifest)

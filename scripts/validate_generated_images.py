@@ -13,6 +13,8 @@ from typing import Any, Iterable, Mapping
 
 from PIL import Image, UnidentifiedImageError
 
+from cover_review import CoverReviewError, load_cover_review
+
 from agent_task_contract import (
     RESULT_CONTRACT_VERSION,
     ROLE_CONTRACT_VERSION,
@@ -45,6 +47,8 @@ VISUAL_REVIEW_ROLE_CONTRACT = """# visualReview frozen role contract
 - 必须真实查看全部图片并保持跨幕人物、配色、纸张和构图的全局视野。
 - 只写 findings.json/result.json；不得修改图片、调用 provider、写 manifest 或批准。
 - findings 必须按 generation plan scene 顺序；技术 validated 不能替代用户逐图确认。
+- 若 task.inputs 包含封面，封面是独立 review 图片，允许文字；不得把封面文字当作普通
+  scene 源图违规。封面对应的 `coverFrameRange` 仅豁免视觉语义规则，技术检查仍完整保留。
 """
 HOST_SPAWN_PACKAGE_VERSION = "whiteboard-host-spawn-package-v1"
 HOST_VISUAL_REVIEW_CAPABILITIES = (
@@ -220,6 +224,9 @@ def create_visual_review_task(
     role_contract.write_text(VISUAL_REVIEW_ROLE_CONTRACT, encoding="utf-8", newline="\n")
     input_paths = [role_contract, project.plan_path, manifest_path]
     input_paths.extend(project.scenes_dir / scene["outputFile"] for scene in project.plan["scenes"])
+    cover_review = load_cover_review(project)
+    if cover_review is not None:
+        input_paths.append(project.path(cover_review["file"]))
     inputs = [
         {"file": context.relative_posix(path), "sha256": agent_sha256_file(path)}
         for path in input_paths
@@ -229,6 +236,8 @@ def create_visual_review_task(
         "generationPlanSha256": agent_sha256_file(project.plan_path),
         "imageManifestSha256": agent_sha256_file(manifest_path),
     }
+    if cover_review is not None:
+        current_bindings["coverManifestSha256"] = cover_review["manifestSha256"]
     task_data = {
         "contractVersion": TASK_CONTRACT_VERSION,
         "taskId": context.task_id,
@@ -248,6 +257,14 @@ def create_visual_review_task(
         "formalWritesAllowed": False,
         "approvalWritesAllowed": False,
     }
+    if cover_review is not None:
+        task_data["coverReview"] = {
+            "file": cover_review["file"],
+            "sha256": cover_review["sha256"],
+            "frameRange": cover_review["frameRange"],
+            "visualReviewExcluded": True,
+            "technicalChecksExcluded": False,
+        }
     write_json_atomic(context.task_json, task_data)
     task = validate_agent_task(
         context.task_json,
@@ -527,7 +544,7 @@ def main(argv: list[str] | None = None) -> int:
                 project=project,
                 manifest_path=manifest_path,
             )
-        except (OSError, AgentContractError) as exc:
+        except (OSError, AgentContractError, CoverReviewError) as exc:
             visual_review = {
                 "taskKind": "visualReview",
                 "mode": "blocked",

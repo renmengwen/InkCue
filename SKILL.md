@@ -201,7 +201,8 @@ Edge TTS 不需要 API Key，但依赖外网和微软语音服务，不是离线
 3. 部分失败时保留成功幕，只重试外部结果明确 failed 的幕；`unknown_external_outcome` 不自动重试，也不自动切换供应商。
 4. 运行 `validate_generated_images.py`：先串行冻结 project/plan/manifest，再按 `imageValidation` 对独立 PNG 有界并发且每图只完整解码一次；之后用本地图片查看能力实际检查每一幕。
 5. 可准备一个覆盖全部 current scene 的 global `visualReview` task 检查人物、配色、纸张和构图一致性。宿主条件满足时由具备真实图片查看能力的新鲜 child 读取冻结文件并写 attempt findings，否则由具备相同能力的 coordinator fallback。findings 只作辅助证据，不能批准线稿、修改图片或触发自动重生成。
-6. **停止，等待用户明确确认线稿。** 技术 `validated` 和 visualReview findings 都不能代替人工判断。
+6. 生图成功后可显式运行 `generate_images.py --cover`，生成由整条视频主题、核心观点/结论、旁白 cues 与全部 scene 语义共同驱动的独立 `previews/social-cover.png`，并写入 `manifests/cover-manifest.json`。封面允许本地确定性排版文字，但不属于普通 scene，不改变 `constraints.forbidText=true` 或场景图片 identity。
+7. **停止，等待用户明确确认线稿。** 技术 `validated` 和 visualReview findings 都不能代替人工判断。
 
 ### 阶段 6：标注、区域预览与联合批准
 
@@ -235,6 +236,7 @@ Edge TTS 不需要 API Key，但依赖外网和微软语音服务，不是离线
 2. 单幕项目可以跳过 concat，但仍必须发布并技术验证同名 clean master。
 3. 总帧数必须恰好等于 timing plan 最后一幕的 `endFrameExclusive`。
 4. `final-video-only.mp4` 只作为确定性字幕输入、诊断和重新烧录工件，不设独立人工确认。技术验证通过后立即进入阶段 9；正常路径不得展示该工件并停下等待用户回复。
+5. 若项目存在 `manifests/cover-manifest.json`，最终静音视频首帧使用其 `previews/social-cover.png` 替换第 0 帧；首版保持总帧数、音频时间轴和字幕时间轴不变，且第 1 帧继续原有第一幕动画。单幕渲染检查与成品视觉语义检查须跳过 manifest 的 `coverFrameRange`，并明确标记封面帧豁免普通白板视觉规则；技术解码、尺寸、fps、帧数、codec、SHA 和 streams 检查不得跳过该帧。
 
 ### 阶段 9：正式字幕烧录
 

@@ -27,6 +27,7 @@ from project_workspace import (
     write_json_atomic,
 )
 from scene_review import SceneReviewGateError, SceneReviewStaleError, assert_current_scene_review_approval
+from cover_frame import attach_cover_manifest, attach_cover_review_manifest, cover_record, replace_first_frame
 
 
 DELIVERY_MANIFEST_KEYS = {
@@ -39,7 +40,9 @@ DELIVERY_MANIFEST_KEYS = {
     "captionedVideo",
     "final",
     "finalApproval",
+    "cover",
 }
+DELIVERY_MANIFEST_OPTIONAL_KEYS = {"coverReview"}
 
 
 def _write_concat_list(inputs: list[Path], list_path: Path) -> None:
@@ -181,6 +184,8 @@ def _new_delivery_manifest(project: Project) -> dict[str, Any]:
         "captionedVideo": None,
         "final": None,
         "finalApproval": None,
+        "cover": None,
+        "coverReview": None,
     }
 
 
@@ -192,7 +197,9 @@ def _load_delivery_manifest(project: Project) -> dict[str, Any]:
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ProjectValidationError(f"无法读取 delivery manifest: {exc}") from exc
-    if not isinstance(manifest, dict) or set(manifest) != DELIVERY_MANIFEST_KEYS:
+    if not isinstance(manifest, dict) or not DELIVERY_MANIFEST_KEYS.issubset(manifest) or (
+        set(manifest) - DELIVERY_MANIFEST_KEYS - DELIVERY_MANIFEST_OPTIONAL_KEYS
+    ):
         raise ProjectValidationError("delivery manifest 顶层字段不符合冻结合同")
     if (
         manifest.get("schemaVersion") != 1
@@ -232,6 +239,8 @@ def _update_delivery_manifest(project: Project, media: dict[str, Any]) -> None:
         "frameCount": frame_count,
     }
     manifest["cleanVideo"] = _clean_video_entry(media)
+    attach_cover_manifest(manifest, cover_record(project))
+    attach_cover_review_manifest(manifest, project)
     write_json_atomic(project.path("manifests/delivery-manifest.json"), manifest)
 
 
@@ -255,10 +264,25 @@ def _produce_candidate(
                     expected_frame_count=expected_frame_count,
                     expected_audio_streams=0,
                 )
-                return media
             except MediaValidationError:
                 candidate.unlink(missing_ok=True)
-        _ffmpeg_concat_reencode(inputs, candidate, list_path)
+            else:
+                # A valid copy still needs the optional cover replacement below.
+                pass
+        if not candidate.is_file():
+            _ffmpeg_concat_reencode(inputs, candidate, list_path)
+    # The optional cover is inserted only after the authoritative scene
+    # concat, so scene timing and total frame count remain unchanged.
+    if cover_record(project) is not None:
+        replaced = candidate.with_name(candidate.stem + ".cover.mp4")
+        replace_first_frame(
+            candidate,
+            replaced,
+            project=project,
+            expected_frame_count=expected_frame_count,
+        )
+        candidate.unlink(missing_ok=True)
+        replaced.replace(candidate)
     media = validate_video(
         candidate,
         render_profile=project.render_profile,

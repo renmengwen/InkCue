@@ -32,6 +32,7 @@ try:
         select_authoritative_srt,
     )
     from .voiceover import VoiceoverValidationError
+    from .cover_frame import attach_cover_manifest, attach_cover_review_manifest, cover_record
 except ImportError:  # pragma: no cover - direct script execution
     from audio_normalization import AudioNormalizationError, validate_canonical_wav
     from generate_voiceover import ApprovalGateError, VoiceoverStateError, validate_current_voiceover
@@ -52,6 +53,7 @@ except ImportError:  # pragma: no cover - direct script execution
         select_authoritative_srt,
     )
     from voiceover import VoiceoverValidationError
+    from cover_frame import attach_cover_manifest, attach_cover_review_manifest, cover_record
 
 
 EDGE_MUX_CONTRACT_VERSION = "edge-aac-mux-v1"
@@ -69,7 +71,9 @@ DELIVERY_MANIFEST_KEYS = {
     "captionedVideo",
     "final",
     "finalApproval",
+    "cover",
 }
+DELIVERY_MANIFEST_OPTIONAL_KEYS = {"coverReview"}
 
 
 class MuxStaleError(ValueError):
@@ -103,7 +107,9 @@ def _timing_plan_sha(project: Project) -> str:
 def _load_delivery(project: Project) -> tuple[Path, dict[str, Any]]:
     path = project.path("manifests/delivery-manifest.json")
     manifest = _read_json(path, "delivery manifest")
-    if set(manifest) != DELIVERY_MANIFEST_KEYS:
+    if not DELIVERY_MANIFEST_KEYS.issubset(manifest) or (
+        set(manifest) - DELIVERY_MANIFEST_KEYS - DELIVERY_MANIFEST_OPTIONAL_KEYS
+    ):
         raise MuxStaleError("delivery manifest 顶层字段不符合冻结合同")
     if (
         manifest.get("schemaVersion") != 1
@@ -336,6 +342,8 @@ def mux_project(
     timeline_sha, timeline = _assert_current_timing(project, manifest)
     current_voice, canonical, full_approval = _assert_current_voice(project, timeline_sha)
     subtitles, selection = _assert_current_subtitles(project, manifest)
+    attach_cover_manifest(manifest, cover_record(project))
+    attach_cover_review_manifest(manifest, project)
 
     scenes = project.timing_plan["scenes"]
     expected_frames = scenes[-1]["endFrameExclusive"]

@@ -89,6 +89,7 @@ def _summary(
     failures: list[dict[str, str]] | None = None,
     warnings: list[str] | None = None,
     error: str | None = None,
+    cover: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     value: dict[str, Any] = {
         "ok": ok,
@@ -112,6 +113,8 @@ def _summary(
     }
     if error:
         value["error"] = error
+    if cover is not None:
+        value["cover"] = cover
     return value
 
 
@@ -276,7 +279,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", help="供应商 local 配置的绝对路径")
     parser.add_argument("--overwrite", action="store_true", help="允许原子替换已有图片")
     parser.add_argument("--retry-failed", action="store_true", help="只处理明确 failed 的场景")
+    parser.add_argument(
+        "--cover",
+        action="store_true",
+        help="场景生图成功后，根据全片内容生成 previews/social-cover.png（独立于 scene contract）",
+    )
     return parser
+
+
+def _generate_cover_if_requested(project_root: Path, *, requested: bool, overwrite: bool) -> dict[str, Any] | None:
+    """在 coordinator 完成 scene 发布后生成独立封面；默认路径完全不触发。"""
+    if not requested:
+        return None
+    try:
+        from cover_generation import generate_cover
+
+        return generate_cover(project_root, overwrite=overwrite)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        # Cover is an additive artifact. Keep scene result and expose the
+        # failure in the JSON summary rather than changing scene manifests.
+        return {"error": str(exc), "semanticSource": "whole_video"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -326,6 +348,11 @@ def main(argv: list[str] | None = None) -> int:
             record.get("status") == "unknown_external_outcome"
             for record in _scene_map(manifest).values()
         )
+        cover_result = _generate_cover_if_requested(
+            project.root,
+            requested=args.cover and unknown == 0,
+            overwrite=args.overwrite,
+        )
         _emit(
             _summary(
                 ok=unknown == 0,
@@ -337,6 +364,7 @@ def main(argv: list[str] | None = None) -> int:
                 configured_concurrency=configured_concurrency,
                 unknown_external_outcome_count=unknown,
                 warnings=warnings,
+                cover=cover_result,
             )
         )
         return 1 if unknown else 0
@@ -590,6 +618,11 @@ def main(argv: list[str] | None = None) -> int:
         except OSError:
             pass
 
+    cover_result = _generate_cover_if_requested(
+        project.root,
+        requested=args.cover and not failures,
+        overwrite=args.overwrite,
+    )
     exit_code = 1 if failures else 0
     _emit(
         _summary(
@@ -610,6 +643,7 @@ def main(argv: list[str] | None = None) -> int:
             unknown_external_outcome_count=unknown,
             failures=failures,
             warnings=warnings,
+            cover=cover_result,
         )
     )
     return exit_code

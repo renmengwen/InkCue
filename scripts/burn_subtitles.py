@@ -42,6 +42,7 @@ try:
         subtitle_burn_contract_sha256,
         subtitle_identity,
     )
+    from .cover_frame import attach_cover_manifest, attach_cover_review_manifest, cover_record
 except ImportError:  # pragma: no cover - direct script execution
     from project_workspace import (
         Project,
@@ -70,6 +71,7 @@ except ImportError:  # pragma: no cover - direct script execution
         subtitle_burn_contract_sha256,
         subtitle_identity,
     )
+    from cover_frame import attach_cover_manifest, attach_cover_review_manifest, cover_record
 
 
 DELIVERY_SCHEMA_VERSION = 1
@@ -83,6 +85,8 @@ DELIVERY_TOP_LEVEL_KEYS = (
     "captionedVideo",
     "final",
     "finalApproval",
+    "cover",
+    "coverReview",
 )
 
 
@@ -224,6 +228,8 @@ def _load_delivery_manifest(project: Project) -> dict[str, Any]:
         "captionedVideo": existing.get("captionedVideo", {}),
         "final": existing.get("final", {}),
         "finalApproval": existing.get("finalApproval"),
+        "cover": existing.get("cover"),
+        "coverReview": existing.get("coverReview"),
     }
 
 
@@ -439,6 +445,9 @@ def burn_project(
     clean_relative = "output/final-video-only.mp4"
     clean_path = project.path(clean_relative)
     manifest = _load_delivery_manifest(project)
+    # Keep cover identity available to every downstream delivery layer.
+    attach_cover_manifest(manifest, cover_record(project))
+    attach_cover_review_manifest(manifest, project)
     clean_record = manifest.get("cleanVideo")
     clean_receipt = (
         clean_record.get("technicalValidation")

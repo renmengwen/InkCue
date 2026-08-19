@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 try:
+    from .cover_review import CoverReviewError, load_cover_review
     from .media_validation import MediaValidationError, bind_validated_video, validate_video
     from .project_workspace import (
         Project,
@@ -27,6 +28,7 @@ try:
         resolve_formal_scenes,
     )
 except ImportError:  # pragma: no cover - direct script execution
+    from cover_review import CoverReviewError, load_cover_review
     from media_validation import MediaValidationError, bind_validated_video, validate_video
     from project_workspace import (
         Project,
@@ -122,6 +124,10 @@ def build_scene_review_bundle(
     """重算全部正式 scene 的 current bundle；不读取或写入人工批准。"""
 
     _, manifest = load_render_manifest(project)
+    try:
+        cover_review = load_cover_review(project)
+    except CoverReviewError as exc:
+        raise SceneReviewStaleError(f"cover review evidence stale: {exc}") from exc
     plan_scenes = project.plan.get("scenes")
     timing_scenes = project.timing_plan.get("scenes")
     if not isinstance(plan_scenes, list) or not plan_scenes:
@@ -240,11 +246,14 @@ def build_scene_review_bundle(
             "activeTimeline": copy.deepcopy(project.timing_plan.get("activeTimeline")),
         },
         "renderProfileSha256": render_profile_sha256,
+        # 封面不作为 scene 参与渲染/批准；仅把其身份和视觉豁免边界冻结进 bundle。
+        "coverReview": copy.deepcopy(cover_review),
         "scenes": bundle_scenes,
     }
     result = {
         **identity_payload,
         "identityHash": sha256_json(identity_payload),
+        "coverReview": copy.deepcopy(cover_review),
     }
     if include_bound_media:
         # 仅供同一进程的 merge 消费；不进入 scene review identity 或人工批准。

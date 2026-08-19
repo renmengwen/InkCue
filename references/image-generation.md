@@ -158,6 +158,23 @@ coordinator 先冻结 `attemptId`、image input identity、candidate/receipt/for
 <ENV_PY> scripts/generate_images.py --project <项目根目录> --retry-failed --overwrite
 ```
 
+### 全片内容驱动封面（可选）
+
+在场景图片成功发布后，可在同一阶段显式传入 `--cover` 生成独立社交平台封面：
+
+```powershell
+<ENV_PY> scripts/generate_images.py --project <项目根目录> --cover
+```
+
+封面不是 scene 源图，也不进入 `generation-plan.json` 的普通场景集合。`cover_generation.py` 从全片 `topic/body`（或 source SRT）、全部 narration cues，以及 generation plan 中每个 scene 的 `coreIdea`、`visualSubject`、`imagePrompt` 汇总语义，固定记录 `semanticSource=whole_video`。标题和副标题由本地确定性排版完成；provider 不可用或没有正式场景图时，使用暖米黄白板画布或已有 scene 图作为 fallback。
+
+成功产物为：
+
+- `previews/social-cover.png`（1920×1080）；
+- `manifests/cover-manifest.json`（封面 SHA、语义输入快照、`coverFrameRange`、`visualReviewExcluded=true`）。
+
+后续成片封装可将封面替换到最终静音视频的第 0 帧，保持总帧数、音频和字幕时间轴不变；当前首版不把封面作为 scene 渲染或 annotation。单幕/成品的视觉语义检查应排除 manifest 声明的 `coverFrameRange`，避免封面文字触发“场景源图禁字”误判；H.264 解码、尺寸、fps、帧数、SHA、streams 和完整性等技术检查仍必须包含该帧。
+
 网络错误、超时、HTTP 408、429 和 5xx 最多自动尝试 3 次，并使用指数退避和少量抖动。400、401、403、404、非法响应、图片安全约束失败和路径冲突不自动重试。
 
 崩溃恢复只使用 manifest 登记状态和确定路径，不扫描 `.work` 猜结果：

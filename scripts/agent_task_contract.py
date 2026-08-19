@@ -82,6 +82,7 @@ CURRENT_BINDING_ALLOWLIST = frozenset(
         "contentInputSha256",
         "baseContentDraftIdentitySha256",
         "revisionRequestSha256",
+        "coverManifestSha256",
     }
 )
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
