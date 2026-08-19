@@ -28,6 +28,62 @@ def _label_font() -> ImageFont.FreeTypeFont:
     return font
 
 
+def _element_label(element: Mapping[str, Any], index: int) -> str:
+    """Return a stable preview label without expanding the annotation contract."""
+
+    for field in ("label", "narrativeRole", "subtitle"):
+        value = element.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return f"元素 {index}"
+
+
+def _hand_path(element: Mapping[str, Any]) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Use authored preview metadata or derive it deterministically from the region."""
+
+    authored = element.get("handPath")
+    if isinstance(authored, Mapping):
+        start = authored.get("start")
+        end = authored.get("end")
+        if (
+            isinstance(start, (list, tuple))
+            and isinstance(end, (list, tuple))
+            and len(start) == 2
+            and len(end) == 2
+            and all(isinstance(value, int) and not isinstance(value, bool) for value in (*start, *end))
+        ):
+            return (start[0], start[1]), (end[0], end[1])
+
+    region = element["region"]
+    x, y = region["x"], region["y"]
+    width, height = region["width"], region["height"]
+    inset_x = min(max(12, width // 10), max(12, width // 3))
+    inset_y = min(max(12, height // 10), max(12, height // 3))
+    left, right = x + inset_x, x + width - inset_x
+    top, bottom = y + inset_y, y + height - inset_y
+    center_x, center_y = x + width // 2, y + height // 2
+    direction = element.get("reveal", {}).get("direction", "left-to-right")
+    if direction == "right-to-left":
+        return (right, center_y), (left, center_y)
+    if direction == "top-to-bottom":
+        return (center_x, top), (center_x, bottom)
+    if direction == "bottom-to-top":
+        return (center_x, bottom), (center_x, top)
+    return (left, center_y), (right, center_y)
+
+
+def _arrow_points(start: tuple[int, int], end: tuple[int, int]) -> tuple[tuple[int, int], ...]:
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    length = max(1.0, (dx * dx + dy * dy) ** 0.5)
+    back_x, back_y = -dx / length, -dy / length
+    side_x, side_y = -dy / length, dx / length
+    return (
+        end,
+        (round(end[0] + back_x * 13 + side_x * 7), round(end[1] + back_y * 13 + side_y * 7)),
+        (round(end[0] + back_x * 13 - side_x * 7), round(end[1] + back_y * 13 - side_y * 7)),
+    )
+
+
 def render_annotation_preview(
     source: Image.Image,
     annotation: Mapping[str, Any],
@@ -50,13 +106,13 @@ def render_annotation_preview(
         draw.rounded_rectangle((x, y, right, bottom), radius=12, outline=color, width=4, fill=fill)
         draw.ellipse((x + 8, y + 8, x + 44, y + 44), fill=color)
         draw.text((x + 19, y + 8), str(index), anchor="ma", font=small_font, fill="white")
-        label = f"{index}. {element['label']}  {element['reveal']['direction']}"
+        direction = element.get("reveal", {}).get("direction", "left-to-right")
+        label = f"{index}. {_element_label(element, index)}  {direction}"
         draw.rounded_rectangle((x + 52, y + 8, min(right - 8, x + 52 + len(label) * 19), y + 46), radius=6, fill=(255, 255, 255, 225))
         draw.text((x + 60, y + 12), label, font=small_font, fill=color)
-        start = tuple(element["handPath"]["start"])
-        end = tuple(element["handPath"]["end"])
+        start, end = _hand_path(element)
         draw.line((start, end), fill=color, width=4)
-        draw.polygon((end, (end[0] - 13, end[1] - 7), (end[0] - 13, end[1] + 7)), fill=color)
+        draw.polygon(_arrow_points(start, end), fill=color)
 
     return Image.alpha_composite(image, overlay).convert("RGB")
 

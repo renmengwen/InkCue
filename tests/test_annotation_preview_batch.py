@@ -85,6 +85,21 @@ class AnnotationPreviewBatchTests(AnnotationBatchFixture):
             saved.load()
             self.assertEqual((saved.format, saved.mode, saved.size), ("PNG", "RGB", (1920, 1080)))
 
+    def test_renderer_derives_optional_label_and_hand_path(self) -> None:
+        project = self.make_current_project(1)
+        annotation_path = project.root / "scenes" / "scene-01.annotation.json"
+        annotation = json.loads(annotation_path.read_text(encoding="utf-8"))
+        element = annotation["elements"][0]
+        element.pop("label")
+        element.pop("handPath")
+        element["reveal"]["direction"] = "top-to-bottom"
+        source_path = project.root / "scenes" / "scene-01.png"
+        with Image.open(source_path) as source:
+            source.load()
+            result = render_annotation_preview.render_annotation_preview(source, annotation)
+        self.assertEqual(result.mode, "RGB")
+        self.assertEqual(result.size, (1920, 1080))
+
     def test_missing_annotation_gate_returns_two_and_creates_zero_candidates(self) -> None:
         project, _audio, _identity = self.make_project(2)
         context = render_timing.build_formal_validation_context(project)
