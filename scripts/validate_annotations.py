@@ -38,6 +38,12 @@ try:
         WorkerOutcome,
         execute_bounded,
     )
+    from .annotation_dispatch import build_dispatch_manifest, utc_now
+    from .annotation_contract import (
+        AnnotationContractError,
+        SUPPORTED_VISUAL_ELEMENTS_CONTRACTS,
+        validate_visual_elements,
+    )
     from .project_workspace import (
         Project,
         WorkspaceConfig,
@@ -76,6 +82,12 @@ except ImportError:  # pragma: no cover - direct script execution
         WorkerFailure,
         WorkerOutcome,
         execute_bounded,
+    )
+    from annotation_dispatch import build_dispatch_manifest, utc_now
+    from annotation_contract import (
+        AnnotationContractError,
+        SUPPORTED_VISUAL_ELEMENTS_CONTRACTS,
+        validate_visual_elements,
     )
     from project_workspace import (
         Project,
@@ -298,7 +310,6 @@ def prepare_annotation_drafting_tasks(
             "requiredCapabilities": ["readFiles", "viewImage", "writeCandidateJson"],
             "allowedOutputs": [
                 trusted.relative_posix(candidate),
-                trusted.relative_posix(trusted.result_json),
             ],
             "formalWritesAllowed": False,
             "approvalWritesAllowed": False,
@@ -404,17 +415,14 @@ def _load_visual_elements_candidate(path: Path) -> list[Any]:
     if not isinstance(raw, dict):
         raise AnnotationBatchError("annotation 视觉候选顶层必须是对象")
     contract = raw.get("contractVersion")
-    if contract not in (None, "whiteboard-annotation-visual-elements-v1"):
+    if contract not in (None, *SUPPORTED_VISUAL_ELEMENTS_CONTRACTS):
         raise AnnotationBatchError("annotation 视觉候选 contractVersion 不支持")
-    if contract == "whiteboard-annotation-visual-elements-v1" and set(raw) != {
-        "contractVersion",
-        "elements",
-    }:
-        raise AnnotationBatchError("visual-elements-v1 只允许 contractVersion/elements")
-    elements = raw.get("elements")
-    if not isinstance(elements, list) or not elements:
-        raise AnnotationBatchError("annotation 视觉候选 elements 必须是非空数组")
-    return elements
+    if contract is not None and set(raw) != {"contractVersion", "elements"}:
+        raise AnnotationBatchError(f"{contract} 只允许 contractVersion/elements")
+    try:
+        return validate_visual_elements(raw.get("elements"))
+    except AnnotationContractError as exc:
+        raise AnnotationBatchError(str(exc)) from exc
 
 
 def _materialize_annotation_candidate(
@@ -459,20 +467,27 @@ def _materialize_annotation_candidate(
     return value
 
 
-def record_coordinator_annotation_candidate(
+def _materialize_coordinator_result(
     drafting: AnnotationDraftingTask,
-    annotation: Mapping[str, Any],
     *,
     project: Project,
     context: FormalValidationContext,
-    allow_v1_disabled_compat: bool = False,
-) -> ValidatedAgentResult:
-    """shared-FS fallback：coordinator 只写 attempt candidate/result。"""
+) -> dict[str, Any]:
+    """Deterministically write the task result after a child candidate is ready.
+
+    annotationDrafting children are deliberately limited to visual judgement and
+    must not author ``result.json``.  This helper is the sole result writer for
+    that role; it derives identity/inputs/output SHA values from the frozen task
+    and the candidate artifact.
+    """
 
     validate_formal_context_current(project, context)
-    # fallback 也走与 child 相同的 author/materialize 边界。兼容调用方传入
-    # legacy 完整 annotation，但仅其 elements 会进入 coordinator 生成的候选。
-    write_json_atomic(drafting.candidate_path, dict(annotation))
+    candidate = drafting.candidate_path
+    if not candidate.is_file():
+        raise AnnotationBatchError("annotation candidate 缺失，无法生成 coordinator result")
+    # Validate the visual payload before advertising a completed result.  The
+    # business validator runs immediately afterwards on the materialized form.
+    _load_visual_elements_candidate(candidate)
     task = drafting.task
     result = {
         "contractVersion": RESULT_CONTRACT_VERSION,
@@ -488,15 +503,38 @@ def record_coordinator_annotation_candidate(
         "inspectedInputs": list(task.data["inputs"]),
         "outputs": [
             {
-                "file": task.context.relative_posix(drafting.candidate_path),
-                "sha256": agent_sha256_file(drafting.candidate_path),
+                "file": task.context.relative_posix(candidate),
+                "sha256": agent_sha256_file(candidate),
             }
         ],
         "findings": [],
         "warnings": [],
         "error": None,
     }
-    write_json_atomic(task.context.result_json, result)
+    result_path = task.context.result_json
+    # Always materialize canonical coordinator bytes.  New annotation tasks do
+    # not authorize child result output; any pre-existing legacy result is
+    # replaced deterministically before validation.
+    write_json_atomic(result_path, result)
+    return result
+
+
+def record_coordinator_annotation_candidate(
+    drafting: AnnotationDraftingTask,
+    annotation: Mapping[str, Any],
+    *,
+    project: Project,
+    context: FormalValidationContext,
+    allow_v1_disabled_compat: bool = False,
+) -> ValidatedAgentResult:
+    """shared-FS fallback：coordinator 只写 attempt candidate/result。"""
+
+    validate_formal_context_current(project, context)
+    # fallback 也走与 child 相同的 author/materialize 边界。兼容调用方传入
+    # legacy 完整 annotation，但仅其 elements 会进入 coordinator 生成的候选。
+    write_json_atomic(drafting.candidate_path, dict(annotation))
+    task = drafting.task
+    _materialize_coordinator_result(drafting, project=project, context=context)
     validated_result = validate_agent_result(
         task.context.result_json,
         task,
@@ -575,6 +613,13 @@ def validate_and_publish_annotation_batch(
     def worker(drafting: AnnotationDraftingTask) -> WorkerOutcome[ValidatedAnnotationCandidate]:
         try:
             _validate_image_once(project.scenes_dir / generation[drafting.scene_id]["outputFile"], expected_size)
+            # Artifact-first: candidate readiness is sufficient for the child;
+            # coordinator now creates the result contract before validation.
+            _materialize_coordinator_result(
+                drafting,
+                project=project,
+                context=frozen,
+            )
             result = validate_agent_result(
                 drafting.task.context.result_json,
                 drafting.task,
@@ -784,6 +829,7 @@ def build_annotation_prepare_summary(
         raise AnnotationBatchError("annotation prepare 没有 ready task")
     candidate_root = tasks[0].task.context.task_dir.parents[1].resolve(strict=True)
     run_id = tasks[0].task.context.run_id
+    dispatch_manifest_path = candidate_root / "dispatch-manifest.json"
     ordered_tasks: list[dict[str, Any]] = []
     for drafting in tasks:
         task = drafting.task
@@ -802,7 +848,10 @@ def build_annotation_prepare_summary(
                 "roleContractPath": str(role_contract),
                 "roleContractSha256": task.data["roleContractSha256"],
                 "allowedAttemptDir": str(attempt_dir),
+                # Retained as the deterministic coordinator output location;
+                # annotation children are not allowed to author this file.
                 "resultJsonPath": str(result_json),
+                "resultWriter": "coordinator",
                 "candidateAnnotationPath": str(drafting.candidate_path.resolve(strict=False)),
                 "materializedAnnotationPath": str(
                     drafting.materialized_path.resolve(strict=False)
@@ -836,6 +885,7 @@ def build_annotation_prepare_summary(
                 "taskName": f"annotation_{range_suffix}",
                 "forkTurns": "none",
                 "prompt": prompt,
+                "dispatchManifestPath": str(dispatch_manifest_path.resolve(strict=False)),
             }
         dispatch_units.append(
             {
@@ -846,6 +896,11 @@ def build_annotation_prepare_summary(
                 "sceneIds": [drafting.scene_id for drafting in unit_tasks],
                 "sequences": [drafting.sequence for drafting in unit_tasks],
                 "resultJsonPaths": result_paths,
+                "candidateJsonPaths": [
+                    str(drafting.candidate_path.resolve(strict=False))
+                    for drafting in unit_tasks
+                ],
+                "resultWriter": "coordinator",
                 "spawnRequest": spawn_request,
             }
         )
@@ -859,12 +914,41 @@ def build_annotation_prepare_summary(
     dispatch_audit["tasksPerDispatchUnit"] = [
         unit["taskCount"] for unit in dispatch_units
     ]
+    dispatch_audit.setdefault("auditContractVersion", "whiteboard-annotation-dispatch-audit-v1")
+    timestamps = dispatch_audit.setdefault("timestamps", {})
+    timestamps.setdefault("dispatchStartedAt", None)
+    timestamps["prepareCompletedAt"] = utc_now()
+    durations = dispatch_audit.setdefault("durationsMs", {})
+    durations.setdefault("prepare", None)
+    durations.setdefault("spawnSubmit", None)
+    durations.setdefault("candidate", None)
+    durations.setdefault("childTail", None)
+    durations.setdefault("resultMaterialize", None)
+    counters = dispatch_audit.setdefault("counters", {})
+    counters.setdefault("candidateReadyCount", 0)
+    counters.setdefault("candidateInvalidCount", 0)
+    counters.setdefault("candidateStaleCount", 0)
+    counters.setdefault("childCancelCount", 0)
+    # The manifest is a coordinator-owned, structured handoff.  Host adapters
+    # can consume it directly instead of reparsing a long natural-language
+    # prompt; writing it here is deterministic and does not perform spawn.
+    dispatch_manifest = build_dispatch_manifest(
+        run_id=run_id,
+        candidate_root=candidate_root,
+        tasks=ordered_tasks,
+        dispatch_units=dispatch_units,
+        effective_concurrency=effective_child_concurrency,
+        audit=dispatch_audit,
+    )
+    write_json_atomic(dispatch_manifest_path, dispatch_manifest)
     return {
         "contractVersion": ANNOTATION_PREPARE_CONTRACT,
         "operation": "prepare",
         "status": "PASS",
         "runId": run_id,
         "candidateRoot": str(candidate_root),
+        "dispatchManifestPath": str(dispatch_manifest_path.resolve(strict=True)),
+        "dispatchManifestSha256": sha256_file(dispatch_manifest_path),
         "taskCount": len(ordered_tasks),
         "dispatchUnitCount": len(dispatch_units),
         "effectiveAgentConcurrency": effective_child_concurrency,

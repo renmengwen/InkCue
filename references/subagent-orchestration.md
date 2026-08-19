@@ -26,7 +26,7 @@
 - `contentDrafting`：阶段 0 的 topic/text 内容草案；输出 attempt 内的 `candidate.content-draft.json`、`result.json` 和可选 `agent.log`。
 - `storyboardPlanning`：传统 SRT 分镜；输出 attempt 内的 `candidate.generation-plan.json`、`result.json` 和可选 `agent.log`。
 - `visualReview`：按冻结 scope 查看 current scene 图片、annotation preview bundle，或全部 current 单幕的少量关键帧；输出 attempt 内的 `findings.json`、`result.json` 和可选 `agent.log`。
-- `annotationDrafting`：每个 task 只处理一幕；输出 attempt 内的 `candidate.annotation.json`、`result.json` 和可选 `agent.log`。
+- `annotationDrafting`：每个 task 只处理一幕；child 仅输出 attempt 内的 `candidate.annotation.json` 和可选 `agent.log`，`result.json` 由 coordinator 在候选就绪后确定性生成。
 
 视觉 role 必须实际具备 `viewImage`；只读取文件名、尺寸、metadata 或 SHA 不算查看图片。
 
@@ -56,7 +56,7 @@ agent.log
 
 `task.json` 使用 `whiteboard-agent-task-v1`，至少冻结 task identity、role contract version/SHA、input 相对路径和 SHA、current bindings、required capabilities、allowed outputs，以及两个显式 false 的写权限字段。
 
-`result.json` 使用 `whiteboard-agent-result-v1`。`status` 只允许 `completed | failed | cancelled`。result 必须回显 task identity、派发 task SHA、role contract version/SHA、实际检查过的 frozen inputs，以及 attempt 内 output 路径和 SHA。
+`result.json` 使用 `whiteboard-agent-result-v1`。`status` 只允许 `completed | failed | cancelled`。对于 `annotationDrafting`，result 由 coordinator 在 candidate artifact ready 后生成；其他 role 仍由 child 生成。result 必须回显 task identity、派发 task SHA、role contract version/SHA、实际检查过的 frozen inputs，以及 attempt 内 output 路径和 SHA。
 
 coordinator 收取 result 后必须重验：
 
@@ -98,7 +98,7 @@ effective concurrency 取 configured、ready task 数、宿主已换算 child sl
 
 role capability 齐全且 effective 大于 0 时，由 coordinator 调用宿主真实 `spawn_agent`、`followup` 和等待机制。否则由具备相同 role capability 的 coordinator fallback；双方都缺能力时报告 `BLOCKED`。
 
-`contentDrafting`、`storyboardPlanning` 和 global `visualReview` 使用一 task一 child。`annotationDrafting` 保持一幕一 task/attempt/candidate/result，但把按 plan 连续的最多 3 个 task 组成一个 dispatch unit，由同一 child 顺序执行。多个 ready unit 必须先填满 effective 并发再等待，不能串行伪装成并发。
+`contentDrafting`、`storyboardPlanning` 和 global `visualReview` 使用一 task一 child。`annotationDrafting` 保持一幕一 task/attempt/candidate/result（child 只写 candidate，result 由 coordinator 生成），但把按 plan 连续的最多 3 个 task 组成一个 dispatch unit，由同一 child 顺序执行。多个 ready unit 必须先填满 effective 并发再等待，不能串行伪装成并发。
 
 审计只记录 configured/effective/peak/task count、`dispatchAllowed`、mode、adapter、reason 和真实 task/agent 映射。fake scheduler 只验证协议，不算真实 dispatch。
 
@@ -152,4 +152,4 @@ coordinator 必须分别等待用户明确确认 topic/text 内容草案、传�
 - `SKIP`：当前阶段未执行真实派发或外部调用；
 - `待确认`：技术结果已准备，仍等待用户人工关卡。
 
-真实宿主协作只有在 child 从冻结 task 读取输入、写出 candidate/result，并记录真实 agent/task 标识后才能报告 dispatch `PASS`。真实图片 provider、Edge 服务、声音接受度和视觉接受度必须与自动 fixture/技术验证分别报告。
+真实宿主协作只有在 child 从冻结 task 读取输入、写出 candidate（annotationDrafting 的 result 由 coordinator 随后生成），并记录真实 agent/task 标识后才能报告 dispatch `PASS`。真实图片 provider、Edge 服务、声音接受度和视觉接受度必须与自动 fixture/技术验证分别报告。

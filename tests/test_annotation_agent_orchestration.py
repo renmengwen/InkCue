@@ -125,7 +125,7 @@ class AnnotationAgentOrchestrationTests(AnnotationBatchFixture):
             "它不能替代正确分区",
             "sequence` 从 1 连续递增",
             "元素使用本幕局部毫秒时钟且彼此串行",
-            "每个 `result.json` 使用 `whiteboard-agent-result-v1`",
+            "每个 `result.json` 使用 `whiteboard-agent-result-v1`（由 coordinator 生成）",
         ):
             self.assertIn(required_rule, contract)
 
@@ -339,7 +339,6 @@ class AnnotationAgentOrchestrationTests(AnnotationBatchFixture):
                 project=project,
                 context=context,
             )
-        self.write_failed_result(tasks[1])
         summary = validate_annotations.validate_and_publish_annotation_batch(
             project,
             tasks,
@@ -371,8 +370,8 @@ class AnnotationAgentOrchestrationTests(AnnotationBatchFixture):
             retry,
             context=context,
         )
-        self.assertEqual(missing["status"], "FAIL")
-        self.assertEqual(missing["scenes"][0]["status"], "failed")
+        self.assertEqual(missing["status"], "PASS")
+        self.assertEqual(missing["scenes"][0]["status"], "published_current_technical")
 
 
 if __name__ == "__main__":

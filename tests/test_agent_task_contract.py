@@ -101,7 +101,6 @@ class AgentTaskContractTests(unittest.TestCase):
                 self.relative(
                     self.context.task_dir / "candidate.annotation.json"
                 ),
-                self.relative(self.context.result_json),
             ],
             "formalWritesAllowed": False,
             "approvalWritesAllowed": False,
@@ -317,7 +316,6 @@ class AgentTaskContractTests(unittest.TestCase):
                 value = self.make_task_data()
                 value["allowedOutputs"] = [
                     bad_path,
-                    self.relative(self.context.result_json),
                 ]
                 write_json(self.context.task_json, value)
                 with self.assertRaises(atc.AgentContractError):
@@ -613,6 +611,8 @@ class AgentTaskContractTests(unittest.TestCase):
         self.assertIn(str(self.context.task_json), prompt)
         self.assertIn(str(self.context.task_dir / "role-contract.md"), prompt)
         self.assertIn(f"ALLOWED_ATTEMPT_DIR={self.context.task_dir}", prompt)
+        self.assertIn("TASK_STATUS=<candidate_ready|failed|cancelled>", prompt)
+        self.assertIn("CANDIDATE_JSON=", prompt)
         self.assertIn("VALIDATOR_STATUS=<PASS|FAIL|NOT_RUN>", prompt)
         self.assertIn("SUMMARY=<不超过240个字符的精简摘要>", prompt)
         self.assertNotIn("annotationDrafting", prompt)

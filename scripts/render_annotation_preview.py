@@ -9,6 +9,12 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
+from annotation_contract import (
+    derive_preview_hand_path,
+    derive_preview_label,
+    normalize_visual_elements,
+)
+
 
 _FONT_FILE = "C:/Windows/Fonts/msyh.ttc"
 _FONT_LOCAL = threading.local()
@@ -29,47 +35,15 @@ def _label_font() -> ImageFont.FreeTypeFont:
 
 
 def _element_label(element: Mapping[str, Any], index: int) -> str:
-    """Return a stable preview label without expanding the annotation contract."""
+    """Backward-compatible wrapper around the canonical preview derivation."""
 
-    for field in ("label", "narrativeRole", "subtitle"):
-        value = element.get(field)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return f"元素 {index}"
+    return derive_preview_label(element, index)
 
 
 def _hand_path(element: Mapping[str, Any]) -> tuple[tuple[int, int], tuple[int, int]]:
-    """Use authored preview metadata or derive it deterministically from the region."""
+    """Backward-compatible wrapper around canonical hand-path derivation."""
 
-    authored = element.get("handPath")
-    if isinstance(authored, Mapping):
-        start = authored.get("start")
-        end = authored.get("end")
-        if (
-            isinstance(start, (list, tuple))
-            and isinstance(end, (list, tuple))
-            and len(start) == 2
-            and len(end) == 2
-            and all(isinstance(value, int) and not isinstance(value, bool) for value in (*start, *end))
-        ):
-            return (start[0], start[1]), (end[0], end[1])
-
-    region = element["region"]
-    x, y = region["x"], region["y"]
-    width, height = region["width"], region["height"]
-    inset_x = min(max(12, width // 10), max(12, width // 3))
-    inset_y = min(max(12, height // 10), max(12, height // 3))
-    left, right = x + inset_x, x + width - inset_x
-    top, bottom = y + inset_y, y + height - inset_y
-    center_x, center_y = x + width // 2, y + height // 2
-    direction = element.get("reveal", {}).get("direction", "left-to-right")
-    if direction == "right-to-left":
-        return (right, center_y), (left, center_y)
-    if direction == "top-to-bottom":
-        return (center_x, top), (center_x, bottom)
-    if direction == "bottom-to-top":
-        return (center_x, bottom), (center_x, top)
-    return (left, center_y), (right, center_y)
+    return derive_preview_hand_path(element)
 
 
 def _arrow_points(start: tuple[int, int], end: tuple[int, int]) -> tuple[tuple[int, int], ...]:
@@ -94,9 +68,8 @@ def render_annotation_preview(
     overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     small_font = _label_font()
-    elements = annotation.get("elements")
-    if not isinstance(elements, list):
-        raise ValueError("annotation.elements 必须是数组")
+    canvas = {"width": image.width, "height": image.height}
+    elements = normalize_visual_elements(annotation.get("elements"), canvas=canvas)
     for index, element in enumerate(elements, start=1):
         region = element["region"]
         x, y = region["x"], region["y"]

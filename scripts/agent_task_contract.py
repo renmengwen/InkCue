@@ -58,9 +58,7 @@ ROLE_OUTPUT_BASENAMES: Mapping[str, frozenset[str]] = {
         {"candidate.generation-plan.json", "result.json", "agent.log"}
     ),
     "visualReview": frozenset({"findings.json", "result.json", "agent.log"}),
-    "annotationDrafting": frozenset(
-        {"candidate.annotation.json", "result.json", "agent.log"}
-    ),
+    "annotationDrafting": frozenset({"candidate.annotation.json", "agent.log"}),
 }
 ROLE_REQUIRED_OUTPUT_BASENAME: Mapping[str, str | None] = {
     "contentDrafting": "candidate.content-draft.json",
@@ -488,7 +486,13 @@ def validate_agent_task(
         if output.name not in ROLE_OUTPUT_BASENAMES[task_kind]:
             raise AgentContractError("output_allowlist", "输出文件名不在 role allowlist")
         output_files.append(output)
-    if context.result_json.absolute() not in [path.absolute() for path in output_files]:
+    # annotationDrafting children are visual candidate producers only.  The
+    # coordinator materializes the canonical result.json after the candidate
+    # artifact is ready.  Other roles retain the historical child-authored
+    # result contract.
+    if task_kind != "annotationDrafting" and context.result_json.absolute() not in [
+        path.absolute() for path in output_files
+    ]:
         raise AgentContractError("schema", "allowedOutputs 必须包含 result.json")
     required_output = ROLE_REQUIRED_OUTPUT_BASENAME[task_kind]
     if required_output is not None and required_output not in {
@@ -872,6 +876,21 @@ def build_agent_prompt(
         raise AgentContractError("prompt", "task 与 role contract 必须属于同一 attempt")
     attempt_dir = task_json.parent
     result_json = attempt_dir / "result.json"
+    if task_kind == "annotationDrafting":
+        return (
+            "WHITEBOARD_WORKER_PROTOCOL=annotation-elements-v2\n"
+            f"ROLE_CONTRACT_PATH={role_contract}\n"
+            f"ROLE_CONTRACT_SHA256={role_contract_sha256}\n"
+            f"TASK_JSON_PATH={task_json}\n"
+            f"TASK_SHA256={task_sha256}\n"
+            f"ALLOWED_ATTEMPT_DIR={attempt_dir}\n"
+            f"CANDIDATE_JSON={attempt_dir / 'candidate.annotation.json'}\n\n"
+            "RETURN_FORMAT:\n"
+            "TASK_STATUS=<candidate_ready|failed|cancelled>\n"
+            "CANDIDATE_JSON=<candidate-json-absolute-path>\n"
+            "VALIDATOR_STATUS=<PASS|FAIL|NOT_RUN>\n"
+            "SUMMARY=<不超过240个字符的精简摘要>"
+        )
     return (
         f"ROLE_CONTRACT_PATH={role_contract}\n"
         f"ROLE_CONTRACT_SHA256={role_contract_sha256}\n"
@@ -917,14 +936,21 @@ def build_agent_bundle_prompt(
 
     blocks = [
         "TASK_BUNDLE_VERSION=whiteboard-agent-task-bundle-v1",
+        "DISPATCH_PROTOCOL=annotation-artifact-first-v1",
+        "PROCESS_TASKS_IN_SEQUENCE=true",
+        "CONTINUE_AFTER_TASK_FAILURE=true",
+        "WRITE_RESULT_JSON=false",
+        "WRITE_FORMAL_FILES=false",
+        "WRITE_APPROVAL_FILES=false",
+        "STOP_AFTER_CANDIDATE_READY=true",
         f"TASK_COUNT={len(frozen)}",
     ]
-    result_paths: list[str] = []
+    candidate_paths: list[str] = []
     for index, task in enumerate(frozen, start=1):
         task_json = task.context.task_json.resolve(strict=True)
         role_contract = task.role_contract_file.resolve(strict=True)
         attempt_dir = task.context.task_dir.resolve(strict=True)
-        result_json = task.context.result_json.resolve(strict=False)
+        candidate_json = (attempt_dir / "candidate.annotation.json").resolve(strict=False)
         if task_json.parent != role_contract.parent or task_json.parent != attempt_dir:
             raise AgentContractError(
                 "prompt", "bundle task 与 role contract 必须属于同一 attempt"
@@ -945,25 +971,31 @@ def build_agent_bundle_prompt(
                 f"TASK_{index}_JSON_PATH={task_json}",
                 f"TASK_{index}_SHA256={task_sha}",
                 f"TASK_{index}_ALLOWED_ATTEMPT_DIR={attempt_dir}",
-                f"TASK_{index}_RESULT_JSON={result_json}",
+                f"TASK_{index}_CANDIDATE_JSON={candidate_json}",
+                # Compatibility locator for older host adapters.  This is a
+                # path declaration only; WRITE_RESULT_JSON=false remains the
+                # authoritative rule and children must not create the file.
+                f"TASK_{index}_RESULT_JSON={attempt_dir / 'result.json'}",
             ]
         )
-        result_paths.append(str(result_json))
+        candidate_paths.append(str(candidate_json))
     blocks.extend(
         [
             "",
             "PROCESSING_RULES:",
-            "按 TASK_1..N 顺序处理；每个 task 独立写自己的 candidate/result。",
-            "单个 task 失败时写该 task 的 failed result，并继续后续 task。",
-            "不得写列出的 attempt 目录之外的文件，不得合并多幕 candidate/result。",
+            "按 TASK_1..N 顺序处理；每个 task 独立写自己的 candidate。",
+            "单个 task 失败时不要伪造 candidate，并继续后续 task。",
+            "result.json 由 coordinator 在 candidate ready 后确定性生成；child 不得写 result.json。",
+            "写完 candidate.annotation.json 且文件可读后立即停止，不等待自然语言收尾。",
+            "不得写列出的 attempt 目录之外的文件，不得合并多幕 candidate。",
             "",
             "RETURN_FORMAT:",
             "DISPATCH_UNIT_STATUS=<completed|partial|failed|cancelled>",
-            "RESULT_JSONS=<按 task sequence 的 JSON 字符串数组>",
+            "CANDIDATE_JSONS=<按 task sequence 的 JSON 字符串数组>",
             "VALIDATOR_STATUS=<PASS|PARTIAL|FAIL|NOT_RUN>",
             "SUMMARY=<不超过240个字符的精简摘要>",
-            "EXPECTED_RESULT_JSONS="
-            + json.dumps(result_paths, ensure_ascii=False, separators=(",", ":")),
+            "EXPECTED_CANDIDATE_JSONS="
+            + json.dumps(candidate_paths, ensure_ascii=False, separators=(",", ":")),
         ]
     )
     return "\n".join(blocks)

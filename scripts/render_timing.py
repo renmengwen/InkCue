@@ -10,8 +10,18 @@ from typing import Any, Mapping
 
 try:
     from .project_workspace import Project, sha256_file, sha256_json, write_json_atomic
+    from .annotation_contract import (
+        AnnotationContractError,
+        normalize_legacy_visual_elements,
+        validate_visual_elements,
+    )
 except ImportError:  # pragma: no cover - direct script execution
     from project_workspace import Project, sha256_file, sha256_json, write_json_atomic
+    from annotation_contract import (
+        AnnotationContractError,
+        normalize_legacy_visual_elements,
+        validate_visual_elements,
+    )
 
 
 RENDER_CONTRACT_VERSION = "whiteboard-project-scene-render-v1"
@@ -242,8 +252,12 @@ def validate_annotation(
     if canvas != {"width": profile["width"], "height": profile["height"]}:
         raise RenderTimingError("annotation canvas 必须与 project renderProfile 尺寸一致")
     elements = value.get("elements")
-    if not isinstance(elements, list) or not elements:
-        raise RenderTimingError("annotation elements 必须是非空数组")
+    try:
+        validator = normalize_legacy_visual_elements if compatibility else validate_visual_elements
+        elements = validator(elements, canvas=canvas, scene_duration_ms=duration)
+    except AnnotationContractError as exc:
+        raise RenderTimingError(str(exc)) from exc
+    value["elements"] = elements
     previous_end = 0
     for index, element in enumerate(sorted(elements, key=lambda item: item.get("sequence", 0)), start=1):
         if not isinstance(element, Mapping) or element.get("sequence") != index:
