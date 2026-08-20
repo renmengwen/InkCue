@@ -38,6 +38,7 @@ try:  # direct CLI execution
         content_draft_identity,
         validate_content_draft,
     )
+    from voice_provider_config import VoiceProviderConfigError, active_provider_id
     from srt_timeline import SrtValidationError, group_scenes, parse_srt
 except ImportError:  # imported as scripts.prepare_draft_agent_task
     from scripts.agent_task_contract import (
@@ -60,6 +61,7 @@ except ImportError:  # imported as scripts.prepare_draft_agent_task
         content_draft_identity,
         validate_content_draft,
     )
+    from scripts.voice_provider_config import VoiceProviderConfigError, active_provider_id
     from scripts.srt_timeline import SrtValidationError, group_scenes, parse_srt
 
 
@@ -80,7 +82,8 @@ CONTENT_ROLE_CONTRACT = """# contentDrafting frozen role contract
 
 - 只读取 task.json 的 inputs；正文不从 prompt 或主对话补取。
 - 根据 content-input.json 生成完整 whiteboard-content-draft-v1：自然中文旁白、连续 cue/scene、自包含的单幕 imagePrompt。
-- topic 只允许 generate；text 只允许 preserve/polish；首版 voiceoverMode 固定 edge-tts。
+- topic 只允许 generate；text 只允许 preserve/polish；voiceoverMode 必须由 skill 根目录
+  config/voice-providers.local.json 的 activeProvider 派生，不能由用户或调用方选择。
 - text+preserve 不改写语义；polish 不改变事实、数字、人物、结论、因果强度或责任主体。
 - 每个 imagePrompt 必须自含暖米黄纸张、线稿、配色、主体、构图、留白和禁字/禁水印要求，不引用前图。
 - cue 到 scene 按视觉状态变化拆分，不按具体名词类别机械拆分；允许通过增加 scene 降低单图叙事负担，但不得预设固定场景数量。
@@ -154,12 +157,16 @@ def validate_content_input(value: Any) -> dict[str, Any]:
 
     if not isinstance(value, Mapping):
         raise PrepareError("content input 顶层必须是对象")
-    expected = {
+    required = {
         "schemaVersion", "contractVersion", "inputMode", "topic", "body",
-        "rewritePolicy", "targetDurationSeconds", "voiceoverMode",
+        "rewritePolicy", "targetDurationSeconds",
     }
-    if set(value) != expected:
-        raise PrepareError("content input 字段必须与 whiteboard-content-input-v1 完全一致")
+    allowed = required | {"voiceoverMode"}
+    if set(value) - allowed or not required.issubset(value):
+        raise PrepareError(
+            "content input 字段必须与 whiteboard-content-input-v1 完全一致；"
+            "voiceoverMode 由 activeProvider 自动派生"
+        )
     if value.get("schemaVersion") != 1 or value.get("contractVersion") != CONTENT_INPUT_CONTRACT_VERSION:
         raise PrepareError("content input 合同版本无效")
     mode = value.get("inputMode")
@@ -170,8 +177,20 @@ def validate_content_input(value: Any) -> dict[str, Any]:
         raise PrepareError("text 只允许 rewritePolicy=preserve|polish")
     if mode not in {"topic", "text"}:
         raise PrepareError("inputMode 只允许 topic|text")
-    if value.get("voiceoverMode") not in {"edge-tts", "minimax"}:
-        raise PrepareError("topic/text 只允许 voiceoverMode=edge-tts 或 minimax")
+    try:
+        active_mode = active_provider_id()
+    except VoiceProviderConfigError as exc:
+        raise PrepareError(f"无法从 config/voice-providers.local.json 读取 activeProvider: {exc}") from exc
+    requested_mode = value.get("voiceoverMode")
+    if requested_mode is not None:
+        if not isinstance(requested_mode, str):
+            raise PrepareError("voiceoverMode 只能由 activeProvider 派生")
+        normalised_requested = "minimax" if requested_mode.strip().lower() == "minimax" else requested_mode.strip().lower()
+        if normalised_requested != active_mode:
+            raise PrepareError(
+                "voiceoverMode 不得作为 provider 入口；它必须与 "
+                "config/voice-providers.local.json 的 activeProvider 一致"
+            )
     target = value.get("targetDurationSeconds")
     if isinstance(target, bool) or not isinstance(target, (int, float)) or not math.isfinite(target) or not 15 <= target <= 600:
         raise PrepareError("targetDurationSeconds 必须是 15–600 的有限数字")
@@ -196,7 +215,7 @@ def validate_content_input(value: Any) -> dict[str, Any]:
         "body": body,
         "rewritePolicy": policy,
         "targetDurationSeconds": target_ms // 1000 if target_ms % 1000 == 0 else target_ms / 1000,
-        "voiceoverMode": value.get("voiceoverMode", "edge-tts"),
+        "voiceoverMode": active_mode,
     }
 
 

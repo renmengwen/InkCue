@@ -45,8 +45,13 @@ class PrepareDraftAgentTaskTests(unittest.TestCase):
         self.workspace_root.mkdir()
         self.config_path = self.root / "workspace.local.json"
         self.config_path.write_text("{}", encoding="utf-8")
+        self.active_provider_patch = mock.patch.object(
+            prepare, "active_provider_id", return_value="edge-tts"
+        )
+        self.active_provider_patch.start()
 
     def tearDown(self) -> None:
+        self.active_provider_patch.stop()
         self.temp.cleanup()
 
     def workspace(self) -> WorkspaceConfig:
@@ -185,6 +190,42 @@ class PrepareDraftAgentTaskTests(unittest.TestCase):
         self.assertTrue(result["dispatchAudit"]["dispatchAllowed"])
         self.assertEqual(result["dispatchAudit"]["mode"], "host_collaboration_dispatch")
         self.assertIsNotNone(result["spawnPackage"]["spawnAgentCall"])
+
+    def test_content_prepare_derives_voiceover_mode_from_active_provider(self) -> None:
+        source = self.root / "content-without-provider.json"
+        source.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "contractVersion": "whiteboard-content-input-v1",
+                    "inputMode": "text",
+                    "topic": None,
+                    "body": "原文",
+                    "rewritePolicy": "preserve",
+                    "targetDurationSeconds": 30,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        with mock.patch.object(prepare, "active_provider_id", return_value="minimax"):
+            normalised = prepare.validate_content_input(prepare._read_json(source))
+        self.assertEqual(normalised["voiceoverMode"], "minimax")
+
+    def test_content_prepare_rejects_provider_override(self) -> None:
+        with self.assertRaisesRegex(prepare.PrepareError, "不得作为 provider 入口"):
+            prepare.validate_content_input(
+                {
+                    "schemaVersion": 1,
+                    "contractVersion": "whiteboard-content-input-v1",
+                    "inputMode": "text",
+                    "topic": None,
+                    "body": "原文",
+                    "rewritePolicy": "preserve",
+                    "targetDurationSeconds": 30,
+                    "voiceoverMode": "minimax",
+                }
+            )
 
 
 if __name__ == "__main__":

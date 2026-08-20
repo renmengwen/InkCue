@@ -1,6 +1,6 @@
 # 语音旁白合同
 
-本文说明 `voiceoverMode=edge-tts | minimax` 的 provider、配置、样音、完整旁白、canonical WAV、真实时间轴、恢复/stale 和外部验收边界。Disabled 模式不安装、不调用语音 provider；其正式交付仍需按 [字幕合同](subtitles.md) 烧录 source SRT。topic/text 可选择 Edge 或 MiniMax；其内容确认和 source package 合同见 [内容入口合同](content-input.md)。
+本文说明 `voiceoverMode=edge-tts | minimax` 的 provider、配置、样音、完整旁白、canonical WAV、真实时间轴、恢复/stale 和外部验收边界。Disabled 模式不安装、不调用语音 provider；其正式交付仍需按 [字幕合同](subtitles.md) 烧录 source SRT。topic/text 的 provider 不由用户选择，而是唯一读取 `config/voice-providers.local.json` 的 `activeProvider`；其内容确认和 source package 合同见 [内容入口合同](content-input.md)。
 
 ## 目录
 

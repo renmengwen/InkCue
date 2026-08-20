@@ -54,6 +54,10 @@ class ContentRevisionPrepareTests(unittest.TestCase):
         self.workspace_root.mkdir()
         self.config_path = self.root / "workspace.local.json"
         self.config_path.write_text("{}", encoding="utf-8")
+        self.active_provider_patch = mock.patch.object(
+            prepare, "active_provider_id", return_value="edge-tts"
+        )
+        self.active_provider_patch.start()
         self.workspace = WorkspaceConfig(
             root=self.workspace_root,
             config_path=self.config_path,
@@ -63,6 +67,7 @@ class ContentRevisionPrepareTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        self.active_provider_patch.stop()
         self.temp.cleanup()
 
     def _args(self, draft_root: Path, **overrides: object) -> argparse.Namespace:

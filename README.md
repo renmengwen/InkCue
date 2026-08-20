@@ -26,9 +26,14 @@ InkCue（墨序）可以把主题、正文或 SRT 制作为 1920x1080、60fps �
 
 | 输入 | 内容策略 | 配音模式 |
 |---|---|---|
-| `srt` | 使用现有严格 SRT | `disabled`、`edge-tts` 或 `minimax` |
-| `topic` | 生成完整旁白与分镜 | `edge-tts` 或 `minimax` |
-| `text` | 保留原文或润色 | `edge-tts` 或 `minimax` |
+| `srt` | 使用现有严格 SRT | 默认读取 `activeProvider`；明确静音时为 `disabled` |
+| `topic` | 生成完整旁白与分镜 | 自动读取 `activeProvider` |
+| `text` | 保留原文或润色 | 自动读取 `activeProvider` |
+
+topic/text 的旁白 provider 不需要用户选择。skill 始终读取自身目录
+`config/voice-providers.local.json` 的 `activeProvider`，自动冻结为 `edge-tts` 或
+`minimax`；缺少 `voiceoverMode` 的内容输入会自动补入该值，传入不一致值会被拒绝。
+只有明确要求静音时，传统 SRT 才显式使用 `--voiceover-mode disabled`。
 
 最终的 `output/final.mp4` 始终带烧录字幕：
 

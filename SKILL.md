@@ -11,15 +11,15 @@ description: 将主题、正文或 SRT 制作成暖米黄纸张底、按叙事�
 
 外部输入固定为 `inputMode = srt | topic | text`：
 
-| inputMode | rewritePolicy | voiceoverMode |
+| inputMode | rewritePolicy | voiceoverMode 来源 |
 |---|---|---|
-| `srt` | 不适用 | `disabled | edge-tts | minimax` |
-| `topic` | 仅 `generate` | `edge-tts | minimax` |
-| `text` | `preserve | polish` | `edge-tts | minimax` |
+| `srt` | 不适用 | 默认读取 `activeProvider`；明确静音时为 `disabled` |
+| `topic` | 仅 `generate` | 自动读取 `activeProvider` |
+| `text` | `preserve | polish` | 自动读取 `activeProvider` |
 
-`topic + preserve/polish`、`text + generate` 非法。非 SRT 必须有 15–600 秒 `targetDurationSeconds`；缺失时可建议 60 秒，但要与其他缺失配置一次性展示并等待确认。用户已给出的 target、rewritePolicy、voiceoverMode 直接沿用，不重复问同一具体值。
+`topic + preserve/polish`、`text + generate` 非法。非 SRT 必须有 15–600 秒 `targetDurationSeconds`；缺失时可建议 60 秒，但要与其他缺失配置一次性展示并等待确认。`voiceoverMode` 不属于用户选择项：除非用户明确要求静音，否则必须读取 skill 根目录 `config/voice-providers.local.json` 的 `activeProvider`，规范化为 `edge-tts` 或 `minimax` 后自动冻结。不得询问用户在 Edge TTS 与 MiniMax 之间选择，也不得从项目目录、旧项目 manifest、命令行 provider 参数或对话回复读取旁白 provider。
 
-topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经只读校验后，coordinator 生成审阅 artifact。内容、target、rewritePolicy、voiceoverMode、cue→scene、分镜和图片提示词必须通过一次“内容与制作方案联合确认”同时冻结；确认前不得运行 `prepare_source.py`、创建正式项目或写批准。传统 SRT 走严格解析并冻结 `storyboardPlanning` attempt，仍需分镜 Gate。详见 [references/phase-0-content.md](references/phase-0-content.md)、[references/content-input.md](references/content-input.md)。
+topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经只读校验后，coordinator 生成审阅 artifact。内容、target、rewritePolicy、由 activeProvider 派生的 voiceoverMode、cue→scene、分镜和图片提示词必须通过一次“内容与制作方案联合确认”同时冻结；确认前不得运行 `prepare_source.py`、创建正式项目或写批准。review 中可以展示“当前已采用：MiniMax/Edge TTS”供用户知情查看，但不把 provider 变成待选择问题。传统 SRT 走严格解析并冻结 `storyboardPlanning` attempt，仍需分镜 Gate。详见 [references/phase-0-content.md](references/phase-0-content.md)、[references/content-input.md](references/content-input.md)。
 
 权威时钟：`disabled` 使用 `source/source.srt` 原始全局时间轴；Edge/MiniMax 使用获批 provider 生成的真实 audio timeline 与 `audio/narration.srt`。`targetDurationSeconds` 只作内容预算和 provisional SRT，不是成片时钟。
 

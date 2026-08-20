@@ -11,11 +11,11 @@
 
 外部输入只能是 `inputMode=srt | topic | text`：
 
-| 输入 | rewritePolicy | voiceoverMode | 阶段 0 行为 |
+| 输入 | rewritePolicy | voiceoverMode 来源 | 阶段 0 行为 |
 | --- | --- | --- | --- |
-| `srt` | 不适用 | `disabled\|edge-tts\|minimax` | 不改写用户字幕；走传统 SRT 模式/语义分镜确认 |
-| `topic` | 仅 `generate` | `edge-tts\|minimax` | child 生成完整旁白、cue、scene 与 `imagePrompt` candidate |
-| `text` | `preserve\|polish` | `edge-tts\|minimax` | 按策略保真或局部润色，再生成 cue、scene 与 `imagePrompt` candidate |
+| `srt` | 不适用 | 默认读取 `activeProvider`；明确静音时为 `disabled` | 不改写用户字幕；走传统 SRT 模式/语义分镜确认 |
+| `topic` | 仅 `generate` | 自动读取 `activeProvider` | child 生成完整旁白、cue、scene 与 `imagePrompt` candidate |
+| `text` | `preserve\|polish` | 自动读取 `activeProvider` | 按策略保真或局部润色，再生成 cue、scene 与 `imagePrompt` candidate |
 
 拒绝 `topic+preserve`、`topic+polish`、`text+generate` 和非 SRT 的
 `voiceoverMode=disabled`。`targetDurationSeconds` 只用于内容预算和 provisional SRT；
@@ -23,8 +23,10 @@ topic/text 的正式时钟由获批真实音频 timeline 接管。
 
 ## 2. 阶段流程与唯一人工 Gate
 
-1. coordinator 冻结输入模式、rewritePolicy、target 和 voiceoverMode；缺失值合并为
-   一次前置确认，不逐字段重复询问。
+1. coordinator 冻结输入模式、rewritePolicy 和 target；旁白 provider 不询问用户，始终
+   读取 skill 根目录 `config/voice-providers.local.json` 的 `activeProvider`，规范化后自动
+   冻结为 `voiceoverMode=edge-tts` 或 `voiceoverMode=minimax`。review 只展示当前已采用的
+   provider；只有用户明确要求静音时，传统 SRT 才允许显式使用 `disabled`。
 2. 在允许真实派发时，由 `contentDrafting` child（或同合同 fallback）生成
    `whiteboard-content-draft-v1` candidate。child 不调用 provider、不写正式项目。
 3. coordinator 校验 candidate，确定性渲染 review Markdown，只交付链接、identity、
