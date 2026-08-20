@@ -212,6 +212,26 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 
 Edge TTS / MiniMax 的样音、完整旁白和真实时长流程见 [语音合同](references/voiceover.md)。人工批准、annotation candidate 和恢复流程的完整命令见 [SKILL.md](SKILL.md)。
 
+### Phase 4 可选 coordinator runner
+
+需要减少命令启动和主窗口往返时，可以使用可选 runner 串联本地确定性步骤；它不会自动批准，也不会把图片/TTS provider 请求藏进 agent task：
+
+```powershell
+& $envPy scripts\run_phase.py --project <项目根目录> --phase annotation-preview
+```
+
+runner 完成 annotation technical validation、current receipt 复用、candidate/区域预览、contact sheet 和 review manifest 后，必须停在 annotation 联合人工确认，并输出 artifact、identity、status、`approvalWritten=false` 和下一步需要的明确用户回复。技术 PASS、candidate、receipt 或 agent findings 都不等于用户批准。
+
+runner 中断后可直接恢复，也可退回逐步 CLI；保留 current binding 的步骤可以复用 receipt，binding 变化则重新 deep validation 并 fail closed：
+
+```powershell
+& $envPy scripts\generate_annotation_previews.py --project <项目根目录> --all --review-policy user_first
+& $envPy scripts\approve_annotation_review.py --project <项目根目录> `
+  --identity-hash <annotationReviewIdentitySha256>
+```
+
+失败只重做受影响步骤，不重发 provider 请求；`unknown_external_outcome` 不自动重试，旧批准也不会跨 identity/manifest/timeline/SRT 变化复用。完整字段合同、Gate 停止协议与恢复矩阵见 [Phase 4 runner 参考](references/phase-4-runner.md)。
+
 ## 配置与产物
 
 - [`workspace.example.json`](config/workspace.example.json)：首次运行的全 `1` 安全基线，不主动增加外部请求或本机负载。

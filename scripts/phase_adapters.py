@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+"""Deterministic Phase 4 adapters used by the optional phase runner.
+
+This module is deliberately a thin coordinator-facing boundary around the
+existing project APIs.  It does not own a CLI, does not dispatch providers,
+and never writes an approval.  The independent command line scripts remain
+the recovery/debugging path; callers may use :func:`run_annotation_preview`
+to avoid starting a new Python process for each deterministic step.
+"""
+
+from __future__ import annotations
+
+import re
+import uuid
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+try:
+    from .generate_annotation_previews import (
+        PREVIEW_BATCH_CONTRACT,
+        generate_annotation_preview_batch,
+    )
+    from .project_workspace import Project, WorkspaceConfig
+    from .render_timing import (
+        FormalValidationContext,
+        RenderTimingError,
+        build_formal_validation_context,
+        load_formal_validation_context_receipt,
+        resolve_formal_scenes,
+        write_formal_validation_context_receipt,
+    )
+except ImportError:  # pragma: no cover - direct script execution
+    from generate_annotation_previews import (  # type: ignore
+        PREVIEW_BATCH_CONTRACT,
+        generate_annotation_preview_batch,
+    )
+    from project_workspace import Project, WorkspaceConfig  # type: ignore
+    from render_timing import (  # type: ignore
+        FormalValidationContext,
+        RenderTimingError,
+        build_formal_validation_context,
+        load_formal_validation_context_receipt,
+        resolve_formal_scenes,
+        write_formal_validation_context_receipt,
+    )
+
+
+PHASE_ADAPTER_CONTRACT = "whiteboard-phase-adapters-v1"
+_RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+class PhaseAdapterError(ValueError):
+    """Stable adapter error; no project approval is written on failure."""
+
+
+def _safe_run_id(value: str) -> str:
+    if not isinstance(value, str) or _RUN_ID_RE.fullmatch(value) is None:
+        raise PhaseAdapterError("phase runId 必须是 1-64 位安全标识")
+    return value
+
+
+def _new_run_id() -> str:
+    # Keep the generated id human-recognisable while staying inside the
+    # formal receipt's conservative 64-character contract.
+    return f"phase-annotation-{uuid.uuid4().hex[:20]}"
+
+
+def _failure_projection(summary: Mapping[str, Any]) -> list[dict[str, Any]]:
+    failures: list[dict[str, Any]] = []
+    for scene in summary.get("scenes", ()):
+        if not isinstance(scene, Mapping):
+            continue
+        if scene.get("status") not in {"published_current_technical"}:
+            failures.append(dict(scene))
+    contact_error = summary.get("contactSheetError")
+    if contact_error:
+        failures.append({"scope": "contactSheet", "error": contact_error})
+    return failures
+
+
+def _adapt_summary(
+    project: Project,
+    context: FormalValidationContext,
+    summary: Mapping[str, Any],
+    *,
+    run_id: str,
+    validation_mode: str,
+) -> dict[str, Any]:
+    """Project the legacy preview summary into the shared phase contract."""
+
+    status = str(summary.get("status", "FAIL"))
+    current_identity = summary.get("annotationReviewIdentitySha256")
+    if not isinstance(current_identity, str) or not current_identity:
+        current_identity = summary.get("annotationBindingSha256")
+    contact = summary.get("contactSheet")
+    review_manifest = "manifests/annotation-review-manifest.json"
+    artifact_paths = [
+        item
+        for item in (
+            contact,
+            review_manifest if summary.get("annotationReviewIdentitySha256") else None,
+        )
+        if isinstance(item, str) and item
+    ]
+    deep_reused = validation_mode == "binding"
+    result: dict[str, Any] = {
+        "contractVersion": PHASE_ADAPTER_CONTRACT,
+        "phaseContractVersion": PREVIEW_BATCH_CONTRACT,
+        "status": status,
+        "projectId": project.project_id,
+        "runId": run_id,
+        "taskCount": int(summary.get("taskCount") or 0),
+        "configuredConcurrency": summary.get("configuredConcurrency"),
+        "effectiveConcurrency": summary.get("effectiveConcurrency", 0),
+        "peakConcurrency": summary.get(
+            "peakConcurrency", summary.get("peakActiveWorkers", 0)
+        ),
+        "successCount": int(summary.get("publishedCount") or 0),
+        "failureCount": int(summary.get("failedCount") or 0),
+        "partialSuccess": bool(summary.get("partialSuccess")),
+        "currentIdentity": current_identity,
+        "approvalWritten": False,
+        "userConfirmationRequired": True,
+        "nextGate": summary.get("nextHumanGate"),
+        "failures": _failure_projection(summary),
+        "artifact": contact,
+        "artifactUrl": contact,
+        "previewUrl": contact,
+        "artifactPaths": artifact_paths,
+        "contactSheet": contact,
+        "reviewManifest": review_manifest
+        if summary.get("annotationReviewIdentitySha256")
+        else None,
+        "formalValidationMode": validation_mode,
+        "formalValidationReceipt": summary.get("formalValidationReceipt"),
+        "formalValidationRunId": summary.get("formalValidationRunId") or run_id,
+        "deepValidationSkipped": deep_reused,
+        "deepValidationReused": deep_reused,
+        "deepValidationBasis": (
+            "同 run、未过期且 current binding 完全匹配的 formal validation receipt"
+            if deep_reused
+            else "本次运行已完成 timing/voice/annotation deep validation"
+        ),
+        "deepValidationSkipReason": (
+            "receipt current binding 完全匹配，跳过重复 annotation deep validation"
+            if deep_reused
+            else None
+        ),
+        "confirmationRequest": (
+            f"请明确确认 current annotation review identity "
+            f"{current_identity}；确认前不得写入 approval。"
+            if current_identity
+            else "技术校验未完成，不能进入 annotation review 人工确认。"
+        ),
+    }
+    # Preserve useful, stage-specific data (scene order, per-scene result,
+    # semantic review findings) without inventing another status vocabulary.
+    for key in (
+        "scenes",
+        "publishedOrder",
+        "publishedCount",
+        "failedCount",
+        "annotationBindingSha256",
+        "annotationReviewIdentitySha256",
+        "reviewPolicy",
+        "semanticReview",
+        "contactSheetSha256",
+        "contactSheetError",
+    ):
+        if key in summary:
+            result[key] = summary[key]
+    return result
+
+
+def run_annotation_preview(
+    workspace: WorkspaceConfig,
+    project: Project,
+    *,
+    run_id: str | None = None,
+    formal_context_receipt: str | Path | None = None,
+    review_policy: str = "user_first",
+    allow_v1_disabled_compat: bool = False,
+) -> dict[str, Any]:
+    """Run deterministic annotation technical validation and preview generation.
+
+    A missing receipt performs one deep validation of the complete current
+    project and writes a short-lived receipt.  A supplied receipt is loaded and
+    current-bound before any preview work; stale/mismatched evidence raises and
+    cannot silently fall back to PASS.  In either mode this function stops
+    after writing technical review evidence and returns the explicit human
+    confirmation boundary.  It never calls an image/TTS provider or approval
+    writer.
+    """
+
+    if formal_context_receipt is not None and run_id is None:
+        raise PhaseAdapterError("提供 formal_context_receipt 时必须同时提供 runId")
+    requested_run_id = _safe_run_id(run_id) if run_id is not None else _new_run_id()
+
+    if formal_context_receipt is not None:
+        context = load_formal_validation_context_receipt(
+            project,
+            formal_context_receipt,
+            expected_run_id=requested_run_id,
+        )
+        validation_mode = "binding"
+    else:
+        context = build_formal_validation_context(project)
+        # resolve_formal_scenes performs the complete scene-local technical
+        # validation exactly once before the coordinator publishes a receipt.
+        formals = resolve_formal_scenes(
+            project,
+            [scene["sceneId"] for scene in project.plan["scenes"]],
+            context=context,
+            allow_v1_disabled_compat=allow_v1_disabled_compat,
+        )
+        context, _receipt_path = write_formal_validation_context_receipt(
+            project,
+            context,
+            run_id=requested_run_id,
+            validated_formals=formals,
+        )
+        validation_mode = "deep"
+
+    summary = generate_annotation_preview_batch(
+        workspace,
+        project,
+        review_policy=review_policy,
+        allow_v1_disabled_compat=allow_v1_disabled_compat,
+        context=context,
+    )
+    return _adapt_summary(
+        project,
+        context,
+        summary,
+        run_id=requested_run_id,
+        validation_mode=validation_mode,
+    )
+
+
+__all__ = [
+    "PHASE_ADAPTER_CONTRACT",
+    "PhaseAdapterError",
+    "run_annotation_preview",
+]

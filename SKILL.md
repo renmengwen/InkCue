@@ -41,6 +41,8 @@ topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经�
 - 内容/制作方案联合确认、传统 SRT 分镜确认、样音批准、完整旁白与真实时长批准、线稿确认、annotation/区域/reveal 联合批准、scene bundle 批准、最终成片批准彼此独立。修改上一步只重做受影响步骤并重过对应 Gate。
 - 五类持久化 identity 必须绑定 current 字节和证据：`SAMPLE_IDENTITY`、`FULL_IDENTITY`、`annotationReviewIdentitySha256`、`sceneReviewIdentityHash`、`FINAL_IDENTITY`。批准脚本仅批准刚检查的 identity。
 - `unknown_external_outcome`（provider 请求后 candidate/receipt 不完整且不能按同一幂等键查询）不得普通重跑或 `--retry-failed` 自动重发；必须单独取得用户承担新外部调用的授权。
+
+Phase 4 提供可选的本地 coordinator runner：`scripts/run_phase.py --project <project> --phase annotation-preview`。runner 只串联确定性校验、receipt 复用、candidate/preview/contact sheet 和摘要，遇到人工 Gate 必须停止并保持 `approvalWritten=false`；逐步 CLI 始终保留为调试和恢复路径。字段、Gate 停止与恢复合同见 [references/phase-4-runner.md](references/phase-4-runner.md)。
 - preview 服务必须由 `serve_preview.py --ensure --project <root>` 启动/复用，并验证 `PREVIEW_READY=PASS`、项目 API、全部 ready/current scene 后交付完整 `PREVIEW_URL`；失败报告 `BLOCKED/FAIL` 真实原因。
 
 | Gate | 用户必须检查 | 通过后允许 |
