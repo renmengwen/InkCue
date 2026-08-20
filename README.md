@@ -17,6 +17,7 @@ InkCue（墨序）可以把主题、正文或 SRT 制作为 1920x1080、60fps �
 - 按字幕事件和全局帧边界依次落墨，而不是一次性显示整张图片。
 - 支持 OpenAI Images Generations 兼容的图片服务。
 - 提供标注预览、局部重做、断点恢复和 stale 检查。
+- 正式多幕按 `sceneRender` 有界并行生成 candidate，并由 coordinator 按 generation plan 顺序复核、原子发布。
 - 使用 FFmpeg/libx264 编码，并进行 ffprobe、帧数和完整解码验证。
 - 人工批准绑定 artifact identity，上游变化后不会误用旧结果。
 - 326 个 `unittest` 测试覆盖主要工作流。
@@ -52,7 +53,7 @@ InkCue（墨序）可以把主题、正文或 SRT 制作为 1920x1080、60fps �
         +---- Edge TTS 样音与完整旁白确认
         |
         v
-线稿确认 -> 区域标注与预览确认 -> 场景联合确认
+线稿确认 -> 区域标注与预览确认 -> 正式多幕有界并行 -> 场景联合确认
         |
         v
 合并 -> 字幕烧录 -> 可选旁白封装 -> 媒体验证
@@ -62,6 +63,8 @@ output/final.mp4 最终确认
 ```
 
 技术校验通过不等于人工批准。每次批准只对当时的文件、时间轴和配置 identity 有效。
+
+正式多幕渲染会记录 `configuredSceneRenderConcurrency` 与 `readySceneCount`，并按 `effectiveSceneRenderConcurrency = min(configuredSceneRenderConcurrency, readySceneCount)` 计算有效 worker 数。worker 只生成并深验彼此独立的单幕 candidate；coordinator 即使收到乱序结果，也必须按 generation plan 顺序复核 current binding 并原子发布。任一必需幕失败时 batch 仍为 `FAIL`；即使已有部分幕成功发布，也不能进入全量 scene review。只有全部必需幕 current、用户明确批准 current 有序 scene bundle 后，才允许合并。
 
 ## 环境要求
 
@@ -150,6 +153,20 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 # 不传 --voiceover-mode 时，新项目读取 config/voice-providers.local.json 的 activeProvider；
 # 如果需要明确创建静音项目，请显式传 --voiceover-mode disabled。
 
+# Edge：生成样音；完整试听并明确确认后，才批准刚试听的 current identity
+& $envPy scripts\generate_voiceover.py sample --project <项目根目录> `
+  --voice zh-CN-YunjianNeural --rate 0
+& $envPy scripts\generate_voiceover.py approve-sample --project <项目根目录> `
+  --identity-hash <刚完整试听的-SAMPLE_IDENTITY>
+
+# Edge：生成并技术校验完整旁白；完整试听并确认真实时长后，才批准 current identity
+& $envPy scripts\generate_voiceover.py full --project <项目根目录>
+& $envPy scripts\validate_voiceover.py --project <项目根目录>
+& $envPy scripts\generate_voiceover.py approve-full --project <项目根目录> `
+  --identity-hash <刚完整试听旁白所对应的-FULL_IDENTITY>
+# 仅当真实时长偏差超过 10% 且用户明确接受时，approve-full 再附加：
+#   --duration-decision accept_actual
+
 # 图片
 & $envPy scripts\generate_images.py --project <项目根目录>
 & $envPy scripts\validate_generated_images.py --project <项目根目录> `
@@ -163,18 +180,33 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 & $envPy scripts\generate_annotation_previews.py --project <项目根目录> --all `
   --review-policy user_first
 # agent_first 只在 preview bundle 完成后增加一次预审；annotationDrafting 仍须查看原图
+# 仅在用户一次确认 current 标注、区域预览、protectedRegions 与 reveal 时序后：
+& $envPy scripts\approve_annotation_review.py --project <项目根目录> `
+  --identity-hash <annotationReviewIdentitySha256>
 
 # 场景渲染与联合审阅
 & $envPy scripts\render_stream_whiteboard.py --project <项目根目录> --all
 & $envPy scripts\scene_review.py --project <项目根目录> `
   --review-policy user_first
 # agent_first 只准备一次全量 bundle 预审，每幕仅抽少量关键帧
+# 仅在用户确认全部 current scene 的有序 bundle 后：
+& $envPy scripts\approve_scene_review.py --project <项目根目录> `
+  --identity-hash <sceneReviewIdentityHash>
 
-# 合并、字幕与验证
+# 合并、字幕、按需旁白封装与验证
+# --inputs 必须严格使用 current approved scene review bundle 所绑定的 scene 集合与
+# generation plan 顺序；不得用目录枚举、完成顺序或旧日志自行拼接输入。
 & $envPy scripts\merge_scenes.py --project <项目根目录> --inputs <场景视频...>
 & $envPy scripts\burn_subtitles.py --project <项目根目录>
+# 仅 Edge TTS / MiniMax：
+& $envPy scripts\mux_voiceover.py --project <项目根目录>
 & $envPy scripts\validate_final_media.py --project <项目根目录>
+# 仅在用户完整观看 current final（旁白模式还须完整听音）并明确确认后：
+& $envPy scripts\approve_final_media.py --project <项目根目录> `
+  --identity-hash <刚完整看片听音的-FINAL_IDENTITY>
 ```
+
+`merge_scenes.py` 会在写 concat 列表或 candidate 之前硬校验 current scene review approval；批准缺失、stale、scene 集合或输入顺序不匹配时返回退出码 5。批准通过后，`merge_scenes.py → burn_subtitles.py →（旁白模式）mux_voiceover.py → validate_final_media.py` 是连续技术链路，clean master 不增加人工关卡。技术验证完成后仍必须停在最终成片人工确认；CLI 不读取或推断聊天批准。
 
 上述三个阶段都支持 `--review-policy user_first|agent_first`。线稿验证成功后自动生成 `reviews/line-art-review-<identity>.md` 与 current technical manifest，主窗口只交付文件链接、identity 和异常摘要。`user_first` 在必要技术校验后记录 `semanticReview.status=skipped_by_user` 并直接交给用户；`agent_first` 只准备宿主可消费的 spawn package，由 child 通过 findings/result 文件交接完整意见，不自动批准。两种策略都保留对应人工确认关卡。
 
@@ -182,11 +214,12 @@ Edge TTS / MiniMax 的样音、完整旁白和真实时长流程见 [语音合�
 
 ## 配置与产物
 
-- [`workspace.example.json`](config/workspace.example.json)：工作区、并发和字幕编码 preset。
+- [`workspace.example.json`](config/workspace.example.json)：首次运行的全 `1` 安全基线，不主动增加外部请求或本机负载。
+- [`workspace.performance.example.json`](config/workspace.performance.example.json)：性能配置示例，只能作为测量后调优的起点，不是默认配置。
 - [`image-providers.example.json`](config/image-providers.example.json)：图片服务配置模板。
 - [`voice-providers.example.json`](config/voice-providers.example.json)：Edge TTS / MiniMax 配置模板。
 
-`execution.agents` 控制 Codex 子任务并发，`execution.concurrency` 控制本地 worker；两者是独立资源池。首次运行建议从 `default: 1` 开始。
+`execution.agents` 控制 Codex 子任务并发，`execution.concurrency` 控制本地 worker；两者是独立资源池。首次运行直接使用 `workspace.example.json` 的全 `1` 安全基线。`workspace.performance.example.json` 中高于 `1` 的值只是性能示例；启用前需基于实际测量评估 CPU、内存、磁盘、provider 限流和费用。`sceneRender` 已是当前正式多幕能力，但不承诺某个固定值一定最快；它只改变运行调度和审计，不进入作品 identity。
 
 主要项目产物：
 

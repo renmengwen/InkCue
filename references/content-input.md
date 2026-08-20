@@ -230,6 +230,17 @@ coordinator 只消费 renderer 的结构化短摘要和 review 路径，不再�
 - 每个 `imagePrompt` 会作为独立场景请求的一部分发送，必须在本条内完整写出画布、纸张、线稿、配色、按该幕实际语义确定的造型锚点、构图、留白和禁字/禁水印约束；还必须明确一个核心视觉命题、必要时 2–3 个可独立揭示区域、区域间真实纸面留白，并禁止跨区域贯穿性连续结构。必须不可分割的连续构图才合并为一个簇。不得依赖其他 scene 或先前图片，不得使用“延续”“沿用”“同上”“上一幕”“参照前图”等跨请求指代。`globalPrompt` 的确定性拼接不能替代单幕提示词的自包含性。
 - 不接受 API Key、Cookie、Token、临时 URL、PID、本机绝对路径或完整模型内部响应；JSON 和 manifest 都不得成为凭据载体。
 
+### `imagePrompt` 到正式 `prompt` 的确定性映射
+
+`imagePrompt` 只属于 `whiteboard-content-draft-v1` 内容草案；正式 `planning/generation-plan.json` 的 scene 字段名固定为 `prompt`。用户确认 current 内容草案后，coordinator 通过 `prepare_source.py` / `scripts.content_source.build_generation_plan()` 做逐幕确定性映射：
+
+```text
+content draft scenes[i].imagePrompt
+  → formal generation plan scenes[i].prompt
+```
+
+映射保持同一 scene 的提示词文本和顺序，不让 child、provider 或人工复制时另行改写。正式 generation plan 不得保留 `imagePrompt`，内容草案也不得把该字段提前改名为 `prompt`；传统 SRT 的 storyboard candidate 则从一开始就使用正式 `prompt` schema。后续 provider 请求使用 `globalPrompt + scene.prompt` 的确定性组合，但 `globalPrompt` 仍不能替代单幕 prompt 的自包含约束。
+
 三种 rewritePolicy 必须同时遵守上面的模式边界：`text + preserve` 保持原文与声口，`text + polish` 展示完整新稿和实质改动，`topic + generate` 从首稿直接生成自然口播。不确定事实不能伪装成已核验事实；确认前不得准备 source 或建项。
 
 仓库示例分别见：[`topic + generate`](../examples/topic-habit-loop-content-draft.json)、[`text + preserve`](../examples/text-habit-loop-content-draft.json) 和 [`text + polish`](../examples/text-habit-loop-polish-content-draft.json)。示例只证明结构与策略边界，不代表用户已确认内容，也不替代真实朗读和人工审稿。

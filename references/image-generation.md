@@ -76,6 +76,8 @@ output/final.mp4
 
 `planning/generation-plan.json` 冻结本次画布、全局视觉提示和场景顺序。第一版固定要求：
 
+- topic/text 内容草案使用 `imagePrompt`，formal generation plan 的 scene 字段固定为 `prompt`；用户批准 current 草案后，只能由 coordinator 做 `imagePrompt` → formal `prompt` 的确定性映射，文本与 scene 顺序保持不变。正式 plan 不接受 `imagePrompt`，provider 也不直接消费内容草案。
+
 - `outputCanvas` 为 `1920×1080`、`#F5EBD7`、`contain`。
 - `constraints.forbidText` 严格为 `true`。
 - `globalPrompt` 非空，并完整包含 Skill 的统一视觉规范。
@@ -166,7 +168,7 @@ coordinator 先冻结 `attemptId`、image input identity、candidate/receipt/for
 <ENV_PY> scripts/generate_images.py --project <项目根目录> --cover
 ```
 
-封面不是 scene 源图，也不进入 `generation-plan.json` 的普通场景集合。`cover_generation.py` 从全片 `topic/body`（或 source SRT）、全部 narration cues，以及 generation plan 中每个 scene 的 `coreIdea`、`visualSubject`、`imagePrompt` 汇总语义，固定记录 `semanticSource=whole_video`。标题和副标题由本地确定性排版完成；provider 不可用或没有正式场景图时，使用暖米黄白板画布或已有 scene 图作为 fallback。
+封面不是 scene 源图，也不进入 `generation-plan.json` 的普通场景集合。`cover_generation.py` 从全片 `topic/body`（或 source SRT）、全部 narration cues，以及 formal generation plan 中每个 scene 的 `coreIdea`、`visualSubject`、`prompt` 汇总语义，固定记录 `semanticSource=whole_video`。标题和副标题由本地确定性排版完成；provider 不可用或没有正式场景图时，使用暖米黄白板画布或已有 scene 图作为 fallback。
 
 成功产物为：
 

@@ -124,7 +124,7 @@ output/final-subtitled-video-only.mp4
 output/final.mp4
 ```
 
-字幕 CLI 只读取技术验证通过的 clean `final-video-only.mp4`，发布 captioned 静音诊断母版。全部单幕完成串行渲染/检查并通过 current scene review bundle 联合批准后，clean 合并、字幕烧录和按需音频封装属于同一条连续成片链路，中间不等待 clean master 人工确认。Disabled 模式再将同一已验证字节原子发布为 `final.mp4`，不重复编码；Edge 模式由后续 mux CLI 使用 `-c:v copy` 封装批准后的 canonical WAV。
+字幕 CLI 只读取技术验证通过的 clean `final-video-only.mp4`，发布 captioned 静音诊断母版。全部单幕按 `sceneRender` 有界并行生成和逐幕检查、由 coordinator 按 generation plan 顺序发布，并通过 current scene review bundle 联合批准后，clean 合并、字幕烧录和按需音频封装属于同一条连续成片链路，中间不等待 clean master 人工确认。Disabled 模式再将同一已验证字节原子发布为 `final.mp4`，不重复编码；Edge 模式由后续 mux CLI 使用 `-c:v copy` 封装批准后的 canonical WAV。
 
 `manifests/delivery-manifest.json` 顶层固定为：
 
@@ -161,7 +161,7 @@ contact sheet 和正式字幕流程都不需要浏览器、预览台、文件选
   --identity-hash <刚完整看片听音的 FINAL_IDENTITY>
 ```
 
-烧录命令没有 `--preset`：它只读取 workspace JSON 中的 `execution.videoEncoding.subtitlePreset`，缺失时为 `medium`。Phase 8 多幕正式候选并发仍未实施，`sceneRender=1`；场景只串行渲染，但用户对全部 current scene 的有序 review bundle 一次确认，字幕 preset 不改变这一边界。
+烧录命令没有 `--preset`：它只读取 workspace JSON 中的 `execution.videoEncoding.subtitlePreset`，缺失时为 `medium`。正式多幕候选当前已经支持 `execution.concurrency.sceneRender` 控制的有界并发；`sceneRender=1` 只是可用的安全基线和运行时降级值，不是能力限制。并行 worker 只生成并深验彼此独立的单幕 candidate，coordinator 仍按 generation plan 顺序发布；部分幕失败时不得形成可批准的完整 bundle。用户必须对全部 current scene 的有序 review bundle 一次确认，current scene review approval 通过后才能进入合并与字幕烧录，字幕 preset 不改变这一边界。
 
 Disabled 验收要求 clean/captioned/final 都恰好 1 路视频、0 音频；captioned/final 为 H.264、1920×1080、yuv420p、项目 fps，烧录前后帧数和时长保持。Edge 的字幕仍先独立烧录为 0 音频的 captioned video，最终 AAC 封装由 `mux_voiceover.py` 完成。
 

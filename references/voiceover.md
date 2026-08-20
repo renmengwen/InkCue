@@ -264,7 +264,7 @@ Edge annotation 必须绑定 current audio SHA、timeline SHA、timing plan SHA�
 
 ## 最终封装与批准
 
-全部单幕完成串行渲染/检查并通过 current scene review bundle 联合批准后，连续生成并技术验证 clean master、烧录 narration SRT，再执行：
+全部单幕按 `sceneRender` 有界并行生成和逐幕检查、由 coordinator 按 generation plan 顺序发布，并通过 current scene review bundle 联合批准后，连续生成并技术验证 clean master、烧录 narration SRT，再执行：
 
 ```powershell
 <ENV_PY> scripts/mux_voiceover.py --project <项目根目录>
@@ -332,4 +332,4 @@ stale 文件可作为历史证据保留，但不得作为 current 输入进入�
 
 不得报告为 PASS，也不得用 SKIP 或 fixture PASS 冒充真实 Edge 已验收。真实图片 provider 与人工视觉/声音判断也必须单列为 SKIP/BLOCK/待用户确认。本文只描述验收合同，不声明当前环境已经完成真实 Edge、真实图片 provider 或人工验收。
 
-完整旁白批准只提前确认 current 配音与真实时长，不替代线稿、一次性 annotation review bundle 批准、一次性 scene review bundle 批准、最终字幕烧录/contact sheet 或最终成片完整看片听音批准。annotation 技术 current 后可先生成本地区域预览，再把标注内容、预览、`protectedRegions` 与 reveal 时序合并确认；scene 仍串行渲染和逐幕技术检查，但只对有序 current bundle 做一次人工批准。clean master 只是连续成片链路中的技术中间工件，不设独立人工确认。
+完整旁白批准只提前确认 current 配音与真实时长，不替代线稿、一次性 annotation review bundle 批准、一次性 scene review bundle 批准、最终字幕烧录/contact sheet 或最终成片完整看片听音批准。annotation 技术 current 后可先生成本地区域预览，再把标注内容、预览、`protectedRegions` 与 reveal 时序合并确认；scene 按 `sceneRender` 有界并行生成 candidate、逐幕技术检查并由 coordinator 按 plan 顺序发布，但仍只对有序 current bundle 做一次人工批准。clean master 只是连续成片链路中的技术中间工件，不设独立人工确认。

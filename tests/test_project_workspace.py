@@ -158,7 +158,7 @@ class ProjectWorkspaceTests(unittest.TestCase):
             example["execution"]["videoEncoding"],
             {"subtitlePreset": "medium"},
         )
-        self.assertEqual(example["execution"]["concurrency"]["sceneRender"], 5)
+        self.assertEqual(example["execution"]["concurrency"]["sceneRender"], 1)
         config = load_workspace_config(self.config_path)
         self.assertEqual(config.root, self.workspace_root.resolve())
         self.assertTrue(config.root.is_dir())

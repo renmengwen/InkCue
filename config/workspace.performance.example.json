@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "workspaceRoot": "D:\\SRTWhiteboard",
+  "execution": {
+    "videoEncoding": {
+      "subtitlePreset": "medium"
+    },
+    "agents": {
+      "default": 4,
+      "contentDrafting": 4,
+      "storyboardPlanning": 4,
+      "visualReview": 4,
+      "annotationDrafting": 4
+    },
+    "concurrency": {
+      "default": 5,
+      "imageGeneration": 6,
+      "voiceGeneration": 6,
+      "imageValidation": 6,
+      "voiceValidation": 6,
+      "annotationValidation": 6,
+      "annotationPreview": 6,
+      "sceneRender": 5,
+      "sceneMediaValidation": 8,
+      "finalMediaValidation": 8
+    }
+  }
+}
