@@ -26,6 +26,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+import validation_receipts
+
 
 PROTOCOL = "openai-images-generations"
 CANVAS_SIZE = (1920, 1080)
@@ -59,6 +61,7 @@ ATTEMPT_STATUSES = frozenset(
     }
 )
 CANDIDATE_RECEIPT_VERSION = "whiteboard-image-candidate-receipt-v1"
+IMAGE_VALIDATOR_CONTRACT_VERSION = "whiteboard-image-candidate-validator-v2"
 
 
 class ImageGenerationError(RuntimeError):
@@ -691,8 +694,8 @@ def normalize_image_candidate(
         )
         os.replace(normalized_part, target)
         candidate_bytes = target.stat().st_size
-        validator_receipt: dict[str, Any] = {
-            "contractVersion": CANDIDATE_RECEIPT_VERSION,
+        receipt_evidence: dict[str, Any] = {
+            "legacyContractVersion": CANDIDATE_RECEIPT_VERSION,
             "attemptId": attempt_id,
             "sceneId": scene_id,
             "inputIdentitySha256": input_identity_sha256,
@@ -708,6 +711,14 @@ def normalize_image_candidate(
             },
             "imageMetadata": metadata.to_manifest_fields(),
         }
+        validator_receipt = validation_receipts.build_candidate_receipt(
+            candidate_sha256=image_hash,
+            candidate_bytes=candidate_bytes,
+            decoded=True,
+            format="PNG",
+            validator_contract=IMAGE_VALIDATOR_CONTRACT_VERSION,
+            evidence=receipt_evidence,
+        )
         with receipt_part.open("x", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(validator_receipt, ensure_ascii=False, indent=2) + "\n")
             handle.flush()
@@ -784,44 +795,92 @@ def load_image_candidate(
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ImageValidationError("candidate receipt 不存在或无效") from exc
-    if not isinstance(receipt, dict) or receipt.get("contractVersion") != CANDIDATE_RECEIPT_VERSION:
+    if not isinstance(receipt, dict):
         raise ImageValidationError("candidate receipt contract 无效")
-    if receipt.get("sceneId") != expected_scene_id:
+    try:
+        receipt_read = validation_receipts.read_candidate_receipt(receipt)
+    except validation_receipts.ReceiptValidationError as exc:
+        raise ImageValidationError(str(exc)) from exc
+    needs_deep = not receipt_read.current_contract
+    if receipt_read.current_contract:
+        receipt_contract = receipt_read.receipt.get("validatorContract")
+        if not isinstance(receipt_contract, str):
+            raise ImageValidationError("candidate receipt validator contract 无效")
+        try:
+            current_receipt = validation_receipts.bind_candidate_receipt(
+                path,
+                receipt_read.receipt,
+                expected_format="PNG",
+                expected_validator_contract=receipt_contract,
+            )
+        except validation_receipts.ReceiptValidationError as exc:
+            raise ImageValidationError(str(exc)) from exc
+        evidence = current_receipt.get("evidence")
+        if not isinstance(evidence, Mapping):
+            raise ImageValidationError("candidate receipt evidence 无效")
+        needs_deep = receipt_contract != IMAGE_VALIDATOR_CONTRACT_VERSION
+    if needs_deep:
+        # 旧 receipt 只作为深验所需的兼容元数据，绝不能直接成为 current PASS。
+        if not receipt_read.current_contract:
+            if receipt.get("contractVersion") != CANDIDATE_RECEIPT_VERSION:
+                raise ImageValidationError("candidate receipt contract 无效")
+            evidence = receipt
+        Image, UnidentifiedImageError = _load_pillow()
+        try:
+            with Image.open(path) as image:
+                image.load()
+                if image.format != "PNG" or image.mode != "RGB" or image.size != CANVAS_SIZE:
+                    raise ImageValidationError("candidate PNG 格式、模式或尺寸不正确")
+        except ImageValidationError:
+            raise
+        except (UnidentifiedImageError, OSError, ValueError) as exc:
+            raise ImageValidationError("candidate PNG 无法完整解码") from exc
+        actual_hash = sha256_file(path)
+        actual_bytes = path.stat().st_size
+        receipt = validation_receipts.build_candidate_receipt(
+            candidate_sha256=actual_hash,
+            candidate_bytes=actual_bytes,
+            decoded=True,
+            format="PNG",
+            validator_contract=IMAGE_VALIDATOR_CONTRACT_VERSION,
+            evidence={"legacyContractVersion": CANDIDATE_RECEIPT_VERSION, **dict(evidence)},
+        )
+        receipt_part = receipt_path.with_name(f".{receipt_path.name}.{uuid.uuid4().hex}.part")
+        try:
+            with receipt_part.open("x", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(receipt_part, receipt_path)
+        finally:
+            receipt_part.unlink(missing_ok=True)
+        current_receipt = receipt
+    if evidence.get("sceneId") != expected_scene_id:
         raise ImageValidationError("candidate receipt scene identity 不匹配")
-    if receipt.get("attemptId") != expected_attempt_id:
+    if evidence.get("attemptId") != expected_attempt_id:
         raise ImageValidationError("candidate receipt attempt identity 不匹配")
-    if receipt.get("inputIdentitySha256") != expected_input_identity_sha256:
+    if evidence.get("inputIdentitySha256") != expected_input_identity_sha256:
         raise ImageValidationError("candidate receipt input identity 不匹配")
-    if receipt.get("candidateFile") != path.name or not path.is_file():
+    if evidence.get("candidateFile") != path.name or not path.is_file():
         raise ImageValidationError("candidate receipt 文件绑定无效")
-    if receipt.get("formalFile") != expected_formal_file:
+    if evidence.get("formalFile") != expected_formal_file:
         raise ImageValidationError("candidate receipt formalFile 绑定无效")
     actual_hash = sha256_file(path)
     actual_bytes = path.stat().st_size
-    if receipt.get("candidateSha256") != actual_hash or receipt.get("candidateBytes") != actual_bytes:
+    if current_receipt.get("candidateSha256") != actual_hash or current_receipt.get("candidateBytes") != actual_bytes:
         raise ImageValidationError("candidate SHA/bytes 与 receipt 不匹配")
-    metadata_raw = receipt.get("imageMetadata")
+    metadata_raw = evidence.get("imageMetadata")
     if not isinstance(metadata_raw, dict):
         raise ImageValidationError("candidate receipt 缺少图片元数据")
     metadata = _metadata_from_receipt(metadata_raw)
     if metadata.image_sha256 != actual_hash:
         raise ImageValidationError("candidate metadata SHA 不匹配")
-    source = receipt.get("source")
-    provider_attempts = receipt.get("providerAttempts")
+    source = evidence.get("source")
+    provider_attempts = evidence.get("providerAttempts")
     if source not in {"b64_json", "url"}:
         raise ImageValidationError("candidate receipt source 无效")
     if isinstance(provider_attempts, bool) or not isinstance(provider_attempts, int) or provider_attempts < 1:
         raise ImageValidationError("candidate receipt providerAttempts 无效")
-    Image, UnidentifiedImageError = _load_pillow()
-    try:
-        with Image.open(path) as image:
-            image.load()
-            if image.format != "PNG" or image.mode != "RGB" or image.size != CANVAS_SIZE:
-                raise ImageValidationError("candidate PNG 格式、模式或尺寸不正确")
-    except ImageValidationError:
-        raise
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
-        raise ImageValidationError("candidate PNG 无法完整解码") from exc
     return ImageCandidate(
         path=path,
         receipt_path=receipt_path,
@@ -833,8 +892,22 @@ def load_image_candidate(
         source=source,
         provider_attempts=provider_attempts,
         metadata=metadata,
-        validator_receipt=receipt,
+        validator_receipt=current_receipt,
     )
+
+
+def bind_image_candidate(candidate: ImageCandidate, path: str | Path) -> None:
+    """只复核发布后 PNG 与 current receipt；binding 失败绝不回退 deep。"""
+
+    try:
+        validation_receipts.bind_candidate_receipt(
+            path,
+            candidate.validator_receipt,
+            expected_format="PNG",
+            expected_validator_contract=IMAGE_VALIDATOR_CONTRACT_VERSION,
+        )
+    except validation_receipts.ReceiptValidationError as exc:
+        raise ImageValidationError(str(exc)) from exc
 
 
 def publish_image_candidate(
@@ -848,9 +921,18 @@ def publish_image_candidate(
     target = Path(destination).resolve(strict=False)
     if target.exists() and not overwrite:
         raise ImageValidationError("正式目标已存在且未授权覆盖")
+    bind_image_candidate(candidate, candidate.path)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.publishing.tmp")
+    backup = target.with_name(f".{target.name}.{uuid.uuid4().hex}.previous")
+    had_formal = target.is_file()
+    preserve_backup = False
     try:
+        if had_formal:
+            try:
+                os.link(target, backup)
+            except OSError:
+                shutil.copy2(target, backup)
         with candidate.path.open("rb") as source_handle, temporary.open("xb") as target_handle:
             shutil.copyfileobj(source_handle, target_handle, length=1024 * 1024)
             target_handle.flush()
@@ -858,10 +940,24 @@ def publish_image_candidate(
         if sha256_file(temporary) != candidate.sha256 or temporary.stat().st_size != candidate.byte_count:
             raise ImageValidationError("正式发布临时文件 SHA/bytes 不匹配")
         os.replace(temporary, target)
-        if sha256_file(target) != candidate.sha256 or target.stat().st_size != candidate.byte_count:
-            raise ImageValidationError("正式发布后 SHA/bytes 不匹配")
+        try:
+            bind_image_candidate(candidate, target)
+        except Exception:
+            try:
+                if had_formal and backup.is_file():
+                    os.replace(backup, target)
+                elif target.is_file():
+                    target.unlink()
+            except OSError as restore_error:
+                preserve_backup = True
+                raise ImageValidationError(
+                    "图片发布后 binding 失败，旧正式文件恢复失败"
+                ) from restore_error
+            raise
     finally:
         temporary.unlink(missing_ok=True)
+        if not preserve_backup:
+            backup.unlink(missing_ok=True)
 
 
 def normalize_and_store_image(

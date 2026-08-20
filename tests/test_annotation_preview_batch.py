@@ -26,6 +26,7 @@ import generate_voiceover  # noqa: E402
 import project_workspace  # noqa: E402
 import render_annotation_preview  # noqa: E402
 import render_timing  # noqa: E402
+import validation_receipts  # noqa: E402
 from test_annotation_batch import AnnotationBatchFixture  # noqa: E402
 
 
@@ -222,6 +223,118 @@ class AnnotationPreviewBatchTests(AnnotationBatchFixture):
                 writer(path)
                 with self.assertRaises(previews.AnnotationPreviewBatchError):
                     previews._validate_preview_candidate(path)
+
+    def test_preview_candidate_deep_once_then_receipt_binding_publish(self) -> None:
+        project = self.make_current_project(1)
+        with mock.patch.object(
+            previews,
+            "_validate_preview_candidate",
+            wraps=previews._validate_preview_candidate,
+        ) as deep, mock.patch.object(
+            previews,
+            "bind_candidate_receipt",
+            wraps=previews.bind_candidate_receipt,
+        ) as binding:
+            summary = previews.generate_annotation_preview_batch(
+                self.workspace_for_preview(1),
+                project,
+            )
+        self.assertEqual(summary["status"], "PASS")
+        self.assertEqual(deep.call_count, 1)
+        # scene candidate 发布前/后各一次；contact sheet 同样各一次。
+        self.assertEqual(binding.call_count, 4)
+
+    def test_preview_batch_accepts_same_run_formal_receipt_without_second_deep_pass(self) -> None:
+        project = self.make_current_project(2)
+        context = render_timing.build_formal_validation_context(project)
+        scene_ids = [scene["sceneId"] for scene in project.plan["scenes"]]
+        formals = render_timing.resolve_formal_scenes(project, scene_ids, context=context)
+        loaded, receipt_path = render_timing.write_formal_validation_context_receipt(
+            project,
+            context,
+            run_id="preview-reuse",
+            validated_formals=list(formals),
+        )
+        self.assertEqual(loaded.receipt_run_id, "preview-reuse")
+        with mock.patch.object(
+            previews,
+            "build_formal_validation_context",
+            side_effect=AssertionError("receipt binding 不得重建 deep context"),
+        ), mock.patch.object(
+            render_timing,
+            "validate_annotation",
+            side_effect=AssertionError("receipt binding 不得再次 deep annotation"),
+        ):
+            summary = previews.generate_annotation_preview_batch(
+                self.workspace_for_preview(1),
+                project,
+                formal_context_receipt=receipt_path,
+                formal_context_run_id="preview-reuse",
+            )
+        self.assertEqual(summary["status"], "PASS")
+        self.assertEqual(summary["formalValidationMode"], "binding")
+        self.assertEqual(
+            summary["formalValidationReceipt"],
+            receipt_path.relative_to(project.root).as_posix(),
+        )
+
+    def test_preview_binding_rejects_missing_or_mismatched_receipt_without_overwrite(self) -> None:
+        root = self.project_root / "receipt-binding"
+        root.mkdir()
+        candidate = root / "candidate.png"
+        target = root / "current.png"
+        Image.new("RGB", (1920, 1080), "#F5EBD7").save(candidate, format="PNG")
+        Image.new("RGB", (1920, 1080), "#123456").save(target, format="PNG")
+        old_sha = project_workspace.sha256_file(target)
+        digest, byte_count = previews._validate_preview_candidate(candidate)
+        receipt = validation_receipts.build_candidate_receipt(
+            candidate_sha256=digest,
+            candidate_bytes=byte_count,
+            decoded=True,
+            format="PNG",
+            validator_contract=previews.PREVIEW_VALIDATOR_CONTRACT,
+            ttl_seconds=60,
+        )
+        with self.assertRaisesRegex(previews.AnnotationPreviewBatchError, "receipt 缺失"):
+            previews._publish_bytes_atomic(candidate, target, digest)
+        mismatched = dict(receipt)
+        mismatched["candidateBytes"] += 1
+        mismatched["receiptSha256"] = validation_receipts.receipt_sha256(mismatched)
+        with self.assertRaisesRegex(previews.AnnotationPreviewBatchError, "receipt 无效"):
+            previews._publish_bytes_atomic(candidate, target, digest, mismatched)
+        self.assertEqual(project_workspace.sha256_file(target), old_sha)
+
+    def test_preview_post_publish_binding_failure_restores_previous_current(self) -> None:
+        root = self.project_root / "receipt-restore"
+        root.mkdir()
+        candidate = root / "candidate.png"
+        target = root / "current.png"
+        Image.new("RGB", (1920, 1080), "#F5EBD7").save(candidate, format="PNG")
+        Image.new("RGB", (1920, 1080), "#123456").save(target, format="PNG")
+        old_sha = project_workspace.sha256_file(target)
+        digest, byte_count = previews._validate_preview_candidate(candidate)
+        receipt = validation_receipts.build_candidate_receipt(
+            candidate_sha256=digest,
+            candidate_bytes=byte_count,
+            decoded=True,
+            format="PNG",
+            validator_contract=previews.PREVIEW_VALIDATOR_CONTRACT,
+            ttl_seconds=60,
+        )
+        real_bind = previews.bind_candidate_receipt
+        calls = 0
+
+        def fail_after_publish(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise validation_receipts.ReceiptValidationError("post publish stale")
+            return real_bind(*args, **kwargs)
+
+        with mock.patch.object(previews, "bind_candidate_receipt", side_effect=fail_after_publish):
+            with self.assertRaisesRegex(previews.AnnotationPreviewBatchError, "正式 preview binding"):
+                previews._publish_bytes_atomic(candidate, target, digest, receipt)
+        self.assertEqual(project_workspace.sha256_file(target), old_sha)
 
     def test_failed_candidate_preserves_old_preview_and_other_scenes_publish(self) -> None:
         project = self.make_current_project(3)

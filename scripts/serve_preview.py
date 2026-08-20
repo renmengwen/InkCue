@@ -19,6 +19,7 @@ import secrets
 import subprocess
 import sys
 import time
+import uuid
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -38,9 +39,11 @@ from project_workspace import (
 from render_timing import (
     RenderTimingError,
     build_formal_validation_context,
+    load_formal_validation_context_receipt,
     resolve_formal_scenes,
     validate_annotation,
     validate_formal_context_current,
+    write_formal_validation_context_receipt,
 )
 
 
@@ -448,7 +451,16 @@ def ensure_server_and_url(
         raise PreviewServerError(
             f"项目预览尚未就绪: {summary['readySceneCount']}/{summary['sceneCount']} 幕图片与 annotation 成对"
         )
-    current_count = validate_project_for_preview(project)
+    # The ensure path is a coordinator validation boundary. Deeply validate
+    # once, then persist only a short-lived technical receipt; never write
+    # approval/identity/manifest state.
+    scene_ids = [scene["sceneId"] for scene in project.plan["scenes"]]
+    if not scene_ids:
+        raise PreviewServerError("项目没有可预览场景")
+    base_context = build_formal_validation_context(project)
+    validated_formals = resolve_formal_scenes(project, scene_ids, context=base_context)
+    validate_formal_context_current(project, base_context)
+    current_count = len(validated_formals)
     summary["technicalCurrentSceneCount"] = current_count
     if scene_id and scene_id not in {scene.scene_id for scene in catalog.scenes(project)}:
         raise PreviewServerError("请求定位的 sceneId 不属于当前项目")
@@ -490,7 +502,21 @@ def ensure_server_and_url(
         raise PreviewServerError("预览服务已启动，但项目 API 验证失败") from exc
     if not live_summary.get("allScenesReady"):
         raise PreviewServerError("预览服务返回的项目场景不完整")
+    run_id = f"preview-{uuid.uuid4().hex[:16]}"
+    _receipt_context, receipt_path = write_formal_validation_context_receipt(
+        project,
+        base_context,
+        run_id=run_id,
+        validated_formals=list(validated_formals),
+    )
+    load_formal_validation_context_receipt(
+        project,
+        receipt_path,
+        expected_run_id=run_id,
+    )
     live_summary["technicalCurrentSceneCount"] = current_count
+    live_summary["formalValidationReceipt"] = receipt_path.relative_to(project.root).as_posix()
+    live_summary["formalValidationRunId"] = run_id
     url = build_preview_url(
         host=host,
         port=port,

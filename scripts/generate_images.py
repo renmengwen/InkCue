@@ -27,6 +27,7 @@ from image_generation import (
     ManifestStore,
     ProviderConfig,
     ResponseDecodeError,
+    bind_image_candidate,
     build_final_prompt,
     image_input_identity,
     load_image_candidate,
@@ -224,6 +225,7 @@ def _publish_candidate(
             publish_image_candidate(candidate, formal_path, overwrite=True)
     else:
         publish_image_candidate(candidate, formal_path, overwrite=overwrite)
+    bind_image_candidate(candidate, formal_path)
     _checkpoint_hook("after_formal_published", scene_id)
     manifest.mark_attempt(
         scene_id,

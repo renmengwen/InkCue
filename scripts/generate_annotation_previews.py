@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -49,10 +50,17 @@ try:
     from .render_annotation_preview import render_annotation_preview
     from .render_timing import (
         FormalSceneRender,
+        FormalValidationContext,
         RenderTimingError,
         build_formal_validation_context,
+        load_formal_validation_context_receipt,
         resolve_formal_scenes,
         validate_formal_context_current,
+    )
+    from .validation_receipts import (
+        ReceiptValidationError,
+        bind_candidate_receipt,
+        build_candidate_receipt,
     )
 except ImportError:  # pragma: no cover - direct script execution
     from bounded_execution import (
@@ -87,14 +95,22 @@ except ImportError:  # pragma: no cover - direct script execution
     from render_annotation_preview import render_annotation_preview
     from render_timing import (
         FormalSceneRender,
+        FormalValidationContext,
         RenderTimingError,
         build_formal_validation_context,
+        load_formal_validation_context_receipt,
         resolve_formal_scenes,
         validate_formal_context_current,
+    )
+    from validation_receipts import (
+        ReceiptValidationError,
+        bind_candidate_receipt,
+        build_candidate_receipt,
     )
 
 
 PREVIEW_BATCH_CONTRACT = "whiteboard-annotation-preview-batch-v1"
+PREVIEW_VALIDATOR_CONTRACT = "whiteboard-annotation-preview-png-validator-v1"
 EXPECTED_SIZE = (1920, 1080)
 REVIEW_POLICIES = frozenset({"user_first", "agent_first"})
 HOST_SPAWN_PACKAGE_VERSION = "whiteboard-host-spawn-package-v1"
@@ -142,6 +158,7 @@ class AnnotationPreviewCandidate:
     task: AnnotationPreviewTask
     sha256: str
     byte_count: int
+    receipt: dict[str, Any]
 
 
 def _annotation_semantic_review_skipped() -> dict[str, Any]:
@@ -401,17 +418,53 @@ def _render_task(task: AnnotationPreviewTask) -> WorkerOutcome[AnnotationPreview
             rendered = render_annotation_preview(source, task.formal.annotation)
         _save_candidate_png(rendered, task.candidate_path)
         digest, byte_count = _validate_preview_candidate(task.candidate_path)
-        return WorkerOutcome.success(AnnotationPreviewCandidate(task, digest, byte_count))
+        receipt = build_candidate_receipt(
+            candidate_sha256=digest,
+            candidate_bytes=byte_count,
+            decoded=True,
+            format="PNG",
+            validator_contract=PREVIEW_VALIDATOR_CONTRACT,
+            ttl_seconds=600,
+            evidence={"sceneId": task.scene_id, "stage": "annotation-preview"},
+        )
+        write_json_atomic(task.candidate_path.with_name("candidate.receipt.json"), receipt)
+        return WorkerOutcome.success(AnnotationPreviewCandidate(task, digest, byte_count, receipt))
     except Exception as exc:
         return WorkerOutcome.failed(
             WorkerFailure(type(exc).__name__, _sanitize_error(exc), retryable=False)
         )
 
 
-def _publish_bytes_atomic(candidate: Path, target: Path, expected_sha256: str) -> None:
+def _publish_bytes_atomic(
+    candidate: Path,
+    target: Path,
+    expected_sha256: str,
+    receipt: Mapping[str, Any] | None = None,
+) -> None:
+    if receipt is None:
+        raise AnnotationPreviewBatchError("preview candidate receipt 缺失，拒绝 binding 发布")
+    try:
+        bind_candidate_receipt(
+            candidate,
+            receipt,
+            expected_format="PNG",
+            expected_validator_contract=PREVIEW_VALIDATOR_CONTRACT,
+            require_expiry=True,
+        )
+    except ReceiptValidationError as exc:
+        raise AnnotationPreviewBatchError(f"preview candidate receipt 无效: {exc}") from exc
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
+    backup = target.with_name(f".{target.name}.{uuid.uuid4().hex}.previous")
+    had_formal = target.is_file()
+    published = False
+    preserve_backup = False
     try:
+        if had_formal:
+            try:
+                os.link(target, backup)
+            except OSError:
+                shutil.copy2(target, backup)
         data = candidate.read_bytes()
         with temporary.open("xb") as output:
             output.write(data)
@@ -420,13 +473,39 @@ def _publish_bytes_atomic(candidate: Path, target: Path, expected_sha256: str) -
         if sha256_file(temporary) != expected_sha256:
             raise AnnotationPreviewBatchError("preview 原子发布前 SHA 核对失败")
         os.replace(temporary, target)
-        if sha256_file(target) != expected_sha256:
+        published = True
+        try:
+            bound = bind_candidate_receipt(
+                target,
+                receipt,
+                expected_format="PNG",
+                expected_validator_contract=PREVIEW_VALIDATOR_CONTRACT,
+                require_expiry=True,
+            )
+        except ReceiptValidationError as exc:
+            raise AnnotationPreviewBatchError(f"正式 preview binding 失败: {exc}") from exc
+        if bound["candidateSha256"] != expected_sha256:
             raise AnnotationPreviewBatchError("正式 preview SHA 与候选不一致")
+    except Exception:
+        if published:
+            try:
+                if had_formal and backup.is_file():
+                    os.replace(backup, target)
+                elif target.is_file():
+                    target.unlink()
+            except OSError as restore_error:
+                preserve_backup = True
+                raise AnnotationPreviewBatchError(
+                    "preview 发布后 binding 失败，旧正式文件恢复失败"
+                ) from restore_error
+        raise
     finally:
         try:
             temporary.unlink()
         except FileNotFoundError:
             pass
+        if not preserve_backup:
+            backup.unlink(missing_ok=True)
 
 
 def _contact_font(size: int) -> ImageFont.FreeTypeFont:
@@ -486,6 +565,9 @@ def generate_annotation_preview_batch(
     review_policy: str = "user_first",
     allow_v1_disabled_compat: bool = False,
     executor_factory: Callable[[int], Any] | None = None,
+    context: FormalValidationContext | None = None,
+    formal_context_receipt: str | Path | None = None,
+    formal_context_run_id: str | None = None,
 ) -> dict[str, Any]:
     """Validate the complete Phase 4 technical gate, render, and publish in plan order."""
 
@@ -494,7 +576,18 @@ def generate_annotation_preview_batch(
             "review_policy 必须是 user_first 或 agent_first"
         )
 
-    context = build_formal_validation_context(project)
+    if context is not None and formal_context_receipt is not None:
+        raise AnnotationPreviewBatchError("context 与 formal_context_receipt 不能同时提供")
+    if (formal_context_receipt is None) != (formal_context_run_id is None):
+        raise AnnotationPreviewBatchError("formal context receipt 与 runId 必须同时提供")
+    if formal_context_receipt is not None:
+        context = load_formal_validation_context_receipt(
+            project,
+            formal_context_receipt,
+            expected_run_id=formal_context_run_id or "",
+        )
+    context = context or build_formal_validation_context(project)
+    validate_formal_context_current(project, context)
     scene_ids = [scene["sceneId"] for scene in project.plan["scenes"]]
     formals = resolve_formal_scenes(
         project,
@@ -504,6 +597,8 @@ def generate_annotation_preview_batch(
     )
     if len(formals) != len(scene_ids):
         raise AnnotationPreviewBatchError("Phase 4 未覆盖 generation plan 全部 scene")
+    receipt_file = context.receipt_file
+    receipt_mode = "binding" if context.receipt_sha256 is not None else "deep"
 
     generation = {scene["sceneId"]: scene for scene in project.plan["scenes"]}
     configured = workspace.for_stage("annotationPreview")
@@ -564,7 +659,12 @@ def generate_annotation_preview_batch(
             continue
         candidate = result.outcome.value
         try:
-            _publish_bytes_atomic(candidate.task.candidate_path, task.output_path, candidate.sha256)
+            _publish_bytes_atomic(
+                candidate.task.candidate_path,
+                task.output_path,
+                candidate.sha256,
+                candidate.receipt,
+            )
             published_candidates.append(candidate)
             published_order.append(task.scene_id)
             scene_results.append(
@@ -594,7 +694,20 @@ def generate_annotation_preview_batch(
                     raise AnnotationPreviewBatchError("contact sheet candidate 无效")
             contact_sha = sha256_file(contact_candidate)
             contact_target = project.root / "previews" / "annotation-preview-contact-sheet.png"
-            _publish_bytes_atomic(contact_candidate, contact_target, contact_sha)
+            contact_receipt = build_candidate_receipt(
+                candidate_sha256=contact_sha,
+                candidate_bytes=contact_candidate.stat().st_size,
+                decoded=True,
+                format="PNG",
+                validator_contract=PREVIEW_VALIDATOR_CONTRACT,
+                ttl_seconds=600,
+                evidence={"stage": "annotation-preview-contact-sheet"},
+            )
+            write_json_atomic(
+                contact_candidate.with_name("candidate.receipt.json"),
+                contact_receipt,
+            )
+            _publish_bytes_atomic(contact_candidate, contact_target, contact_sha, contact_receipt)
             contact_file = contact_target.relative_to(project.root).as_posix()
         except Exception as exc:
             failed_count += 1
@@ -664,6 +777,9 @@ def generate_annotation_preview_batch(
         "previewConfirmationWritten": False,
         "approvalWritten": False,
         "nextHumanGate": "annotation_review_confirmation" if all_passed else None,
+        "formalValidationMode": receipt_mode,
+        "formalValidationReceipt": receipt_file,
+        "formalValidationRunId": context.receipt_run_id,
     }
 
 
@@ -679,6 +795,8 @@ def _parser() -> argparse.ArgumentParser:
         help="annotation preview 完成后直接交用户，或先准备一次 AI 语义预审",
     )
     parser.add_argument("--allow-v1-disabled-compat", action="store_true")
+    parser.add_argument("--formal-context-receipt", type=Path)
+    parser.add_argument("--formal-context-run-id")
     return parser
 
 
@@ -706,6 +824,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             project,
             review_policy=args.review_policy,
             allow_v1_disabled_compat=args.allow_v1_disabled_compat,
+            formal_context_receipt=args.formal_context_receipt,
+            formal_context_run_id=args.formal_context_run_id,
         )
         exit_code = 0 if summary["status"] == "PASS" else 1
     except Exception as exc:

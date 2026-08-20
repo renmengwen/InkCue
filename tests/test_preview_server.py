@@ -159,6 +159,26 @@ class PreviewServerTests(AnnotationBatchFixture):
         with self.assertRaisesRegex(render_timing.RenderTimingError, "stale"):
             serve_preview.validate_project_for_preview(self.project)
 
+    def test_ensure_success_writes_reloadable_short_lived_formal_receipt(self) -> None:
+        token_path = serve_preview._token_path(self.workspace)
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text(self.token, encoding="utf-8")
+        url, summary = serve_preview.ensure_server_and_url(
+            self.workspace,
+            self.project.root,
+            port=self.server.server_address[1],
+        )
+        self.assertTrue(url.startswith(self.base + "/preview?"))
+        receipt_path = self.project.root / summary["formalValidationReceipt"]
+        self.assertTrue(receipt_path.is_file())
+        context = render_timing.load_formal_validation_context_receipt(
+            self.project,
+            receipt_path,
+            expected_run_id=summary["formalValidationRunId"],
+        )
+        self.assertEqual(context.scene_order, ("scene-01", "scene-02"))
+        self.assertIsNotNone(context.receipt_expires_at)
+
     def test_skill_requires_agent_to_emit_verified_concrete_url(self) -> None:
         skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("项目预览链接交付合同", skill)

@@ -60,6 +60,7 @@ try:
     from .edge_tts_adapter import EdgeTtsAdapter
     from .minimax_adapter import MiniMaxAdapter, MINIMAX_PROVIDER_CONTRACT_VERSION
     from .voice_provider_config import VoiceProviderConfigError, active_provider_id, load_voice_provider_config
+    from . import validation_receipts
 except ImportError:  # pragma: no cover - direct script execution
     from audio_normalization import (
         AudioNormalizationError,
@@ -102,13 +103,16 @@ except ImportError:  # pragma: no cover - direct script execution
         validate_voice_plan,
         voice_plan_audit_hash,
     )
+    import validation_receipts
 
 
 VOICE_TIMELINE_SCHEMA_VERSION = 1
 VOICE_TIMELINE_CONTRACT_VERSION = "audio-authoritative-timeline-v1"
 VOICE_CLI_CONTRACT_VERSION = "voiceover-cli-v2"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0
-CANONICAL_WAV_VALIDATOR_RECEIPT_VERSION = "canonical-wav-validator-receipt-v1"
+LEGACY_CANONICAL_WAV_VALIDATOR_RECEIPT_VERSION = "canonical-wav-validator-receipt-v1"
+CANONICAL_WAV_VALIDATOR_RECEIPT_VERSION = validation_receipts.CANDIDATE_RECEIPT_CONTRACT_VERSION
+CANONICAL_WAV_VALIDATOR_CONTRACT_VERSION = "canonical-wav-validator-v2"
 
 
 class ApprovalGateError(RuntimeError):
@@ -396,16 +400,32 @@ def _sample(
 
 
 def _canonical_validator_receipt(result: CanonicalAudioResult) -> dict[str, Any]:
-    return {
-        "contractVersion": CANONICAL_WAV_VALIDATOR_RECEIPT_VERSION,
-        "mediaContractVersion": result.contractVersion,
-        "sha256": result.sha256,
-        "bytes": result.bytes,
-        "audioCodec": result.codec,
-        "sampleRate": result.sampleRate,
-        "channels": result.channels,
-        "durationMs": result.durationMs,
-    }
+    return validation_receipts.build_candidate_receipt(
+        candidate_sha256=result.sha256,
+        candidate_bytes=result.bytes,
+        decoded=True,
+        format="WAV",
+        validator_contract=CANONICAL_WAV_VALIDATOR_CONTRACT_VERSION,
+        evidence={
+            "legacyContractVersion": LEGACY_CANONICAL_WAV_VALIDATOR_RECEIPT_VERSION,
+            "mediaContractVersion": result.contractVersion,
+            "audioCodec": result.codec,
+            "sampleRate": result.sampleRate,
+            "channels": result.channels,
+            "durationMs": result.durationMs,
+        },
+    )
+
+
+def _canonical_receipt_evidence(receipt: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if not isinstance(receipt, Mapping):
+        return {}
+    try:
+        read = validation_receipts.read_candidate_receipt(receipt)
+    except validation_receipts.ReceiptValidationError:
+        return receipt
+    evidence = read.receipt.get("evidence") if read.current_contract else read.receipt
+    return evidence if isinstance(evidence, Mapping) else {}
 
 
 def _canonical_result_from_binding(
@@ -417,22 +437,39 @@ def _canonical_result_from_binding(
 
     if not isinstance(receipt, Mapping):
         return None
+    try:
+        receipt_read = validation_receipts.read_candidate_receipt(receipt)
+    except validation_receipts.ReceiptValidationError as exc:
+        raise ApprovalGateError(str(exc)) from exc
+    if not receipt_read.current_contract:
+        return None
+    candidate_receipt = receipt_read.receipt
+    # 先用 receipt 自带合同校验其签名和 current bytes；合法的旧 validator
+    # contract 才能触发 deep，篡改或 bytes 不匹配必须 fail-closed。
+    receipt_contract = candidate_receipt.get("validatorContract")
+    if not isinstance(receipt_contract, str):
+        raise ApprovalGateError("WAV candidate receipt validator contract 无效")
+    try:
+        validation_receipts.bind_candidate_receipt(
+            path,
+            candidate_receipt,
+            expected_format="WAV",
+            expected_validator_contract=receipt_contract,
+        )
+    except validation_receipts.ReceiptValidationError as exc:
+        raise ApprovalGateError(str(exc)) from exc
+    if receipt_contract != CANONICAL_WAV_VALIDATOR_CONTRACT_VERSION:
+        return None
+    evidence = _canonical_receipt_evidence(candidate_receipt)
     expected = {
-        "contractVersion": CANONICAL_WAV_VALIDATOR_RECEIPT_VERSION,
         "mediaContractVersion": media.get("contractVersion"),
-        "sha256": media.get("sha256"),
-        "bytes": media.get("bytes"),
         "audioCodec": media.get("audioCodec"),
         "sampleRate": media.get("sampleRate"),
         "channels": media.get("channels"),
         "durationMs": media.get("durationMs"),
     }
-    if dict(receipt) != expected:
-        return None
-    if not path.is_file() or path.stat().st_size != expected["bytes"]:
-        raise ApprovalGateError(f"{path.name} bytes 与 technical receipt 不一致")
-    if sha256_file(path) != expected["sha256"]:
-        raise ApprovalGateError(f"{path.name} SHA 与 technical receipt 不一致")
+    if any(evidence.get(key) != value for key, value in expected.items()):
+        raise ApprovalGateError("WAV candidate receipt 与 current media binding 不一致")
     return CanonicalAudioResult(
         path=path.resolve(),
         contractVersion=str(expected["mediaContractVersion"]),
@@ -440,8 +477,8 @@ def _canonical_result_from_binding(
         sampleRate=int(expected["sampleRate"]),
         channels=int(expected["channels"]),
         durationMs=int(expected["durationMs"]),
-        bytes=int(expected["bytes"]),
-        sha256=str(expected["sha256"]),
+        bytes=int(candidate_receipt["candidateBytes"]),
+        sha256=str(candidate_receipt["candidateSha256"]),
     )
 
 
@@ -585,16 +622,21 @@ def _validate_attempt_candidate(
     attempt = segment["currentAttempt"]
     candidate = _attempt_candidate(project, segment)
     receipt = attempt.get("validatorReceipt")
+    receipt_evidence = _canonical_receipt_evidence(receipt)
     media = {
-        "contractVersion": receipt.get("mediaContractVersion") if isinstance(receipt, Mapping) else None,
-        "audioCodec": receipt.get("audioCodec") if isinstance(receipt, Mapping) else None,
-        "sampleRate": receipt.get("sampleRate") if isinstance(receipt, Mapping) else None,
-        "channels": receipt.get("channels") if isinstance(receipt, Mapping) else None,
+        "contractVersion": receipt_evidence.get("mediaContractVersion"),
+        "audioCodec": receipt_evidence.get("audioCodec"),
+        "sampleRate": receipt_evidence.get("sampleRate"),
+        "channels": receipt_evidence.get("channels"),
         "bytes": attempt.get("candidateBytes"),
-        "durationMs": receipt.get("durationMs") if isinstance(receipt, Mapping) else None,
+        "durationMs": receipt_evidence.get("durationMs"),
         "sha256": attempt.get("candidateSha256"),
     }
-    result = validated_result or _canonical_result_from_binding(candidate, media, receipt)
+    reused_current_receipt = False
+    result = validated_result
+    if result is None:
+        result = _canonical_result_from_binding(candidate, media, receipt)
+        reused_current_receipt = result is not None
     if result is None:
         result = validate_canonical_wav(candidate)
     elif result.path.resolve() != candidate.resolve():
@@ -605,9 +647,19 @@ def _validate_attempt_candidate(
         raise ApprovalGateError("attempt candidate SHA 与 checkpoint 不一致")
     if attempt.get("candidateBytes") not in (None, result.bytes):
         raise ApprovalGateError("attempt candidate bytes 与 checkpoint 不一致")
-    receipt = _candidate_validator_receipt(result)
-    if attempt.get("validatorReceipt") not in (None, receipt):
-        raise ApprovalGateError("attempt candidate validator receipt 已 stale")
+    receipt = (
+        copy.deepcopy(dict(receipt))
+        if reused_current_receipt and isinstance(receipt, Mapping)
+        else _candidate_validator_receipt(result)
+    )
+    previous_receipt = attempt.get("validatorReceipt")
+    if previous_receipt not in (None, receipt):
+        try:
+            previous_read = validation_receipts.read_candidate_receipt(previous_receipt)
+        except validation_receipts.ReceiptValidationError as exc:
+            raise ApprovalGateError("attempt candidate validator receipt 已 stale") from exc
+        if previous_read.current_contract:
+            raise ApprovalGateError("attempt candidate validator receipt 已 stale")
     attempt["candidateSha256"] = result.sha256
     attempt["candidateBytes"] = result.bytes
     attempt["validatorReceipt"] = receipt
@@ -640,16 +692,17 @@ def _publish_segment_candidate(project: Project, segment: dict[str, Any]) -> Non
 
 def _apply_candidate_media(segment: dict[str, Any]) -> None:
     receipt = segment["currentAttempt"]["validatorReceipt"]
+    evidence = _canonical_receipt_evidence(receipt)
     segment.update(
         {
             "audioMime": "audio/wav",
-            "audioCodec": receipt["audioCodec"],
-            "contractVersion": receipt["mediaContractVersion"],
-            "sampleRate": receipt["sampleRate"],
-            "channels": receipt["channels"],
-            "bytes": receipt["bytes"],
-            "durationMs": receipt["durationMs"],
-            "sha256": receipt["sha256"],
+            "audioCodec": evidence["audioCodec"],
+            "contractVersion": evidence["mediaContractVersion"],
+            "sampleRate": evidence["sampleRate"],
+            "channels": evidence["channels"],
+            "bytes": receipt["candidateBytes"],
+            "durationMs": evidence["durationMs"],
+            "sha256": receipt["candidateSha256"],
             "createdAt": segment.get("createdAt") or _now(),
         }
     )
