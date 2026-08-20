@@ -56,6 +56,7 @@ class DocumentationContractTests(unittest.TestCase):
 
     def test_content_image_prompt_mapping_to_formal_prompt_is_documented(self) -> None:
         image_generation = read_document("references/image-generation.md")
+        orchestration = read_document("references/subagent-orchestration.md")
 
         self.assertIn("imagePrompt", image_generation)
         self.assertIn("formal", image_generation)
@@ -66,6 +67,51 @@ class DocumentationContractTests(unittest.TestCase):
         )
         self.assertIn("coordinator", image_generation)
         self.assertIn("确定性", image_generation)
+        self.assertIn(
+            "formal.scenes[i].prompt = candidate.scenes[i].imagePrompt",
+            orchestration,
+        )
+        for invariant in (
+            "逐字复制",
+            "不得再次 trim",
+            "不得再次 trim、拼接、调用模型、改写语义或调换 scene/cue 顺序",
+            "不允许 formal plan 保留 `imagePrompt`",
+            "任何需要改变提示词的意见都必须回到新的 revision attempt 与人工确认",
+        ):
+            with self.subTest(invariant=invariant):
+                self.assertIn(invariant, orchestration)
+
+    def test_child_prompt_contract_is_locator_only_and_excludes_sensitive_context(self) -> None:
+        orchestration = read_document("references/subagent-orchestration.md")
+        annotation_role = read_document("references/annotation-drafting-role.md")
+
+        for allowed in (
+            "taskId`/`taskKind`",
+            "taskSha256",
+            "roleContractPath`/`roleContractSha256`",
+            "TASK_JSON_PATH",
+            "ALLOWED_ATTEMPT_DIR",
+            "固定的返回字段/枚举",
+            "formalWritesAllowed:false",
+            "approvalWritesAllowed:false",
+        ):
+            with self.subTest(allowed=allowed):
+                self.assertIn(allowed, orchestration)
+
+        for forbidden in (
+            "完整主对话",
+            "完整 SRT/正文",
+            "完整 scene 数组",
+            "provider 名称",
+            "API key/token/cookie",
+            "批准或拒绝内容",
+            "完整工具日志",
+            "未冻结状态",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertIn(forbidden, orchestration)
+        self.assertIn("宿主 prompt 只是冻结定位器", annotation_role)
+        self.assertIn("不得作为判断依据或写入 `agent.log`", annotation_role)
 
     def test_workspace_examples_separate_safe_baseline_from_performance_example(self) -> None:
         safe = json.loads(read_document("config/workspace.example.json"))

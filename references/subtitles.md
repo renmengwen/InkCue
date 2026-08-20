@@ -67,6 +67,10 @@ Edge `generate_voiceover.py full` 生成 current `audio/narration.srt`，但此�
 
 ## 字幕编码 preset 与 identity
 
+跨阶段 identity/current binding、stale、retry 和失败码的权威规则见
+[`recovery-and-identity.md`](recovery-and-identity.md)。本节只定义字幕 preset、ASS、
+captioned/final 产物包含哪些阶段专属 binding。
+
 正式字幕 preset 的唯一权威配置为：
 
 ```json

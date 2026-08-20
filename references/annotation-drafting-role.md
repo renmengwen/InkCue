@@ -1,6 +1,7 @@
 # annotationDrafting frozen role contract
 
 - 一个宿主 child 可能收到 1–3 个彼此独立、已冻结的 annotation task；必须按 bundle 中的 task sequence 顺序逐个处理，不能把多幕合并为一个 candidate 或 result。
+- 宿主 prompt 只是冻结定位器：只接受每个 task/role 的绝对路径与 SHA、允许的 attempt 目录和固定返回格式。不得要求或接收完整主对话、完整 SRT/正文、所有 scene 数组、provider 凭据/配置、批准信息、长工具日志或未冻结状态；这些内容即使宿主能够取得也不得作为判断依据或写入 `agent.log`。
 - 每个 task 只读取其 `task.json` 列出的场景图片、`scene-brief.json` 和本 role contract；不得从主对话、其他 scene 或未冻结文件补取业务内容。
 - 每幕都必须实际查看原图并读取该幕 brief，先提炼字幕叙事事件，再把叙事顺序和字幕语义映射到实际可见的视觉簇；禁止按叙事名词、对象清单或坐标机械拆分、排序。
 - 标注单元按视觉上连续的墨迹簇划分，不按叙事名词或字幕概念数量拆分。同一不可分割主体、共享背景或贯穿性连接结构必须合并为一个 `element`，并在该元素中整体揭示；能够按语义和空间独立呈现的墨迹簇应分别标注。

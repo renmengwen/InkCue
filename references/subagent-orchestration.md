@@ -76,6 +76,21 @@ child prompt 只提供 attempt 内 `role-contract.md` 与 `task.json` 的绝对�
 
 prompt 不复制完整主对话、完整 SRT/正文、所有 scene 数组、provider 配置、凭据、批准信息、长工具日志或未冻结状态。
 
+### 5.1 Draft/Plan role 的冻结上下文与提示词边界
+
+`contentDrafting`、`storyboardPlanning`、`visualReview` 和 `annotationDrafting` 共用同一条最小 prompt 规则：prompt 是定位器，不是业务输入的第二份副本。child 必须从冻结的 `task.json`、其 `inputs` 与 `role-contract.md` 读取业务内容；主窗口不得把正文、完整 SRT、完整 scene 数组或上一轮对话重新拼进 prompt。provider 名称、endpoint、模型参数、API key/token/cookie、批准或拒绝内容、完整工具日志、外部响应和未冻结状态都不得进入 prompt。
+
+除固定返回协议外，prompt 只允许传递以下冻结值：`taskId`/`taskKind`、`taskSha256`、`roleContractPath`/`roleContractSha256`、`TASK_JSON_PATH`、唯一 `ALLOWED_ATTEMPT_DIR`、候选或 findings/result 的 attempt 内路径，以及固定的返回字段/枚举。`formalWritesAllowed:false` 与 `approvalWritesAllowed:false` 必须留在 task schema 中由 validator 校验，不得以自然语言授权代替。
+
+`contentDrafting` 的 `candidate.content-draft.json` 使用 scene 字段 `imagePrompt`；用户确认 current 草案后，coordinator 只能按以下唯一确定性映射生成正式 generation plan：
+
+```text
+formal.scenes[i].prompt = candidate.scenes[i].imagePrompt
+formal.scenes[i].sceneId/name/coreIdea/visualSubject/cueRange = candidate 对应字段（按原顺序）
+```
+
+其中 `candidate` 已是 `validate_content_draft()` 返回的 canonical candidate；映射必须逐字复制该 canonical `imagePrompt`，只 materialize 正式 schema 的字段名和 coordinator 从 current cue/timing evidence 确定的字段，不得再次 trim、拼接、调用模型、改写语义或调换 scene/cue 顺序，也不允许 formal plan 保留 `imagePrompt`。child 不直接写 formal plan，provider 只消费 formal `prompt`；任何需要改变提示词的意见都必须回到新的 revision attempt 与人工确认。
+
 ## 6. 调度与并发
 
 `execution.agents` 只配置 agent 并发：

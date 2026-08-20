@@ -99,22 +99,16 @@ output/final.mp4
 
 ### 场景与提示词视觉拓扑
 
-generation plan 的 scene 数量不设固定值。分幕应以视觉状态变化为依据；出现新的状态、因果阶段、构图中心或需要独立呈现的结果时可以增加 scene，不按叙事名词数量机械切图。每幕只表达一个核心视觉命题。
-
-每个 scene `prompt` 还必须落实以下通用空间约束：
-
-- 一个 scene 只表达一个核心视觉命题；当语义包含多个可依次呈现的状态或主体时，允许组织 2–3 个可独立揭示的视觉区域。
-- 视觉区域之间保留真实、连续的干净纸面留白；空间独立区域优先不遮挡，但局部接近不等于必须合并。
-- 禁止跨区域的连续背景、共同底面、道路、长线、箭头、光束、河流、山脉或其他贯穿性结构；必须不可分割的概念才合并为一个视觉簇整体生成。视觉阅读方向只描述静态构图顺序，不是绘制元数据。
-- 约束只描述视觉拓扑，不得硬编码固定场景对象或固定对象类别。每幕的具体内容和造型锚点仍由该幕语义决定。
-
-这些规则只约束现有 generation plan 和 prompt 的编写，不增加 schema 字段，也不改变 provider 请求、人工线稿确认或图片 identity。
+generation plan 的 scene 划分、独立视觉簇、贯穿性结构、prompt 自包含约束和
+annotation 可消费性统一由 [`prompt-writing.md`](prompt-writing.md) 定义。本文只规定
+provider 消费与发布行为；该规范不增加 schema 字段，也不改变 provider 请求、人工线稿
+确认或图片 identity。
 
 ### 下游 annotation 分区边界
 
-生图构图必须能被后续连续墨迹簇稳定划分：annotation 不按叙事名词逐项拆框，而按视觉上连续、应一起落墨的墨迹簇划分。一幕允许 1 个元素；实际包含多个可依次呈现的墨迹簇时优先 2–3 个，最多 3 个，不为凑数强拆。
-
-reveal 时间必须严格串行且不得重叠。空间 region 在真实遮挡、主体交界或连续构图需要时可以适度重叠，但不得让矩形边界横穿其他 region 的有效墨迹，也不得用一个大框吞并多个独立簇。共享背景、共同底面或贯穿性连接结构必须与相关内容合并为同一 region。`protectedRegions` 只用于正确分区后仍不可避免的局部保护，禁止用它掩盖错误 region。允许掩码公式、时序 schema 与渲染算法保持不变。
+生图构图必须满足 [`prompt-writing.md`](prompt-writing.md) 的 annotation 可消费性；
+实际 region、reveal 串行性和 `protectedRegions` 仍由 annotation 阶段按 current 图片判断，
+不得从 prompt 机械派生。允许掩码公式、时序 schema 与渲染算法保持不变。
 
 ## JSON 并发配置
 
@@ -135,6 +129,11 @@ reveal 时间必须严格串行且不得重叠。空间 region 在真实遮挡�
 字段缺失时从 worker pool 的 `default` 继承，整个 pool 缺失时为 `1`。worker pool 与 `execution.agents` 独立且不做乘法；agent task 不得再启动 provider worker。配置只决定本机执行策略，不进入图片 identity。每次生成/验证摘要都记录 `configuredConcurrency`、`effectiveConcurrency` 与 `taskCount`；无论 worker 完成顺序如何，manifest 与校验摘要始终按 generation plan 场景顺序提交。
 
 ## 生成、覆盖与失败重试
+
+跨阶段状态、identity、stale、attempt 恢复、自动重试与
+`unknown_external_outcome` 的权威规则见
+[`recovery-and-identity.md`](recovery-and-identity.md)。本节只描述图片阶段的命令、
+checkpoint 名称和 provider 错误分类。
 
 独立 provider 请求可有界并发；单幕明确失败不会停止其它幕，也不会删除已经成功发布的场景。worker 只处理 provider 请求、下载、完整解码与规范化，并且只能原子写已预登记 attempt 下的 `candidate.png` 和去敏 `candidate-receipt.json`。worker 不得写正式 `scenes/*.png`、generation manifest 或批准状态。
 

@@ -128,6 +128,11 @@ identity 必须仍是 current sample。错误或 stale identity 返回 5，不�
 
 ## 完整旁白与恢复
 
+跨阶段状态、identity、stale、attempt 恢复、自动重试与
+`unknown_external_outcome` 的权威规则见
+[`recovery-and-identity.md`](recovery-and-identity.md)。本节只补充语音 segment、WAV、
+timeline 和 narration SRT 的阶段绑定。
+
 ```powershell
 <ENV_PY> scripts/generate_voiceover.py full --project <项目根目录>
 
@@ -284,6 +289,10 @@ mux 允许 Edge 或 MiniMax 模式，要求 current full approval、captioned vi
 final identity 覆盖 clean video、audio、timeline、权威字幕、样式、字体、render profile、timing plan、burn/mux contract 和 final SHA。任一输入变化都会使最终批准 stale。
 
 ## stale 矩阵
+
+完整 stale 传播矩阵的唯一来源是
+[`recovery-and-identity.md`](recovery-and-identity.md)。下表保留语音阶段的具体产物视图，
+不得独立改变 retry、current binding 或批准语义。
 
 | 变化 | 必须 stale | 可保留 |
 |---|---|---|

@@ -620,6 +620,46 @@ class AgentTaskContractTests(unittest.TestCase):
         self.assertNotIn("provider", prompt.lower())
         self.assertNotIn("SECRET", prompt)
 
+    def test_non_annotation_prompts_expose_only_frozen_locator_fields(self) -> None:
+        task_json = (self.context.task_dir / "task.json").resolve()
+        role_contract = (self.context.task_dir / "role-contract.md").resolve()
+        for task_kind in ("contentDrafting", "storyboardPlanning", "visualReview"):
+            with self.subTest(task_kind=task_kind):
+                prompt = atc.build_agent_prompt(
+                    task_json=task_json,
+                    role_contract=role_contract,
+                    task_kind=task_kind,
+                    task_sha256="1" * 64,
+                    role_contract_sha256="2" * 64,
+                )
+                keys = {
+                    line.split("=", 1)[0]
+                    for line in prompt.splitlines()
+                    if "=" in line and not line.startswith("TASK_STATUS=<")
+                }
+                self.assertEqual(
+                    keys,
+                    {
+                        "ROLE_CONTRACT_PATH",
+                        "ROLE_CONTRACT_SHA256",
+                        "TASK_JSON_PATH",
+                        "TASK_SHA256",
+                        "ALLOWED_ATTEMPT_DIR",
+                        "RESULT_JSON",
+                        "VALIDATOR_STATUS",
+                        "SUMMARY",
+                    },
+                )
+                for forbidden in (
+                    "主对话",
+                    "完整 SRT",
+                    "provider",
+                    "apiKey",
+                    "approval",
+                    "SECRET",
+                ):
+                    self.assertNotIn(forbidden, prompt)
+
     def test_fake_scheduler_orders_results_and_retries_only_failed_cancelled_stale(self) -> None:
         planned = [
             atc.AgentAttemptSummary("task-a", 1, 1, "completed"),
