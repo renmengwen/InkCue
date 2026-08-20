@@ -349,12 +349,44 @@ class ProjectWorkspaceTests(unittest.TestCase):
         self.assertIn("--plan", help_text)
         self.assertIn("已确认配图策略", help_text)
         self.assertIn("--voiceover-mode", help_text)
-        self.assertIn("edge-tts", help_text)
+        self.assertIn("activeProvider", help_text)
+        self.assertIn("disabled", help_text)
         self.assertIn("--source-input", help_text)
         self.assertIn("--source-manifest", help_text)
         upgrade_help = upgrade_project_cli._parser().format_help()
         self.assertIn("--to-schema", upgrade_help)
         self.assertIn("--voiceover-mode", upgrade_help)
+
+    def test_create_project_cli_uses_active_provider_when_voiceover_mode_is_omitted(self) -> None:
+        with (
+            mock.patch.object(create_project.ProjectWorkspace, "from_config", return_value=self.workspace()),
+            mock.patch.object(create_project, "active_provider_id", return_value="minimax"),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
+        ):
+            result = create_project.main([
+                "--name", "配置默认旁白项目",
+                "--srt", str(self.source_srt),
+            ])
+        self.assertEqual(result, 0)
+        project = self.workspace().load_project(self.workspace_root / "projects" / "配置默认旁白项目")
+        self.assertEqual(project.voiceover_mode, "minimax")
+
+    def test_create_project_cli_can_explicitly_keep_silent_mode(self) -> None:
+        with (
+            mock.patch.object(create_project.ProjectWorkspace, "from_config", return_value=self.workspace()),
+            mock.patch.object(create_project, "active_provider_id", side_effect=AssertionError("不应读取 activeProvider")),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
+        ):
+            result = create_project.main([
+                "--name", "显式静音项目",
+                "--srt", str(self.source_srt),
+                "--voiceover-mode", "disabled",
+            ])
+        self.assertEqual(result, 0)
+        project = self.workspace().load_project(self.workspace_root / "projects" / "显式静音项目")
+        self.assertEqual(project.voiceover_mode, "disabled")
 
     def test_missing_or_unwritable_config_fails_without_fallback(self) -> None:
         missing = self.case_root / "missing.local.json"
@@ -469,6 +501,7 @@ class ProjectWorkspaceTests(unittest.TestCase):
         stderr = io.StringIO()
         with (
             mock.patch.object(create_project.ProjectWorkspace, "from_config", return_value=self.workspace()),
+            mock.patch.object(create_project, "active_provider_id", return_value="edge-tts"),
             redirect_stdout(stdout),
             redirect_stderr(stderr),
         ):
@@ -479,7 +512,6 @@ class ProjectWorkspaceTests(unittest.TestCase):
                     "--plan", str(package.directory / "generation-plan.json"),
                     "--source-input", str(package.directory / "input.json"),
                     "--source-manifest", str(package.directory / "manifest.json"),
-                    "--voiceover-mode", "edge-tts",
                 ]
             )
         self.assertEqual(result, 0, stderr.getvalue())
@@ -519,7 +551,7 @@ class ProjectWorkspaceTests(unittest.TestCase):
                 voiceover_mode="edge-tts",
                 **missing_manifest,
             )
-        with self.assertRaisesRegex(ProjectValidationError, "只允许 edge-tts"):
+        with self.assertRaisesRegex(ProjectValidationError, "topic/text content source"):
             self.workspace().create_project(
                 "错误 Disabled",
                 package.directory / "source.srt",

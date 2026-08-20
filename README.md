@@ -147,6 +147,9 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 & $envPy scripts\create_project.py --name <项目名> `
   --srt <字幕.srt> --plan <分镜.json> --voiceover-mode disabled
 
+# 不传 --voiceover-mode 时，新项目读取 config/voice-providers.local.json 的 activeProvider；
+# 如果需要明确创建静音项目，请显式传 --voiceover-mode disabled。
+
 # 图片
 & $envPy scripts\generate_images.py --project <项目根目录>
 & $envPy scripts\validate_generated_images.py --project <项目根目录> `

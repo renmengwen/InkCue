@@ -13,6 +13,7 @@ from project_workspace import (
     WorkspaceError,
     validate_pre_project_generation_plan_data,
 )
+from voice_provider_config import VoiceProviderConfigError, active_provider_id
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -33,8 +34,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--voiceover-mode",
-        choices=("disabled", "edge-tts", "minimax"),
-        help="新项目旁白模式；省略时为 disabled，创建后按项目合同冻结",
+        choices=("disabled",),
+        help="显式创建静音项目；省略时唯一使用 config/voice-providers.local.json 的 activeProvider",
     )
     parser.add_argument(
         "--source-input",
@@ -91,7 +92,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             if has_source_input and args.plan is None:
                 raise ProjectValidationError("content source 项目必须显式提供准备包中的 --plan")
-            voiceover_mode = args.voiceover_mode or "disabled"
+            # Provider selection has one source of truth for the CLI.  The
+            # explicit disabled mode is only the silent-project escape hatch.
+            voiceover_mode = args.voiceover_mode or active_provider_id()
             project = workspace.create_project(
                 args.name,
                 args.srt,
@@ -105,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
                 source_manifest=args.source_manifest,
                 source_plan=args.plan if has_source_input else None,
             )
-    except (WorkspaceError, ProjectValidationError, OSError) as exc:
+    except (WorkspaceError, ProjectValidationError, VoiceProviderConfigError, OSError) as exc:
         print(f"[err] {exc}", file=sys.stderr)
         return 2
 

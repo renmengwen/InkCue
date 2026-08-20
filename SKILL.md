@@ -390,13 +390,12 @@ python scripts/prepare_env.py
   --draft <已获用户确认的-content-draft.json> `
   --output-dir <D:\SRTWhiteboard\drafts\项目名>
 
-# topic/text：source evidence 必须成对传入；可选 edge-tts 或 minimax
+# topic/text：source evidence 必须成对传入；旁白 provider 唯一读取 activeProvider
 <ENV_PY> scripts/create_project.py --name <项目名> `
   --srt <draft-dir\source.srt> `
   --plan <draft-dir\generation-plan.json> `
   --source-input <draft-dir\input.json> `
-  --source-manifest <draft-dir\manifest.json> `
-  --voiceover-mode edge-tts
+  --source-manifest <draft-dir\manifest.json>
 
 # 传统 SRT：严格解析并冻结 storyboardPlanning attempt，输出宿主 spawn package：
 <ENV_PY> scripts/prepare_draft_agent_task.py storyboardPlanning `
@@ -411,10 +410,13 @@ python scripts/prepare_env.py
   --plan <已确认策略.json> --voiceover-mode disabled
 
 <ENV_PY> scripts/create_project.py --name <项目名> --srt <字幕.srt> `
-  --plan <已确认策略.json> --voiceover-mode edge-tts
+  --plan <已确认策略.json>
+
+# 新建项目省略 --voiceover-mode 时，读取 config/voice-providers.local.json 的 activeProvider；
+# 需要静音项目时显式传 --voiceover-mode disabled。
 
 <ENV_PY> scripts/upgrade_project.py --project <项目根目录> `
-  --to-schema 2 --voiceover-mode edge-tts
+  --to-schema 2
 ```
 
 两种 draft prepare 成功都输出 `whiteboard-draft-agent-prepare-v1`：若 `spawnPackage.spawnAgentCall` 非空，立即调用宿主；为空则按 `dispatchAudit` 进入 coordinator fallback。`formalPublished:false`、`approvalWritten:false` 和 spawn package 的 `hostSpawnExecuted:false` 表示只冻结了 attempt；不得继续翻阅 Python 源码推导派发，也不得运行 `prepare_source.py`、创建项目或写批准。content child 返回后仍须用 `validate_content_draft.py --stdin` 只读校验；storyboard candidate 仍须展示并取得传统 SRT 分镜确认。
@@ -445,7 +447,9 @@ Edge / MiniMax 样音、完整旁白、状态与技术验证：
 # MiniMax 项目从 config/voice-providers.local.json 读取 voice/rate/model；
 # 也可以显式指定 provider 和 voice 覆盖配置中的对应字段：
 <ENV_PY> scripts/generate_voiceover.py sample --project <项目根目录> `
-  --provider minimax --voice male-qn-jingying --rate 10
+  --voice male-qn-jingying --rate 10
+
+# provider 永远读取 activeProvider，不提供 --provider 覆盖入口。
 
 <ENV_PY> scripts/generate_voiceover.py approve-sample --project <项目根目录> `
   --identity-hash <刚完整试听的 SAMPLE_IDENTITY>
@@ -604,6 +608,6 @@ Edge mux 成功会直接输出 `FINAL_IDENTITY`；两种模式都可从 `validat
 - 单幕和 clean master 帧数严格符合累计全局帧边界，全部完整解码；scene review approval 精确绑定 generation plan 顺序的 current scene 集合，`merge_scenes.py` 已硬校验。
 - `subtitles/final.ass`、字体 hash、样式 hash、权威 SRT 和 contact sheet 写入 delivery 证据。
 - Disabled final：1 路 H.264、0 音频；Edge final：1 路 H.264 + 1 路 24kHz mono AAC；两者都有烧录字幕。
-- 自动测试使用 fake provider/fixture，不调用真实 Edge 或图片 provider。真实 Edge 必须另行通过样音、完整旁白试听与真实时长、最终成片人工关卡；外网或服务不可用时写 `BLOCKED`，绝不以 fixture PASS 或 SKIP 冒充外部 PASS。
+- 自动测试使用 fake provider/fixture，不调用真实 Edge、MiniMax 或图片 provider。真实语音 provider 必须另行通过样音、完整旁白试听与真实时长、最终成片人工关卡；外网或服务不可用时写 `BLOCKED`，绝不以 fixture PASS 或 SKIP 冒充外部 PASS。
 
 详细合同见 [references/content-input.md](references/content-input.md)、[references/voiceover.md](references/voiceover.md)、[references/subtitles.md](references/subtitles.md) 和 [references/image-generation.md](references/image-generation.md)。

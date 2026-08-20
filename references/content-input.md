@@ -19,7 +19,7 @@ rewritePolicy = preserve | polish | generate
 | `topic` | 非空主题 | 仅 `generate` | `edge-tts | minimax` |
 | `text` | 非空正文 | `preserve | polish` | `edge-tts | minimax` |
 
-`topic + preserve`、`topic + polish`、`text + generate` 以及非 SRT + `disabled` 均须拒绝。topic/text 首版不使用估算阅读时长作为最终权威时钟；target 只用于内容预算与 provisional SRT，获批的真实 Edge audio timeline 才接管正式时钟。
+`topic + preserve`、`topic + polish`、`text + generate` 以及非 SRT + `disabled` 均须拒绝。topic/text 首版不使用估算阅读时长作为最终权威时钟；target 只用于内容预算与 provisional SRT，获批的真实音频 provider timeline 才接管正式时钟。
 
 首版不接入通用文本模型 provider。旁白稿、cue、scene 和画面建议由宿主真实派发的 `contentDrafting` child 生成 candidate，再由 coordinator 校验并确定性生成 Markdown 审阅 artifact；`prepare_draft_agent_task.py` 只冻结 attempt 和 host spawn package，`content_source.py` 与 `prepare_source.py` 只做确定性规范化、校验、排时、hash、持久化和派生文件。上述脚本都不发起文本模型请求、不读取外部凭据、不自行改写或批准草案，也不创建正式项目。
 
@@ -294,8 +294,7 @@ topic/text 准备包创建正式项目时使用：
   --srt <draft-dir\source.srt> `
   --plan <draft-dir\generation-plan.json> `
   --source-input <draft-dir\input.json> `
-  --source-manifest <draft-dir\manifest.json> `
-  --voiceover-mode edge-tts
+  --source-manifest <draft-dir\manifest.json>
 ```
 
 `--source-input` 与 `--source-manifest` 必须成对出现，且只用于新建项目。创建时必须重新校验 input/manifest/SRT/plan 的全部 hash 与绑定关系，不能只复制文件。项目冻结：
@@ -315,10 +314,10 @@ source/source.srt
   --srt <字幕.srt> --plan <已确认策略.json> --voiceover-mode disabled
 
 <ENV_PY> scripts/create_project.py --name <项目名> `
-  --srt <字幕.srt> --plan <已确认策略.json> --voiceover-mode edge-tts
+  --srt <字幕.srt> --plan <已确认策略.json>
 ```
 
-旧 v1/v2 项目没有 `contentSource` 时继续按传统 SRT 项目读取，不静默改写或强制升级。Disabled/Edge 的字幕权威来源、样音、人工批准、渲染和最终交付合同保持不变。
+旧 v1/v2 项目没有 `contentSource` 时继续按传统 SRT 项目读取，不静默改写或强制升级。新建项目的旁白 provider 唯一读取 `config/voice-providers.local.json` 的 `activeProvider`；需要静音时才显式使用 `--voiceover-mode disabled`。Disabled/Edge/MiniMax 的字幕权威来源、样音、人工批准、渲染和最终交付合同保持不变。
 
 ## stale、恢复与失败语义
 

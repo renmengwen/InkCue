@@ -58,7 +58,7 @@ python scripts/prepare_env.py
 
 `config/voice-providers.example.json` 是无秘密的首版 provider 合同示例，记录 package/contract、voice、language、规范化 rate/pitch/volume、输出格式及请求策略字段。它不是凭据文件，也不允许加入 key、Cookie、Token 或临时 URL。
 
-当前样音 CLI 支持 `--provider {edge-tts,minimax}`、`--voice` 与整数百分点 `--rate`；未指定 provider 时使用项目的 `voiceoverMode`。MiniMax 未指定 voice/rate 时从 local provider 配置读取。`--rate 0` 规范化为 `+0%`，`10` 为 `+10%`，`-10` 为 `-10%`。持久化 identity 使用规范化字符串，不依赖调用点猜单位。全局示例配置不能自动覆盖项目中已经生成或批准的 `planning/voice-plan.json`。
+当前样音 CLI 的 provider 永远读取 `config/voice-providers.local.json` 的 `activeProvider`，不提供 `--provider` 覆盖入口；activeProvider 必须与项目已经冻结的 `voiceoverMode` 一致。CLI 仍支持 `--voice` 与整数百分点 `--rate`，MiniMax 未指定 voice/rate 时从 local provider 配置读取。`--rate 0` 规范化为 `+0%`，`10` 为 `+10%`，`-10` 为 `-10%`。持久化 identity 使用规范化字符串，不依赖调用点猜单位。全局示例配置不能自动覆盖项目中已经生成或批准的 `planning/voice-plan.json`。
 
 ## 项目文件
 

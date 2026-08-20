@@ -86,7 +86,12 @@ def active_provider_id(*, root: Path | None = None) -> str:
     selected = value.get("activeProvider")
     if not isinstance(selected, str) or not selected.strip():
         raise VoiceProviderConfigError("activeProvider 必须是非空字符串")
-    return "minimax" if selected.lower() == "minimax" else selected.lower()
+    normalized = "minimax" if selected.lower() == "minimax" else selected.lower()
+    if normalized not in {"edge-tts", "minimax"}:
+        raise VoiceProviderConfigError(
+            "activeProvider 只允许 edge-tts 或 MiniMax"
+        )
+    return normalized
 
 
 __all__ = ["VoiceProviderConfigError", "active_provider_id", "load_voice_provider_config"]

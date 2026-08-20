@@ -175,9 +175,9 @@ class VoiceoverCliTests(unittest.TestCase):
         project = self.make_project(voiceover_mode="minimax")
         adapter = FakeProviderAdapter(canonical_wav_bytes(), "audio/wav")
         output = io.StringIO()
-        with redirect_stdout(output):
+        with mock.patch.object(voice_module, "active_provider_id", return_value="minimax"), redirect_stdout(output):
             self.assertEqual(
-                voice_main(["sample", "--project", str(project.root), "--provider", "minimax"], adapter=adapter), 0
+                voice_main(["sample", "--project", str(project.root)], adapter=adapter), 0
             )
         sample_identity = next(line.split("=", 1)[1] for line in output.getvalue().splitlines() if line.startswith("SAMPLE_IDENTITY="))
         self.assertEqual(voice_main(["approve-sample", "--project", str(project.root), "--identity-hash", sample_identity]), 0)
@@ -190,6 +190,22 @@ class VoiceoverCliTests(unittest.TestCase):
         timing = json.loads(project.path("planning/timing-plan.json").read_text(encoding="utf-8"))
         self.assertEqual(plan["mode"], "minimax")
         self.assertEqual(timing["activeTimeline"]["kind"], "audio-authoritative-timeline")
+
+    def test_sample_without_provider_uses_active_provider_but_respects_project_mode(self) -> None:
+        project = self.make_project(voiceover_mode="minimax")
+        adapter = FakeProviderAdapter(canonical_wav_bytes(), "audio/wav")
+        output = io.StringIO()
+        with mock.patch.object(voice_module, "active_provider_id", return_value="minimax"), redirect_stdout(output):
+            self.assertEqual(voice_main(["sample", "--project", str(project.root)], adapter=adapter), 0)
+        self.assertIn("SAMPLE_AUDIO=", output.getvalue())
+        plan = json.loads(project.path("planning/voice-plan.json").read_text(encoding="utf-8"))
+        self.assertEqual(plan["mode"], "minimax")
+
+    def test_sample_cli_has_no_provider_override_entry(self) -> None:
+        with self.assertRaises(SystemExit):
+            voice_module._parser().parse_args([
+                "sample", "--project", "C:/project", "--provider", "minimax"
+            ])
 
     def test_retry_failed_only_requests_unfinished_segment_and_classifies_failures(self) -> None:
         project = self.make_project()

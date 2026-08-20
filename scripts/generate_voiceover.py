@@ -259,6 +259,12 @@ def _request(plan: Mapping[str, Any], text: str) -> SynthesisRequest:
 
 def _adapter_from_plan(plan: Mapping[str, Any]) -> ProviderAdapter:
     provider_id = plan["provider"]["id"]
+    configured_provider = active_provider_id()
+    if configured_provider != provider_id:
+        raise VoiceoverStateError(
+            "当前项目 provider 与 config/voice-providers.local.json 的 activeProvider 不一致；"
+            "请切换 activeProvider 或使用匹配的项目"
+        )
     if provider_id == "edge-tts":
         return EdgeTtsAdapter()
     if provider_id == "minimax":
@@ -1485,7 +1491,6 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     sample = sub.add_parser("sample", help="生成 canonical 样音，但不自动批准")
     sample.add_argument("--project", required=True, type=Path)
-    sample.add_argument("--provider", choices=("edge-tts", "minimax"))
     sample.add_argument("--voice")
     sample.add_argument("--rate", type=int)
     approve_sample = sub.add_parser("approve-sample", help="持久化用户已试听的 current 样音批准")
@@ -1518,14 +1523,17 @@ def main(
             execution = load_workspace_config()
         concurrency = execution.concurrency if execution is not None else ExecutionConcurrency()
         if args.command == "sample":
-            provider_id = args.provider or project.voiceover_mode
+            # Provider selection has one source of truth: activeProvider.
+            provider_id = active_provider_id()
             if provider_id == "disabled":
                 raise VoiceoverStateError("disabled 项目不能生成旁白样音")
             provider_config = load_voice_provider_config(provider_id=provider_id)
             voice = args.voice or str(provider_config.get("voice", "zh-CN-YunjianNeural"))
             rate = args.rate if args.rate is not None else provider_config.get("rate", 0)
             if provider_id != project.voiceover_mode:
-                raise VoiceoverStateError("--provider 必须与项目 voiceoverMode 一致；请创建或升级为对应旁白模式")
+                raise VoiceoverStateError(
+                    "activeProvider 必须与项目 voiceoverMode 一致；请使用匹配的项目"
+                )
             audio, identity = _sample(
                 project, voice=voice, rate=rate, provider_id=provider_id,
                 provider_config=provider_config,
@@ -1579,6 +1587,7 @@ def main(
     except (
         VoiceoverStateError,
         VoiceoverValidationError,
+        VoiceProviderConfigError,
         ProjectValidationError,
         ValueError,
         OSError,

@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from project_workspace import ProjectValidationError, ProjectWorkspace, WorkspaceError
+from voice_provider_config import VoiceProviderConfigError, active_provider_id
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -20,9 +21,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--to-schema", required=True, type=int, choices=(2,))
     parser.add_argument(
         "--voiceover-mode",
-        required=True,
-        choices=("disabled", "edge-tts", "minimax"),
-        help="升级后冻结的旁白模式",
+        choices=("disabled",),
+        help="显式升级为静音项目；省略时唯一使用 activeProvider",
     )
     return parser
 
@@ -34,9 +34,9 @@ def main(argv: list[str] | None = None) -> int:
         project = workspace.upgrade_project(
             args.project,
             to_schema=args.to_schema,
-            voiceover_mode=args.voiceover_mode,
+            voiceover_mode=args.voiceover_mode or active_provider_id(),
         )
-    except (WorkspaceError, ProjectValidationError, OSError) as exc:
+    except (WorkspaceError, ProjectValidationError, VoiceProviderConfigError, OSError) as exc:
         print(f"[err] {exc}", file=sys.stderr)
         return 2
 

@@ -61,9 +61,6 @@ output/final.mp4
 ```powershell
 <ENV_PY> scripts/generate_images.py --project <项目根目录>
 
-# 仅当用户明确要求临时覆盖 activeProvider 时
-<ENV_PY> scripts/generate_images.py --project <项目根目录> `
-  --provider <provider-name>
 ```
 
 也可以选择另一份绝对路径的 local 配置：
