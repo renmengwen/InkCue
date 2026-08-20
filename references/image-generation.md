@@ -159,6 +159,13 @@ coordinator 先冻结 `attemptId`、image input identity、candidate/receipt/for
 <ENV_PY> scripts/generate_images.py --project <项目根目录> --retry-failed --overwrite
 ```
 
+同一项目的 `generate_images.py` 运行由 `.work/image-generation.lock` 做跨进程互斥。
+如果上一条命令仍在 provider 请求或下载，第二条命令会以
+`image_generation_in_progress` 返回且不发起新的 provider 请求；应先等待第一条命令
+输出最终 JSON，再按 manifest 状态恢复。这样可以避免两个 coordinator 并发写 manifest，
+把仍在进行的请求误判为最终失败或重复发起新 attempt。进程异常退出后，只有在锁内 PID
+已确认不存在时才会清理陈旧锁。
+
 ### 全片内容驱动封面（可选）
 
 在场景图片成功发布后，可在同一阶段显式传入 `--cover` 生成独立社交平台封面：

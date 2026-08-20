@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
+import os
 import sys
 import uuid
 from dataclasses import dataclass
@@ -44,6 +46,7 @@ from project_workspace import ProjectValidationError, ProjectWorkspace, Workspac
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PROVIDER_CONFIG = SKILL_ROOT / "config" / "image-providers.local.json"
 RECOVERABLE_STATUSES = frozenset({"prepared", "requesting", "candidate_ready", "publishing"})
+IMAGE_GENERATION_LOCK_NAME = "image-generation.lock"
 
 
 class CliArgumentError(ValueError):
@@ -64,6 +67,71 @@ class GenerationTask:
     attempt_root: Path
     candidate_path: Path
     formal_file: str
+
+
+def _process_is_alive(pid: int) -> bool:
+    """跨平台判断锁持有进程是否仍在运行；权限不足时按仍在运行处理。"""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _acquire_generation_lock(project_root: Path) -> Path:
+    """防止两个 coordinator 同时操作同一项目并互相覆盖 manifest。"""
+    lock_dir = project_root / ".work"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / IMAGE_GENERATION_LOCK_NAME
+    payload = json.dumps(
+        {"pid": os.getpid(), "startedAt": datetime.datetime.now().astimezone().isoformat()},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    for _ in range(2):
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            owner: dict[str, Any] = {}
+            try:
+                owner = json.loads(lock_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                raise ManifestError("image_generation_in_progress: 项目已有生图运行，锁文件不可读")
+            pid = owner.get("pid")
+            if isinstance(pid, int) and _process_is_alive(pid):
+                raise ManifestError(
+                    f"image_generation_in_progress: pid={pid} 正在运行；请等待其 JSON 结果后再恢复"
+                )
+            # 只有确认持有进程已退出时才清理陈旧锁，避免并发运行互相覆盖。
+            try:
+                lock_path.unlink()
+            except OSError as exc:
+                raise ManifestError("image_generation_in_progress: 无法清理陈旧锁") from exc
+            continue
+        try:
+            os.write(fd, payload)
+        finally:
+            os.close(fd)
+        return lock_path
+    raise ManifestError("image_generation_in_progress: 无法取得项目锁")
+
+
+def _release_generation_lock(lock_path: Path | None) -> None:
+    if lock_path is None:
+        return
+    try:
+        owner = json.loads(lock_path.read_text(encoding="utf-8"))
+        if owner.get("pid") != os.getpid():
+            return
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return
+    lock_path.unlink(missing_ok=True)
 
 
 def _checkpoint_hook(stage: str, scene_id: str) -> None:
@@ -390,6 +458,30 @@ def main(argv: list[str] | None = None) -> int:
     # Windows 测试/项目路径可能接近 MAX_PATH；run/attempt 目录保持短而唯一。
     run_id = f"img-{uuid.uuid4().hex[:12]}"
     run_dir = project.create_run_dir(run_id)
+    try:
+        project_lock = _acquire_generation_lock(project.root)
+    except ManifestError as exc:
+        _emit(
+            _summary(
+                ok=False,
+                exit_code=1,
+                project=str(project.root),
+                provider=provider_name,
+                run_id=run_id,
+                total=len(plan_scenes),
+                targeted=len(targets),
+                configured_concurrency=configured_concurrency,
+                effective_concurrency=0,
+                task_count=0,
+                failures=[{"error": str(exc)}],
+                warnings=["未启动新的 provider 请求；请等待现有运行完成后读取其最终 JSON 结果"],
+            )
+        )
+        try:
+            run_dir.rmdir()
+        except OSError:
+            pass
+        return 1
     failures: list[dict[str, str]] = list(conflicts)
     adopted = 0
     unknown = 0
@@ -615,6 +707,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     finally:
+        _release_generation_lock(project_lock)
         try:
             run_dir.rmdir()
         except OSError:

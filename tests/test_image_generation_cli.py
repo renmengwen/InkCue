@@ -78,6 +78,16 @@ class ImageGenerationCliTests(unittest.TestCase):
         self.assertEqual(resolved.parent, TEST_RUNS.resolve())
         shutil.rmtree(resolved)
 
+    def test_project_generation_lock_blocks_concurrent_coordinator_and_releases(self) -> None:
+        lock = generate_images._acquire_generation_lock(self.root)
+        try:
+            with self.assertRaises(generate_images.ManifestError) as caught:
+                generate_images._acquire_generation_lock(self.root)
+            self.assertIn("image_generation_in_progress", str(caught.exception))
+        finally:
+            generate_images._release_generation_lock(lock)
+        self.assertFalse(lock.exists())
+
     def _write_plan(self, scenes: list[dict[str, object]]) -> Path:
         plan = {
             "schemaVersion": 1,
