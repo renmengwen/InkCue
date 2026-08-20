@@ -1,0 +1,2142 @@
+{
+  "contractVersion": "whiteboard-scene-render-benchmark-report-v1",
+  "generatedAt": "2026-08-20T09:19:47+00:00",
+  "fixture": {
+    "contractVersion": "whiteboard-scene-render-benchmark-fixture-v1",
+    "fixtureId": "fixture-medium",
+    "description": "8 幕中等任务量的合成白板正式渲染基准；不含真实用户内容或外部 provider。",
+    "sceneCount": 8,
+    "sceneDurationMs": 650,
+    "canvas": {
+      "width": 1920,
+      "height": 1080,
+      "background": "#F5EBD7"
+    },
+    "annotation": {
+      "elementCount": 1,
+      "revealStartMs": 0,
+      "revealDurationMs": 100,
+      "protectedRegions": []
+    },
+    "handAsset": "assets/drawing-hand.png",
+    "renderArguments": {
+      "inkPath": "grid",
+      "colorFill": "contour-wipe",
+      "pause": "off",
+      "gridEdge": 120
+    },
+    "fixtureFile": "benchmarks/fixtures/fixture-medium.json",
+    "fixtureSha256": "3cc91afb3df682e81d8be0ae157bfdea94867d7441872fcb79d71652810bb1d4",
+    "handSha256": "dc054d4eedeb206fa61cd0ec5836647ec99e98d16cdecd0c622d7ee7e9b3b070"
+  },
+  "definitions": {
+    "cold": "同一只读基线复制出的新项目第一次正式渲染",
+    "warm": "同一项目同一参数紧接着第二次正式渲染",
+    "coldDoesNotFlushOsCaches": true,
+    "wallTimeIncludes": "formal context, candidate render/deep validation, coordinator binding/atomic publish",
+    "failureProbeIsPerformanceSample": false
+  },
+  "environment": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "osName": "nt",
+    "pythonVersion": "3.11.9",
+    "pythonExecutable": "D:\\SRTWhiteboard\\runtime\\.venv\\Scripts\\python.exe",
+    "logicalCpuCount": 12,
+    "ffmpegVersion": "ffmpeg version 8.1.1-essentials_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers",
+    "ffprobeVersion": "ffprobe version 8.1.1-essentials_build-www.gyan.dev Copyright (c) 2007-2026 the FFmpeg developers",
+    "gitHead": "f642d5a9cfc3915bc1da5af48e44065821715b77",
+    "gitBranch": "main"
+  },
+  "requestedConcurrency": [
+    1,
+    2,
+    4,
+    5
+  ],
+  "requestedTemperatures": [
+    "cold",
+    "warm"
+  ],
+  "runs": [
+    {
+      "temperature": "cold",
+      "configured": 1,
+      "effective": 1,
+      "peak": 1,
+      "taskCount": 8,
+      "wallMs": 79262.521,
+      "runnerWallMs": 79263.11,
+      "peakRssBytes": 704647168,
+      "ffmpegProcessCount": 8,
+      "observedPeakFfmpegProcesses": 1,
+      "candidateBytes": 590260,
+      "candidateBytesByScene": {
+        "scene-01": 72639,
+        "scene-02": 74604,
+        "scene-03": 77433,
+        "scene-04": 70454,
+        "scene-05": 72639,
+        "scene-06": 74604,
+        "scene-07": 77433,
+        "scene-08": 70454
+      },
+      "peakWorkCandidateBytes": 77433,
+      "residualWorkBytes": 0,
+      "stageDurationsMs": {
+        "context": 66.522,
+        "prepare": 39.785,
+        "candidateExecution": 78772.259,
+        "coordinatorPublish": 383.332
+      },
+      "status": "PASS",
+      "partialSuccess": false,
+      "successCount": 8,
+      "failureCount": 0,
+      "approvalWritten": false,
+      "sceneOrder": [
+        "scene-01",
+        "scene-02",
+        "scene-03",
+        "scene-04",
+        "scene-05",
+        "scene-06",
+        "scene-07",
+        "scene-08"
+      ],
+      "outputFingerprint": {
+        "sceneOrder": [
+          "scene-01",
+          "scene-02",
+          "scene-03",
+          "scene-04",
+          "scene-05",
+          "scene-06",
+          "scene-07",
+          "scene-08"
+        ],
+        "scenes": [
+          {
+            "sceneId": "scene-01",
+            "outputFile": "scenes/scene-01-whiteboard.mp4",
+            "renderIdentityHash": "bcc68e878efaf0b08ca999704831806257a29e4799098587d5aaf49349b1abe0",
+            "outputSha256": "7c8a74d39d419738646d148280363061c9db83b61410a0126fa02a47fc513eca",
+            "outputBytes": 72639
+          },
+          {
+            "sceneId": "scene-02",
+            "outputFile": "scenes/scene-02-whiteboard.mp4",
+            "renderIdentityHash": "2f74efbaa6ee2928b48ae6504767a0b3cfb04df44d5b575b41272841ea4012b5",
+            "outputSha256": "68f8d0f5f456821e3f164a708c5a66330c1f7ba9104170c8adf9d4dac0425f15",
+            "outputBytes": 74604
+          },
+          {
+            "sceneId": "scene-03",
+            "outputFile": "scenes/scene-03-whiteboard.mp4",
+            "renderIdentityHash": "77846262d42fc1b29235468a3dbae5f0e6e8454d61598b2a8ff8f415546f4335",
+            "outputSha256": "30f43b6df086171baa4f21772d790d811442eefae79c28f340016820a6ab8157",
+            "outputBytes": 77433
+          },
+          {
+            "sceneId": "scene-04",
+            "outputFile": "scenes/scene-04-whiteboard.mp4",
+            "renderIdentityHash": "f5e224846532a5c3931cea7ebc3060b6ce1677fbd8dd59bb205a5104c531be40",
+            "outputSha256": "36b851dfa547210a8d389ed326dd4c1dd59896bfd1f869435df369032383e294",
+            "outputBytes": 70454
+          },
+          {
+            "sceneId": "scene-05",
+            "outputFile": "scenes/scene-05-whiteboard.mp4",
+            "renderIdentityHash": "43bad08c01db594ced957e78d28ae741d2ebc3f8a66738cc54561da07e2ef5f2",
+            "outputSha256": "7c8a74d39d419738646d148280363061c9db83b61410a0126fa02a47fc513eca",
+            "outputBytes": 72639
+          },
+          {
+            "sceneId": "scene-06",
+            "outputFile": "scenes/scene-06-whiteboard.mp4",
+            "renderIdentityHash": "2ff086c257b2ae8f2468049c5efb3d95b230c08e777166b7536d8f7f87cab14e",
+            "outputSha256": "68f8d0f5f456821e3f164a708c5a66330c1f7ba9104170c8adf9d4dac0425f15",
+            "outputBytes": 74604
+          },
+          {
+            "sceneId": "scene-07",
+            "outputFile": "scenes/scene-07-whiteboard.mp4",
+            "renderIdentityHash": "8a7f4377b1e720d8b8750674c103debe92e4f73f282bced78d185020ea086680",
+            "outputSha256": "30f43b6df086171baa4f21772d790d811442eefae79c28f340016820a6ab8157",
+            "outputBytes": 77433
+          },
+          {
+            "sceneId": "scene-08",
+            "outputFile": "scenes/scene-08-whiteboard.mp4",
+            "renderIdentityHash": "088a15d4c87809808b51491714ffd0f9fa525628c823a9371f9a9370704572bb",
+            "outputSha256": "36b851dfa547210a8d389ed326dd4c1dd59896bfd1f869435df369032383e294",
+            "outputBytes": 70454
+          }
+        ],
+        "identitySetSha256": "6d3e51dc6ff8afdf8073c94a479a26b59a4dd720db2e4ee6ff3376d4c25bf297",
+        "outputShaSetSha256": "d77c4e1ad5256110454768da85b6165b9e5cb810b05f747232797a95cefaf38f"
+      },
+      "resourceSampling": {
+        "measurementMethod": "windows-toolhelp32-working-set-sampling-v1",
+        "sampleIntervalMs": 20.0,
+        "sampleCount": 2598,
+        "peakRssBytes": 704647168,
+        "observedPeakFfmpegProcesses": 1,
+        "observedPeakChildProcesses": 1,
+        "peakWorkCandidateBytes": 77433
+      },
+      "formalBatchSummary": {
+        "contractVersion": "whiteboard-scene-render-batch-v2",
+        "status": "PASS",
+        "partialSuccess": false,
+        "projectId": "22222222-2222-4222-8222-222222222222",
+        "taskCount": 8,
+        "configured": 1,
+        "effective": 1,
+        "peak": 1,
+        "configuredSceneRenderConcurrency": 1,
+        "effectiveSceneRenderConcurrency": 1,
+        "peakSceneRenderWorkers": 1,
+        "sceneOrder": [
+          "scene-01",
+          "scene-02",
+          "scene-03",
+          "scene-04",
+          "scene-05",
+          "scene-06",
+          "scene-07",
+          "scene-08"
+        ],
+        "results": [
+          {
+            "sceneId": "scene-01",
+            "outputFile": "scenes/scene-01-whiteboard.mp4",
+            "renderIdentityHash": "bcc68e878efaf0b08ca999704831806257a29e4799098587d5aaf49349b1abe0",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-02",
+            "outputFile": "scenes/scene-02-whiteboard.mp4",
+            "renderIdentityHash": "2f74efbaa6ee2928b48ae6504767a0b3cfb04df44d5b575b41272841ea4012b5",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-03",
+            "outputFile": "scenes/scene-03-whiteboard.mp4",
+            "renderIdentityHash": "77846262d42fc1b29235468a3dbae5f0e6e8454d61598b2a8ff8f415546f4335",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-04",
+            "outputFile": "scenes/scene-04-whiteboard.mp4",
+            "renderIdentityHash": "f5e224846532a5c3931cea7ebc3060b6ce1677fbd8dd59bb205a5104c531be40",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-05",
+            "outputFile": "scenes/scene-05-whiteboard.mp4",
+            "renderIdentityHash": "43bad08c01db594ced957e78d28ae741d2ebc3f8a66738cc54561da07e2ef5f2",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-06",
+            "outputFile": "scenes/scene-06-whiteboard.mp4",
+            "renderIdentityHash": "2ff086c257b2ae8f2468049c5efb3d95b230c08e777166b7536d8f7f87cab14e",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-07",
+            "outputFile": "scenes/scene-07-whiteboard.mp4",
+            "renderIdentityHash": "8a7f4377b1e720d8b8750674c103debe92e4f73f282bced78d185020ea086680",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-08",
+            "outputFile": "scenes/scene-08-whiteboard.mp4",
+            "renderIdentityHash": "088a15d4c87809808b51491714ffd0f9fa525628c823a9371f9a9370704572bb",
+            "status": "published_current_technical"
+          }
+        ],
+        "successCount": 8,
+        "failureCount": 0,
+        "approvalWritten": false,
+        "userConfirmationRequired": true,
+        "wallMs": 79262.521,
+        "stageDurationsMs": {
+          "context": 66.522,
+          "prepare": 39.785,
+          "candidateExecution": 78772.259,
+          "coordinatorPublish": 383.332
+        },
+        "ffmpegProcessCount": 8,
+        "ffmpegProcessCountMetric": "sceneEncoderStarts",
+        "workerPhaseDurationsMs": {
+          "prepare": 1195.554,
+          "render": 76590.921,
+          "validation": 932.523
+        },
+        "workerPhaseDurationAggregation": "sumAcrossScenes",
+        "candidateBytes": 590260,
+        "candidateBytesByScene": {
+          "scene-01": 72639,
+          "scene-02": 74604,
+          "scene-03": 77433,
+          "scene-04": 70454,
+          "scene-05": 72639,
+          "scene-06": 74604,
+          "scene-07": 77433,
+          "scene-08": 70454
+        }
+      },
+      "identityStableAgainstSerial": true,
+      "outputShaStableAgainstSerial": true,
+      "sceneOrderStableAgainstSerial": true
+    },
+    {
+      "temperature": "warm",
+      "configured": 1,
+      "effective": 1,
+      "peak": 1,
+      "taskCount": 8,
+      "wallMs": 76981.253,
+      "runnerWallMs": 76981.861,
+      "peakRssBytes": 705097728,
+      "ffmpegProcessCount": 8,
+      "observedPeakFfmpegProcesses": 1,
+      "candidateBytes": 590260,
+      "candidateBytesByScene": {
+        "scene-01": 72639,
+        "scene-02": 74604,
+        "scene-03": 77433,
+        "scene-04": 70454,
+        "scene-05": 72639,
+        "scene-06": 74604,
+        "scene-07": 77433,
+        "scene-08": 70454
+      },
+      "peakWorkCandidateBytes": 77433,
+      "residualWorkBytes": 0,
+      "stageDurationsMs": {
+        "context": 42.4,
+        "prepare": 31.985,
+        "candidateExecution": 76527.495,
+        "coordinatorPublish": 378.914
+      },
+      "status": "PASS",
+      "partialSuccess": false,
+      "successCount": 8,
+      "failureCount": 0,
+      "approvalWritten": false,
+      "sceneOrder": [
+        "scene-01",
+        "scene-02",
+        "scene-03",
+        "scene-04",
+        "scene-05",
+        "scene-06",
+        "scene-07",
+        "scene-08"
+      ],
+      "outputFingerprint": {
+        "sceneOrder": [
+          "scene-01",
+          "scene-02",
+          "scene-03",
+          "scene-04",
+          "scene-05",
+          "scene-06",
+          "scene-07",
+          "scene-08"
+        ],
+        "scenes": [
+          {
+            "sceneId": "scene-01",
+            "outputFile": "scenes/scene-01-whiteboard.mp4",
+            "renderIdentityHash": "bcc68e878efaf0b08ca999704831806257a29e4799098587d5aaf49349b1abe0",
+            "outputSha256": "7c8a74d39d419738646d148280363061c9db83b61410a0126fa02a47fc513eca",
+            "outputBytes": 72639
+          },
+          {
+            "sceneId": "scene-02",
+            "outputFile": "scenes/scene-02-whiteboard.mp4",
+            "renderIdentityHash": "2f74efbaa6ee2928b48ae6504767a0b3cfb04df44d5b575b41272841ea4012b5",
+            "outputSha256": "68f8d0f5f456821e3f164a708c5a66330c1f7ba9104170c8adf9d4dac0425f15",
+            "outputBytes": 74604
+          },
+          {
+            "sceneId": "scene-03",
+            "outputFile": "scenes/scene-03-whiteboard.mp4",
+            "renderIdentityHash": "77846262d42fc1b29235468a3dbae5f0e6e8454d61598b2a8ff8f415546f4335",
+            "outputSha256": "30f43b6df086171baa4f21772d790d811442eefae79c28f340016820a6ab8157",
+            "outputBytes": 77433
+          },
+          {
+            "sceneId": "scene-04",
+            "outputFile": "scenes/scene-04-whiteboard.mp4",
+            "renderIdentityHash": "f5e224846532a5c3931cea7ebc3060b6ce1677fbd8dd59bb205a5104c531be40",
+            "outputSha256": "36b851dfa547210a8d389ed326dd4c1dd59896bfd1f869435df369032383e294",
+            "outputBytes": 70454
+          },
+          {
+            "sceneId": "scene-05",
+            "outputFile": "scenes/scene-05-whiteboard.mp4",
+            "renderIdentityHash": "43bad08c01db594ced957e78d28ae741d2ebc3f8a66738cc54561da07e2ef5f2",
+            "outputSha256": "7c8a74d39d419738646d148280363061c9db83b61410a0126fa02a47fc513eca",
+            "outputBytes": 72639
+          },
+          {
+            "sceneId": "scene-06",
+            "outputFile": "scenes/scene-06-whiteboard.mp4",
+            "renderIdentityHash": "2ff086c257b2ae8f2468049c5efb3d95b230c08e777166b7536d8f7f87cab14e",
+            "outputSha256": "68f8d0f5f456821e3f164a708c5a66330c1f7ba9104170c8adf9d4dac0425f15",
+            "outputBytes": 74604
+          },
+          {
+            "sceneId": "scene-07",
+            "outputFile": "scenes/scene-07-whiteboard.mp4",
+            "renderIdentityHash": "8a7f4377b1e720d8b8750674c103debe92e4f73f282bced78d185020ea086680",
+            "outputSha256": "30f43b6df086171baa4f21772d790d811442eefae79c28f340016820a6ab8157",
+            "outputBytes": 77433
+          },
+          {
+            "sceneId": "scene-08",
+            "outputFile": "scenes/scene-08-whiteboard.mp4",
+            "renderIdentityHash": "088a15d4c87809808b51491714ffd0f9fa525628c823a9371f9a9370704572bb",
+            "outputSha256": "36b851dfa547210a8d389ed326dd4c1dd59896bfd1f869435df369032383e294",
+            "outputBytes": 70454
+          }
+        ],
+        "identitySetSha256": "6d3e51dc6ff8afdf8073c94a479a26b59a4dd720db2e4ee6ff3376d4c25bf297",
+        "outputShaSetSha256": "d77c4e1ad5256110454768da85b6165b9e5cb810b05f747232797a95cefaf38f"
+      },
+      "resourceSampling": {
+        "measurementMethod": "windows-toolhelp32-working-set-sampling-v1",
+        "sampleIntervalMs": 20.0,
+        "sampleCount": 2549,
+        "peakRssBytes": 705097728,
+        "observedPeakFfmpegProcesses": 1,
+        "observedPeakChildProcesses": 1,
+        "peakWorkCandidateBytes": 77433
+      },
+      "formalBatchSummary": {
+        "contractVersion": "whiteboard-scene-render-batch-v2",
+        "status": "PASS",
+        "partialSuccess": false,
+        "projectId": "22222222-2222-4222-8222-222222222222",
+        "taskCount": 8,
+        "configured": 1,
+        "effective": 1,
+        "peak": 1,
+        "configuredSceneRenderConcurrency": 1,
+        "effectiveSceneRenderConcurrency": 1,
+        "peakSceneRenderWorkers": 1,
+        "sceneOrder": [
+          "scene-01",
+          "scene-02",
+          "scene-03",
+          "scene-04",
+          "scene-05",
+          "scene-06",
+          "scene-07",
+          "scene-08"
+        ],
+        "results": [
+          {
+            "sceneId": "scene-01",
+            "outputFile": "scenes/scene-01-whiteboard.mp4",
+            "renderIdentityHash": "bcc68e878efaf0b08ca999704831806257a29e4799098587d5aaf49349b1abe0",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-02",
+            "outputFile": "scenes/scene-02-whiteboard.mp4",
+            "renderIdentityHash": "2f74efbaa6ee2928b48ae6504767a0b3cfb04df44d5b575b41272841ea4012b5",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-03",
+            "outputFile": "scenes/scene-03-whiteboard.mp4",
+            "renderIdentityHash": "77846262d42fc1b29235468a3dbae5f0e6e8454d61598b2a8ff8f415546f4335",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-04",
+            "outputFile": "scenes/scene-04-whiteboard.mp4",
+            "renderIdentityHash": "f5e224846532a5c3931cea7ebc3060b6ce1677fbd8dd59bb205a5104c531be40",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-05",
+            "outputFile": "scenes/scene-05-whiteboard.mp4",
+            "renderIdentityHash": "43bad08c01db594ced957e78d28ae741d2ebc3f8a66738cc54561da07e2ef5f2",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-06",
+            "outputFile": "scenes/scene-06-whiteboard.mp4",
+            "renderIdentityHash": "2ff086c257b2ae8f2468049c5efb3d95b230c08e777166b7536d8f7f87cab14e",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-07",
+            "outputFile": "scenes/scene-07-whiteboard.mp4",
+            "renderIdentityHash": "8a7f4377b1e720d8b8750674c103debe92e4f73f282bced78d185020ea086680",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-08",
+            "outputFile": "scenes/scene-08-whiteboard.mp4",
+            "renderIdentityHash": "088a15d4c87809808b51491714ffd0f9fa525628c823a9371f9a9370704572bb",
+            "status": "published_current_technical"
+          }
+        ],
+        "successCount": 8,
+        "failureCount": 0,
+        "approvalWritten": false,
+        "userConfirmationRequired": true,
+        "wallMs": 76981.253,
+        "stageDurationsMs": {
+          "context": 42.4,
+          "prepare": 31.985,
+          "candidateExecution": 76527.495,
+          "coordinatorPublish": 378.914
+        },
+        "ffmpegProcessCount": 8,
+        "ffmpegProcessCountMetric": "sceneEncoderStarts",
+        "workerPhaseDurationsMs": {
+          "prepare": 1113.409,
+          "render": 74424.414,
+          "validation": 935.602
+        },
+        "workerPhaseDurationAggregation": "sumAcrossScenes",
+        "candidateBytes": 590260,
+        "candidateBytesByScene": {
+          "scene-01": 72639,
+          "scene-02": 74604,
+          "scene-03": 77433,
+          "scene-04": 70454,
+          "scene-05": 72639,
+          "scene-06": 74604,
+          "scene-07": 77433,
+          "scene-08": 70454
+        }
+      },
+      "identityStableAgainstSerial": true,
+      "outputShaStableAgainstSerial": true,
+      "sceneOrderStableAgainstSerial": true
+    },
+    {
+      "temperature": "cold",
+      "configured": 2,
+      "effective": 2,
+      "peak": 2,
+      "taskCount": 8,
+      "wallMs": 46946.72,
+      "runnerWallMs": 46947.249,
+      "peakRssBytes": 944230400,
+      "ffmpegProcessCount": 8,
+      "observedPeakFfmpegProcesses": 2,
+      "candidateBytes": 590260,
+      "candidateBytesByScene": {
+        "scene-01": 72639,
+        "scene-02": 74604,
+        "scene-03": 77433,
+        "scene-04": 70454,
+        "scene-05": 72639,
+        "scene-06": 74604,
+        "scene-07": 77433,
+        "scene-08": 70454
+      },
+      "peakWorkCandidateBytes": 590260,
+      "residualWorkBytes": 0,
+      "stageDurationsMs": {
+        "context": 56.331,
+        "prepare": 95.897,
+        "candidateExecution": 46390.185,
+        "coordinatorPublish": 404.248
+      },
+      "status": "PASS",
+      "partialSuccess": false,
+      "successCount": 8,
+      "failureCount": 0,
+      "approvalWritten": false,
+      "sceneOrder": [
+        "scene-01",
+        "scene-02",
+        "scene-03",
+        "scene-04",
+        "scene-05",
+        "scene-06",
+        "scene-07",
+        "scene-08"
+      ],
+      "outputFingerprint": {
+        "sceneOrder": [
+          "scene-01",
+          "scene-02",
+          "scene-03",
+          "scene-04",
+          "scene-05",
+          "scene-06",
+          "scene-07",
+          "scene-08"
+        ],
+        "scenes": [
+          {
+            "sceneId": "scene-01",
+            "outputFile": "scenes/scene-01-whiteboard.mp4",
+            "renderIdentityHash": "bcc68e878efaf0b08ca999704831806257a29e4799098587d5aaf49349b1abe0",
+            "outputSha256": "7c8a74d39d419738646d148280363061c9db83b61410a0126fa02a47fc513eca",
+            "outputBytes": 72639
+          },
+          {
+            "sceneId": "scene-02",
+            "outputFile": "scenes/scene-02-whiteboard.mp4",
+            "renderIdentityHash": "2f74efbaa6ee2928b48ae6504767a0b3cfb04df44d5b575b41272841ea4012b5",
+            "outputSha256": "68f8d0f5f456821e3f164a708c5a66330c1f7ba9104170c8adf9d4dac0425f15",
+            "outputBytes": 74604
+          },
+          {
+            "sceneId": "scene-03",
+            "outputFile": "scenes/scene-03-whiteboard.mp4",
+            "renderIdentityHash": "77846262d42fc1b29235468a3dbae5f0e6e8454d61598b2a8ff8f415546f4335",
+            "outputSha256": "30f43b6df086171baa4f21772d790d811442eefae79c28f340016820a6ab8157",
+            "outputBytes": 77433
+          },
+          {
+            "sceneId": "scene-04",
+            "outputFile": "scenes/scene-04-whiteboard.mp4",
+            "renderIdentityHash": "f5e224846532a5c3931cea7ebc3060b6ce1677fbd8dd59bb205a5104c531be40",
+            "outputSha256": "36b851dfa547210a8d389ed326dd4c1dd59896bfd1f869435df369032383e294",
+            "outputBytes": 70454
+          },
+          {
+            "sceneId": "scene-05",
+            "outputFile": "scenes/scene-05-whiteboard.mp4",
+            "renderIdentityHash": "43bad08c01db594ced957e78d28ae741d2ebc3f8a66738cc54561da07e2ef5f2",
+            "outputSha256": "7c8a74d39d419738646d148280363061c9db83b61410a0126fa02a47fc513eca",
+            "outputBytes": 72639
+          },
+          {
+            "sceneId": "scene-06",
+            "outputFile": "scenes/scene-06-whiteboard.mp4",
+            "renderIdentityHash": "2ff086c257b2ae8f2468049c5efb3d95b230c08e777166b7536d8f7f87cab14e",
+            "outputSha256": "68f8d0f5f456821e3f164a708c5a66330c1f7ba9104170c8adf9d4dac0425f15",
+            "outputBytes": 74604
+          },
+          {
+            "sceneId": "scene-07",
+            "outputFile": "scenes/scene-07-whiteboard.mp4",
+            "renderIdentityHash": "8a7f4377b1e720d8b8750674c103debe92e4f73f282bced78d185020ea086680",
+            "outputSha256": "30f43b6df086171baa4f21772d790d811442eefae79c28f340016820a6ab8157",
+            "outputBytes": 77433
+          },
+          {
+            "sceneId": "scene-08",
+            "outputFile": "scenes/scene-08-whiteboard.mp4",
+            "renderIdentityHash": "088a15d4c87809808b51491714ffd0f9fa525628c823a9371f9a9370704572bb",
+            "outputSha256": "36b851dfa547210a8d389ed326dd4c1dd59896bfd1f869435df369032383e294",
+            "outputBytes": 70454
+          }
+        ],
+        "identitySetSha256": "6d3e51dc6ff8afdf8073c94a479a26b59a4dd720db2e4ee6ff3376d4c25bf297",
+        "outputShaSetSha256": "d77c4e1ad5256110454768da85b6165b9e5cb810b05f747232797a95cefaf38f"
+      },
+      "resourceSampling": {
+        "measurementMethod": "windows-toolhelp32-working-set-sampling-v1",
+        "sampleIntervalMs": 20.0,
+        "sampleCount": 1497,
+        "peakRssBytes": 944230400,
+        "observedPeakFfmpegProcesses": 2,
+        "observedPeakChildProcesses": 4,
+        "peakWorkCandidateBytes": 590260
+      },
+      "formalBatchSummary": {
+        "contractVersion": "whiteboard-scene-render-batch-v2",
+        "status": "PASS",
+        "partialSuccess": false,
+        "projectId": "22222222-2222-4222-8222-222222222222",
+        "taskCount": 8,
+        "configured": 2,
+        "effective": 2,
+        "peak": 2,
+        "configuredSceneRenderConcurrency": 2,
+        "effectiveSceneRenderConcurrency": 2,
+        "peakSceneRenderWorkers": 2,
+        "sceneOrder": [
+          "scene-01",
+          "scene-02",
+          "scene-03",
+          "scene-04",
+          "scene-05",
+          "scene-06",
+          "scene-07",
+          "scene-08"
+        ],
+        "results": [
+          {
+            "sceneId": "scene-01",
+            "outputFile": "scenes/scene-01-whiteboard.mp4",
+            "renderIdentityHash": "bcc68e878efaf0b08ca999704831806257a29e4799098587d5aaf49349b1abe0",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-02",
+            "outputFile": "scenes/scene-02-whiteboard.mp4",
+            "renderIdentityHash": "2f74efbaa6ee2928b48ae6504767a0b3cfb04df44d5b575b41272841ea4012b5",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-03",
+            "outputFile": "scenes/scene-03-whiteboard.mp4",
+            "renderIdentityHash": "77846262d42fc1b29235468a3dbae5f0e6e8454d61598b2a8ff8f415546f4335",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-04",
+            "outputFile": "scenes/scene-04-whiteboard.mp4",
+            "renderIdentityHash": "f5e224846532a5c3931cea7ebc3060b6ce1677fbd8dd59bb205a5104c531be40",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-05",
+            "outputFile": "scenes/scene-05-whiteboard.mp4",
+            "renderIdentityHash": "43bad08c01db594ced957e78d28ae741d2ebc3f8a66738cc54561da07e2ef5f2",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-06",
+            "outputFile": "scenes/scene-06-whiteboard.mp4",
+            "renderIdentityHash": "2ff086c257b2ae8f2468049c5efb3d95b230c08e777166b7536d8f7f87cab14e",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-07",
+            "outputFile": "scenes/scene-07-whiteboard.mp4",
+            "renderIdentityHash": "8a7f4377b1e720d8b8750674c103debe92e4f73f282bced78d185020ea086680",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-08",
+            "outputFile": "scenes/scene-08-whiteboard.mp4",
+            "renderIdentityHash": "088a15d4c87809808b51491714ffd0f9fa525628c823a9371f9a9370704572bb",
+            "status": "published_current_technical"
+          }
+        ],
+        "successCount": 8,
+        "failureCount": 0,
+        "approvalWritten": false,
+        "userConfirmationRequired": true,
+        "wallMs": 46946.72,
+        "stageDurationsMs": {
+          "context": 56.331,
+          "prepare": 95.897,
+          "candidateExecution": 46390.185,
+          "coordinatorPublish": 404.248
+        },
+        "ffmpegProcessCount": 8,
+        "ffmpegProcessCountMetric": "sceneEncoderStarts",
+        "workerPhaseDurationsMs": {
+          "prepare": 1558.885,
+          "render": 84691.204,
+          "validation": 1058.179
+        },
+        "workerPhaseDurationAggregation": "sumAcrossScenes",
+        "candidateBytes": 590260,
+        "candidateBytesByScene": {
+          "scene-01": 72639,
+          "scene-02": 74604,
+          "scene-03": 77433,
+          "scene-04": 70454,
+          "scene-05": 72639,
+          "scene-06": 74604,
+          "scene-07": 77433,
+          "scene-08": 70454
+        }
+      },
+      "identityStableAgainstSerial": true,
+      "outputShaStableAgainstSerial": true,
+      "sceneOrderStableAgainstSerial": true
+    },
+    {
+      "temperature": "warm",
+      "configured": 2,
+      "effective": 2,
+      "peak": 2,
+      "taskCount": 8,
+      "wallMs": 45820.87,
+      "runnerWallMs": 45821.378,
+      "peakRssBytes": 943140864,
+      "ffmpegProcessCount": 8,
+      "observedPeakFfmpegProcesses": 2,
+      "candidateBytes": 590260,
+      "candidateBytesByScene": {
+        "scene-01": 72639,
+        "scene-02": 74604,
+        "scene-03": 77433,
+        "scene-04": 70454,
+        "scene-05": 72639,
+        "scene-06": 74604,
+        "scene-07": 77433,
+        "scene-08": 70454
+      },
+      "peakWorkCandidateBytes": 590260,
+      "residualWorkBytes": 0,
+      "stageDurationsMs": {
+        "context": 41.133,
+        "prepare": 45.974,
+        "candidateExecution": 45331.63,
+        "coordinatorPublish": 402.078
+      },
+      "status": "PASS",
+      "partialSuccess": false,
+      "successCount": 8,
+      "failureCount": 0,
+      "approvalWritten": false,
+      "sceneOrder": [
+        "scene-01",
+        "scene-02",
+        "scene-03",
+        "scene-04",
+        "scene-05",
+        "scene-06",
+        "scene-07",
+        "scene-08"
+      ],
+      "outputFingerprint": {
+        "sceneOrder": [
+          "scene-01",
+          "scene-02",
+          "scene-03",
+          "scene-04",
+          "scene-05",
+          "scene-06",
+          "scene-07",
+          "scene-08"
+        ],
+        "scenes": [
+          {
+            "sceneId": "scene-01",
+            "outputFile": "scenes/scene-01-whiteboard.mp4",
+            "renderIdentityHash": "bcc68e878efaf0b08ca999704831806257a29e4799098587d5aaf49349b1abe0",
+            "outputSha256": "7c8a74d39d419738646d148280363061c9db83b61410a0126fa02a47fc513eca",
+            "outputBytes": 72639
+          },
+          {
+            "sceneId": "scene-02",
+            "outputFile": "scenes/scene-02-whiteboard.mp4",
+            "renderIdentityHash": "2f74efbaa6ee2928b48ae6504767a0b3cfb04df44d5b575b41272841ea4012b5",
+            "outputSha256": "68f8d0f5f456821e3f164a708c5a66330c1f7ba9104170c8adf9d4dac0425f15",
+            "outputBytes": 74604
+          },
+          {
+            "sceneId": "scene-03",
+            "outputFile": "scenes/scene-03-whiteboard.mp4",
+            "renderIdentityHash": "77846262d42fc1b29235468a3dbae5f0e6e8454d61598b2a8ff8f415546f4335",
+            "outputSha256": "30f43b6df086171baa4f21772d790d811442eefae79c28f340016820a6ab8157",
+            "outputBytes": 77433
+          },
+          {
+            "sceneId": "scene-04",
+            "outputFile": "scenes/scene-04-whiteboard.mp4",
+            "renderIdentityHash": "f5e224846532a5c3931cea7ebc3060b6ce1677fbd8dd59bb205a5104c531be40",
+            "outputSha256": "36b851dfa547210a8d389ed326dd4c1dd59896bfd1f869435df369032383e294",
+            "outputBytes": 70454
+          },
+          {
+            "sceneId": "scene-05",
+            "outputFile": "scenes/scene-05-whiteboard.mp4",
+            "renderIdentityHash": "43bad08c01db594ced957e78d28ae741d2ebc3f8a66738cc54561da07e2ef5f2",
+            "outputSha256": "7c8a74d39d419738646d148280363061c9db83b61410a0126fa02a47fc513eca",
+            "outputBytes": 72639
+          },
+          {
+            "sceneId": "scene-06",
+            "outputFile": "scenes/scene-06-whiteboard.mp4",
+            "renderIdentityHash": "2ff086c257b2ae8f2468049c5efb3d95b230c08e777166b7536d8f7f87cab14e",
+            "outputSha256": "68f8d0f5f456821e3f164a708c5a66330c1f7ba9104170c8adf9d4dac0425f15",
+            "outputBytes": 74604
+          },
+          {
+            "sceneId": "scene-07",
+            "outputFile": "scenes/scene-07-whiteboard.mp4",
+            "renderIdentityHash": "8a7f4377b1e720d8b8750674c103debe92e4f73f282bced78d185020ea086680",
+            "outputSha256": "30f43b6df086171baa4f21772d790d811442eefae79c28f340016820a6ab8157",
+            "outputBytes": 77433
+          },
+          {
+            "sceneId": "scene-08",
+            "outputFile": "scenes/scene-08-whiteboard.mp4",
+            "renderIdentityHash": "088a15d4c87809808b51491714ffd0f9fa525628c823a9371f9a9370704572bb",
+            "outputSha256": "36b851dfa547210a8d389ed326dd4c1dd59896bfd1f869435df369032383e294",
+            "outputBytes": 70454
+          }
+        ],
+        "identitySetSha256": "6d3e51dc6ff8afdf8073c94a479a26b59a4dd720db2e4ee6ff3376d4c25bf297",
+        "outputShaSetSha256": "d77c4e1ad5256110454768da85b6165b9e5cb810b05f747232797a95cefaf38f"
+      },
+      "resourceSampling": {
+        "measurementMethod": "windows-toolhelp32-working-set-sampling-v1",
+        "sampleIntervalMs": 20.0,
+        "sampleCount": 1470,
+        "peakRssBytes": 943140864,
+        "observedPeakFfmpegProcesses": 2,
+        "observedPeakChildProcesses": 4,
+        "peakWorkCandidateBytes": 590260
+      },
+      "formalBatchSummary": {
+        "contractVersion": "whiteboard-scene-render-batch-v2",
+        "status": "PASS",
+        "partialSuccess": false,
+        "projectId": "22222222-2222-4222-8222-222222222222",
+        "taskCount": 8,
+        "configured": 2,
+        "effective": 2,
+        "peak": 2,
+        "configuredSceneRenderConcurrency": 2,
+        "effectiveSceneRenderConcurrency": 2,
+        "peakSceneRenderWorkers": 2,
+        "sceneOrder": [
+          "scene-01",
+          "scene-02",
+          "scene-03",
+          "scene-04",
+          "scene-05",
+          "scene-06",
+          "scene-07",
+          "scene-08"
+        ],
+        "results": [
+          {
+            "sceneId": "scene-01",
+            "outputFile": "scenes/scene-01-whiteboard.mp4",
+            "renderIdentityHash": "bcc68e878efaf0b08ca999704831806257a29e4799098587d5aaf49349b1abe0",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-02",
+            "outputFile": "scenes/scene-02-whiteboard.mp4",
+            "renderIdentityHash": "2f74efbaa6ee2928b48ae6504767a0b3cfb04df44d5b575b41272841ea4012b5",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-03",
+            "outputFile": "scenes/scene-03-whiteboard.mp4",
+            "renderIdentityHash": "77846262d42fc1b29235468a3dbae5f0e6e8454d61598b2a8ff8f415546f4335",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-04",
+            "outputFile": "scenes/scene-04-whiteboard.mp4",
+            "renderIdentityHash": "f5e224846532a5c3931cea7ebc3060b6ce1677fbd8dd59bb205a5104c531be40",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-05",
+            "outputFile": "scenes/scene-05-whiteboard.mp4",
+            "renderIdentityHash": "43bad08c01db594ced957e78d28ae741d2ebc3f8a66738cc54561da07e2ef5f2",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-06",
+            "outputFile": "scenes/scene-06-whiteboard.mp4",
+            "renderIdentityHash": "2ff086c257b2ae8f2468049c5efb3d95b230c08e777166b7536d8f7f87cab14e",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-07",
+            "outputFile": "scenes/scene-07-whiteboard.mp4",
+            "renderIdentityHash": "8a7f4377b1e720d8b8750674c103debe92e4f73f282bced78d185020ea086680",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-08",
+            "outputFile": "scenes/scene-08-whiteboard.mp4",
+            "renderIdentityHash": "088a15d4c87809808b51491714ffd0f9fa525628c823a9371f9a9370704572bb",
+            "status": "published_current_technical"
+          }
+        ],
+        "successCount": 8,
+        "failureCount": 0,
+        "approvalWritten": false,
+        "userConfirmationRequired": true,
+        "wallMs": 45820.87,
+        "stageDurationsMs": {
+          "context": 41.133,
+          "prepare": 45.974,
+          "candidateExecution": 45331.63,
+          "coordinatorPublish": 402.078
+        },
+        "ffmpegProcessCount": 8,
+        "ffmpegProcessCountMetric": "sceneEncoderStarts",
+        "workerPhaseDurationsMs": {
+          "prepare": 1468.806,
+          "render": 82933.865,
+          "validation": 982.715
+        },
+        "workerPhaseDurationAggregation": "sumAcrossScenes",
+        "candidateBytes": 590260,
+        "candidateBytesByScene": {
+          "scene-01": 72639,
+          "scene-02": 74604,
+          "scene-03": 77433,
+          "scene-04": 70454,
+          "scene-05": 72639,
+          "scene-06": 74604,
+          "scene-07": 77433,
+          "scene-08": 70454
+        }
+      },
+      "identityStableAgainstSerial": true,
+      "outputShaStableAgainstSerial": true,
+      "sceneOrderStableAgainstSerial": true
+    },
+    {
+      "temperature": "cold",
+      "configured": 4,
+      "effective": 4,
+      "peak": 4,
+      "taskCount": 8,
+      "wallMs": 29832.748,
+      "runnerWallMs": 29833.297,
+      "peakRssBytes": 1303080960,
+      "ffmpegProcessCount": 8,
+      "observedPeakFfmpegProcesses": 4,
+      "candidateBytes": 590260,
+      "candidateBytesByScene": {
+        "scene-01": 72639,
+        "scene-02": 74604,
+        "scene-03": 77433,
+        "scene-04": 70454,
+        "scene-05": 72639,
+        "scene-06": 74604,
+        "scene-07": 77433,
+        "scene-08": 70454
+      },
+      "peakWorkCandidateBytes": 590260,
+      "residualWorkBytes": 0,
+      "stageDurationsMs": {
+        "context": 53.348,
+        "prepare": 91.328,
+        "candidateExecution": 29291.714,
+        "coordinatorPublish": 396.3
+      },
+      "status": "PASS",
+      "partialSuccess": false,
+      "successCount": 8,
+      "failureCount": 0,
+      "approvalWritten": false,
+      "sceneOrder": [
+        "scene-01",
+        "scene-02",
+        "scene-03",
+        "scene-04",
+        "scene-05",
+        "scene-06",
+        "scene-07",
+        "scene-08"
+      ],
+      "outputFingerprint": {
+        "sceneOrder": [
+          "scene-01",
+          "scene-02",
+          "scene-03",
+          "scene-04",
+          "scene-05",
+          "scene-06",
+          "scene-07",
+          "scene-08"
+        ],
+        "scenes": [
+          {
+            "sceneId": "scene-01",
+            "outputFile": "scenes/scene-01-whiteboard.mp4",
+            "renderIdentityHash": "bcc68e878efaf0b08ca999704831806257a29e4799098587d5aaf49349b1abe0",
+            "outputSha256": "7c8a74d39d419738646d148280363061c9db83b61410a0126fa02a47fc513eca",
+            "outputBytes": 72639
+          },
+          {
+            "sceneId": "scene-02",
+            "outputFile": "scenes/scene-02-whiteboard.mp4",
+            "renderIdentityHash": "2f74efbaa6ee2928b48ae6504767a0b3cfb04df44d5b575b41272841ea4012b5",
+            "outputSha256": "68f8d0f5f456821e3f164a708c5a66330c1f7ba9104170c8adf9d4dac0425f15",
+            "outputBytes": 74604
+          },
+          {
+            "sceneId": "scene-03",
+            "outputFile": "scenes/scene-03-whiteboard.mp4",
+            "renderIdentityHash": "77846262d42fc1b29235468a3dbae5f0e6e8454d61598b2a8ff8f415546f4335",
+            "outputSha256": "30f43b6df086171baa4f21772d790d811442eefae79c28f340016820a6ab8157",
+            "outputBytes": 77433
+          },
+          {
+            "sceneId": "scene-04",
+            "outputFile": "scenes/scene-04-whiteboard.mp4",
+            "renderIdentityHash": "f5e224846532a5c3931cea7ebc3060b6ce1677fbd8dd59bb205a5104c531be40",
+            "outputSha256": "36b851dfa547210a8d389ed326dd4c1dd59896bfd1f869435df369032383e294",
+            "outputBytes": 70454
+          },
+          {
+            "sceneId": "scene-05",
+            "outputFile": "scenes/scene-05-whiteboard.mp4",
+            "renderIdentityHash": "43bad08c01db594ced957e78d28ae741d2ebc3f8a66738cc54561da07e2ef5f2",
+            "outputSha256": "7c8a74d39d419738646d148280363061c9db83b61410a0126fa02a47fc513eca",
+            "outputBytes": 72639
+          },
+          {
+            "sceneId": "scene-06",
+            "outputFile": "scenes/scene-06-whiteboard.mp4",
+            "renderIdentityHash": "2ff086c257b2ae8f2468049c5efb3d95b230c08e777166b7536d8f7f87cab14e",
+            "outputSha256": "68f8d0f5f456821e3f164a708c5a66330c1f7ba9104170c8adf9d4dac0425f15",
+            "outputBytes": 74604
+          },
+          {
+            "sceneId": "scene-07",
+            "outputFile": "scenes/scene-07-whiteboard.mp4",
+            "renderIdentityHash": "8a7f4377b1e720d8b8750674c103debe92e4f73f282bced78d185020ea086680",
+            "outputSha256": "30f43b6df086171baa4f21772d790d811442eefae79c28f340016820a6ab8157",
+            "outputBytes": 77433
+          },
+          {
+            "sceneId": "scene-08",
+            "outputFile": "scenes/scene-08-whiteboard.mp4",
+            "renderIdentityHash": "088a15d4c87809808b51491714ffd0f9fa525628c823a9371f9a9370704572bb",
+            "outputSha256": "36b851dfa547210a8d389ed326dd4c1dd59896bfd1f869435df369032383e294",
+            "outputBytes": 70454
+          }
+        ],
+        "identitySetSha256": "6d3e51dc6ff8afdf8073c94a479a26b59a4dd720db2e4ee6ff3376d4c25bf297",
+        "outputShaSetSha256": "d77c4e1ad5256110454768da85b6165b9e5cb810b05f747232797a95cefaf38f"
+      },
+      "resourceSampling": {
+        "measurementMethod": "windows-toolhelp32-working-set-sampling-v1",
+        "sampleIntervalMs": 20.0,
+        "sampleCount": 847,
+        "peakRssBytes": 1303080960,
+        "observedPeakFfmpegProcesses": 4,
+        "observedPeakChildProcesses": 8,
+        "peakWorkCandidateBytes": 590260
+      },
+      "formalBatchSummary": {
+        "contractVersion": "whiteboard-scene-render-batch-v2",
+        "status": "PASS",
+        "partialSuccess": false,
+        "projectId": "22222222-2222-4222-8222-222222222222",
+        "taskCount": 8,
+        "configured": 4,
+        "effective": 4,
+        "peak": 4,
+        "configuredSceneRenderConcurrency": 4,
+        "effectiveSceneRenderConcurrency": 4,
+        "peakSceneRenderWorkers": 4,
+        "sceneOrder": [
+          "scene-01",
+          "scene-02",
+          "scene-03",
+          "scene-04",
+          "scene-05",
+          "scene-06",
+          "scene-07",
+          "scene-08"
+        ],
+        "results": [
+          {
+            "sceneId": "scene-01",
+            "outputFile": "scenes/scene-01-whiteboard.mp4",
+            "renderIdentityHash": "bcc68e878efaf0b08ca999704831806257a29e4799098587d5aaf49349b1abe0",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-02",
+            "outputFile": "scenes/scene-02-whiteboard.mp4",
+            "renderIdentityHash": "2f74efbaa6ee2928b48ae6504767a0b3cfb04df44d5b575b41272841ea4012b5",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-03",
+            "outputFile": "scenes/scene-03-whiteboard.mp4",
+            "renderIdentityHash": "77846262d42fc1b29235468a3dbae5f0e6e8454d61598b2a8ff8f415546f4335",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-04",
+            "outputFile": "scenes/scene-04-whiteboard.mp4",
+            "renderIdentityHash": "f5e224846532a5c3931cea7ebc3060b6ce1677fbd8dd59bb205a5104c531be40",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-05",
+            "outputFile": "scenes/scene-05-whiteboard.mp4",
+            "renderIdentityHash": "43bad08c01db594ced957e78d28ae741d2ebc3f8a66738cc54561da07e2ef5f2",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-06",
+            "outputFile": "scenes/scene-06-whiteboard.mp4",
+            "renderIdentityHash": "2ff086c257b2ae8f2468049c5efb3d95b230c08e777166b7536d8f7f87cab14e",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-07",
+            "outputFile": "scenes/scene-07-whiteboard.mp4",
+            "renderIdentityHash": "8a7f4377b1e720d8b8750674c103debe92e4f73f282bced78d185020ea086680",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-08",
+            "outputFile": "scenes/scene-08-whiteboard.mp4",
+            "renderIdentityHash": "088a15d4c87809808b51491714ffd0f9fa525628c823a9371f9a9370704572bb",
+            "status": "published_current_technical"
+          }
+        ],
+        "successCount": 8,
+        "failureCount": 0,
+        "approvalWritten": false,
+        "userConfirmationRequired": true,
+        "wallMs": 29832.748,
+        "stageDurationsMs": {
+          "context": 53.348,
+          "prepare": 91.328,
+          "candidateExecution": 29291.714,
+          "coordinatorPublish": 396.3
+        },
+        "ffmpegProcessCount": 8,
+        "ffmpegProcessCountMetric": "sceneEncoderStarts",
+        "workerPhaseDurationsMs": {
+          "prepare": 1820.871,
+          "render": 107151.704,
+          "validation": 1153.614
+        },
+        "workerPhaseDurationAggregation": "sumAcrossScenes",
+        "candidateBytes": 590260,
+        "candidateBytesByScene": {
+          "scene-01": 72639,
+          "scene-02": 74604,
+          "scene-03": 77433,
+          "scene-04": 70454,
+          "scene-05": 72639,
+          "scene-06": 74604,
+          "scene-07": 77433,
+          "scene-08": 70454
+        }
+      },
+      "identityStableAgainstSerial": true,
+      "outputShaStableAgainstSerial": true,
+      "sceneOrderStableAgainstSerial": true
+    },
+    {
+      "temperature": "warm",
+      "configured": 4,
+      "effective": 4,
+      "peak": 4,
+      "taskCount": 8,
+      "wallMs": 29796.284,
+      "runnerWallMs": 29796.783,
+      "peakRssBytes": 1303805952,
+      "ffmpegProcessCount": 8,
+      "observedPeakFfmpegProcesses": 4,
+      "candidateBytes": 590260,
+      "candidateBytesByScene": {
+        "scene-01": 72639,
+        "scene-02": 74604,
+        "scene-03": 77433,
+        "scene-04": 70454,
+        "scene-05": 72639,
+        "scene-06": 74604,
+        "scene-07": 77433,
+        "scene-08": 70454
+      },
+      "peakWorkCandidateBytes": 590260,
+      "residualWorkBytes": 0,
+      "stageDurationsMs": {
+        "context": 37.913,
+        "prepare": 46.901,
+        "candidateExecution": 29310.186,
+        "coordinatorPublish": 401.227
+      },
+      "status": "PASS",
+      "partialSuccess": false,
+      "successCount": 8,
+      "failureCount": 0,
+      "approvalWritten": false,
+      "sceneOrder": [
+        "scene-01",
+        "scene-02",
+        "scene-03",
+        "scene-04",
+        "scene-05",
+        "scene-06",
+        "scene-07",
+        "scene-08"
+      ],
+      "outputFingerprint": {
+        "sceneOrder": [
+          "scene-01",
+          "scene-02",
+          "scene-03",
+          "scene-04",
+          "scene-05",
+          "scene-06",
+          "scene-07",
+          "scene-08"
+        ],
+        "scenes": [
+          {
+            "sceneId": "scene-01",
+            "outputFile": "scenes/scene-01-whiteboard.mp4",
+            "renderIdentityHash": "bcc68e878efaf0b08ca999704831806257a29e4799098587d5aaf49349b1abe0",
+            "outputSha256": "7c8a74d39d419738646d148280363061c9db83b61410a0126fa02a47fc513eca",
+            "outputBytes": 72639
+          },
+          {
+            "sceneId": "scene-02",
+            "outputFile": "scenes/scene-02-whiteboard.mp4",
+            "renderIdentityHash": "2f74efbaa6ee2928b48ae6504767a0b3cfb04df44d5b575b41272841ea4012b5",
+            "outputSha256": "68f8d0f5f456821e3f164a708c5a66330c1f7ba9104170c8adf9d4dac0425f15",
+            "outputBytes": 74604
+          },
+          {
+            "sceneId": "scene-03",
+            "outputFile": "scenes/scene-03-whiteboard.mp4",
+            "renderIdentityHash": "77846262d42fc1b29235468a3dbae5f0e6e8454d61598b2a8ff8f415546f4335",
+            "outputSha256": "30f43b6df086171baa4f21772d790d811442eefae79c28f340016820a6ab8157",
+            "outputBytes": 77433
+          },
+          {
+            "sceneId": "scene-04",
+            "outputFile": "scenes/scene-04-whiteboard.mp4",
+            "renderIdentityHash": "f5e224846532a5c3931cea7ebc3060b6ce1677fbd8dd59bb205a5104c531be40",
+            "outputSha256": "36b851dfa547210a8d389ed326dd4c1dd59896bfd1f869435df369032383e294",
+            "outputBytes": 70454
+          },
+          {
+            "sceneId": "scene-05",
+            "outputFile": "scenes/scene-05-whiteboard.mp4",
+            "renderIdentityHash": "43bad08c01db594ced957e78d28ae741d2ebc3f8a66738cc54561da07e2ef5f2",
+            "outputSha256": "7c8a74d39d419738646d148280363061c9db83b61410a0126fa02a47fc513eca",
+            "outputBytes": 72639
+          },
+          {
+            "sceneId": "scene-06",
+            "outputFile": "scenes/scene-06-whiteboard.mp4",
+            "renderIdentityHash": "2ff086c257b2ae8f2468049c5efb3d95b230c08e777166b7536d8f7f87cab14e",
+            "outputSha256": "68f8d0f5f456821e3f164a708c5a66330c1f7ba9104170c8adf9d4dac0425f15",
+            "outputBytes": 74604
+          },
+          {
+            "sceneId": "scene-07",
+            "outputFile": "scenes/scene-07-whiteboard.mp4",
+            "renderIdentityHash": "8a7f4377b1e720d8b8750674c103debe92e4f73f282bced78d185020ea086680",
+            "outputSha256": "30f43b6df086171baa4f21772d790d811442eefae79c28f340016820a6ab8157",
+            "outputBytes": 77433
+          },
+          {
+            "sceneId": "scene-08",
+            "outputFile": "scenes/scene-08-whiteboard.mp4",
+            "renderIdentityHash": "088a15d4c87809808b51491714ffd0f9fa525628c823a9371f9a9370704572bb",
+            "outputSha256": "36b851dfa547210a8d389ed326dd4c1dd59896bfd1f869435df369032383e294",
+            "outputBytes": 70454
+          }
+        ],
+        "identitySetSha256": "6d3e51dc6ff8afdf8073c94a479a26b59a4dd720db2e4ee6ff3376d4c25bf297",
+        "outputShaSetSha256": "d77c4e1ad5256110454768da85b6165b9e5cb810b05f747232797a95cefaf38f"
+      },
+      "resourceSampling": {
+        "measurementMethod": "windows-toolhelp32-working-set-sampling-v1",
+        "sampleIntervalMs": 20.0,
+        "sampleCount": 841,
+        "peakRssBytes": 1303805952,
+        "observedPeakFfmpegProcesses": 4,
+        "observedPeakChildProcesses": 8,
+        "peakWorkCandidateBytes": 590260
+      },
+      "formalBatchSummary": {
+        "contractVersion": "whiteboard-scene-render-batch-v2",
+        "status": "PASS",
+        "partialSuccess": false,
+        "projectId": "22222222-2222-4222-8222-222222222222",
+        "taskCount": 8,
+        "configured": 4,
+        "effective": 4,
+        "peak": 4,
+        "configuredSceneRenderConcurrency": 4,
+        "effectiveSceneRenderConcurrency": 4,
+        "peakSceneRenderWorkers": 4,
+        "sceneOrder": [
+          "scene-01",
+          "scene-02",
+          "scene-03",
+          "scene-04",
+          "scene-05",
+          "scene-06",
+          "scene-07",
+          "scene-08"
+        ],
+        "results": [
+          {
+            "sceneId": "scene-01",
+            "outputFile": "scenes/scene-01-whiteboard.mp4",
+            "renderIdentityHash": "bcc68e878efaf0b08ca999704831806257a29e4799098587d5aaf49349b1abe0",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-02",
+            "outputFile": "scenes/scene-02-whiteboard.mp4",
+            "renderIdentityHash": "2f74efbaa6ee2928b48ae6504767a0b3cfb04df44d5b575b41272841ea4012b5",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-03",
+            "outputFile": "scenes/scene-03-whiteboard.mp4",
+            "renderIdentityHash": "77846262d42fc1b29235468a3dbae5f0e6e8454d61598b2a8ff8f415546f4335",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-04",
+            "outputFile": "scenes/scene-04-whiteboard.mp4",
+            "renderIdentityHash": "f5e224846532a5c3931cea7ebc3060b6ce1677fbd8dd59bb205a5104c531be40",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-05",
+            "outputFile": "scenes/scene-05-whiteboard.mp4",
+            "renderIdentityHash": "43bad08c01db594ced957e78d28ae741d2ebc3f8a66738cc54561da07e2ef5f2",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-06",
+            "outputFile": "scenes/scene-06-whiteboard.mp4",
+            "renderIdentityHash": "2ff086c257b2ae8f2468049c5efb3d95b230c08e777166b7536d8f7f87cab14e",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-07",
+            "outputFile": "scenes/scene-07-whiteboard.mp4",
+            "renderIdentityHash": "8a7f4377b1e720d8b8750674c103debe92e4f73f282bced78d185020ea086680",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-08",
+            "outputFile": "scenes/scene-08-whiteboard.mp4",
+            "renderIdentityHash": "088a15d4c87809808b51491714ffd0f9fa525628c823a9371f9a9370704572bb",
+            "status": "published_current_technical"
+          }
+        ],
+        "successCount": 8,
+        "failureCount": 0,
+        "approvalWritten": false,
+        "userConfirmationRequired": true,
+        "wallMs": 29796.284,
+        "stageDurationsMs": {
+          "context": 37.913,
+          "prepare": 46.901,
+          "candidateExecution": 29310.186,
+          "coordinatorPublish": 401.227
+        },
+        "ffmpegProcessCount": 8,
+        "ffmpegProcessCountMetric": "sceneEncoderStarts",
+        "workerPhaseDurationsMs": {
+          "prepare": 1845.926,
+          "render": 107180.987,
+          "validation": 1189.09
+        },
+        "workerPhaseDurationAggregation": "sumAcrossScenes",
+        "candidateBytes": 590260,
+        "candidateBytesByScene": {
+          "scene-01": 72639,
+          "scene-02": 74604,
+          "scene-03": 77433,
+          "scene-04": 70454,
+          "scene-05": 72639,
+          "scene-06": 74604,
+          "scene-07": 77433,
+          "scene-08": 70454
+        }
+      },
+      "identityStableAgainstSerial": true,
+      "outputShaStableAgainstSerial": true,
+      "sceneOrderStableAgainstSerial": true
+    },
+    {
+      "temperature": "cold",
+      "configured": 5,
+      "effective": 5,
+      "peak": 5,
+      "taskCount": 8,
+      "wallMs": 29119.731,
+      "runnerWallMs": 29120.276,
+      "peakRssBytes": 1700950016,
+      "ffmpegProcessCount": 8,
+      "observedPeakFfmpegProcesses": 5,
+      "candidateBytes": 590260,
+      "candidateBytesByScene": {
+        "scene-01": 72639,
+        "scene-02": 74604,
+        "scene-03": 77433,
+        "scene-04": 70454,
+        "scene-05": 72639,
+        "scene-06": 74604,
+        "scene-07": 77433,
+        "scene-08": 70454
+      },
+      "peakWorkCandidateBytes": 590260,
+      "residualWorkBytes": 0,
+      "stageDurationsMs": {
+        "context": 52.404,
+        "prepare": 92.111,
+        "candidateExecution": 28586.828,
+        "coordinatorPublish": 388.322
+      },
+      "status": "PASS",
+      "partialSuccess": false,
+      "successCount": 8,
+      "failureCount": 0,
+      "approvalWritten": false,
+      "sceneOrder": [
+        "scene-01",
+        "scene-02",
+        "scene-03",
+        "scene-04",
+        "scene-05",
+        "scene-06",
+        "scene-07",
+        "scene-08"
+      ],
+      "outputFingerprint": {
+        "sceneOrder": [
+          "scene-01",
+          "scene-02",
+          "scene-03",
+          "scene-04",
+          "scene-05",
+          "scene-06",
+          "scene-07",
+          "scene-08"
+        ],
+        "scenes": [
+          {
+            "sceneId": "scene-01",
+            "outputFile": "scenes/scene-01-whiteboard.mp4",
+            "renderIdentityHash": "bcc68e878efaf0b08ca999704831806257a29e4799098587d5aaf49349b1abe0",
+            "outputSha256": "7c8a74d39d419738646d148280363061c9db83b61410a0126fa02a47fc513eca",
+            "outputBytes": 72639
+          },
+          {
+            "sceneId": "scene-02",
+            "outputFile": "scenes/scene-02-whiteboard.mp4",
+            "renderIdentityHash": "2f74efbaa6ee2928b48ae6504767a0b3cfb04df44d5b575b41272841ea4012b5",
+            "outputSha256": "68f8d0f5f456821e3f164a708c5a66330c1f7ba9104170c8adf9d4dac0425f15",
+            "outputBytes": 74604
+          },
+          {
+            "sceneId": "scene-03",
+            "outputFile": "scenes/scene-03-whiteboard.mp4",
+            "renderIdentityHash": "77846262d42fc1b29235468a3dbae5f0e6e8454d61598b2a8ff8f415546f4335",
+            "outputSha256": "30f43b6df086171baa4f21772d790d811442eefae79c28f340016820a6ab8157",
+            "outputBytes": 77433
+          },
+          {
+            "sceneId": "scene-04",
+            "outputFile": "scenes/scene-04-whiteboard.mp4",
+            "renderIdentityHash": "f5e224846532a5c3931cea7ebc3060b6ce1677fbd8dd59bb205a5104c531be40",
+            "outputSha256": "36b851dfa547210a8d389ed326dd4c1dd59896bfd1f869435df369032383e294",
+            "outputBytes": 70454
+          },
+          {
+            "sceneId": "scene-05",
+            "outputFile": "scenes/scene-05-whiteboard.mp4",
+            "renderIdentityHash": "43bad08c01db594ced957e78d28ae741d2ebc3f8a66738cc54561da07e2ef5f2",
+            "outputSha256": "7c8a74d39d419738646d148280363061c9db83b61410a0126fa02a47fc513eca",
+            "outputBytes": 72639
+          },
+          {
+            "sceneId": "scene-06",
+            "outputFile": "scenes/scene-06-whiteboard.mp4",
+            "renderIdentityHash": "2ff086c257b2ae8f2468049c5efb3d95b230c08e777166b7536d8f7f87cab14e",
+            "outputSha256": "68f8d0f5f456821e3f164a708c5a66330c1f7ba9104170c8adf9d4dac0425f15",
+            "outputBytes": 74604
+          },
+          {
+            "sceneId": "scene-07",
+            "outputFile": "scenes/scene-07-whiteboard.mp4",
+            "renderIdentityHash": "8a7f4377b1e720d8b8750674c103debe92e4f73f282bced78d185020ea086680",
+            "outputSha256": "30f43b6df086171baa4f21772d790d811442eefae79c28f340016820a6ab8157",
+            "outputBytes": 77433
+          },
+          {
+            "sceneId": "scene-08",
+            "outputFile": "scenes/scene-08-whiteboard.mp4",
+            "renderIdentityHash": "088a15d4c87809808b51491714ffd0f9fa525628c823a9371f9a9370704572bb",
+            "outputSha256": "36b851dfa547210a8d389ed326dd4c1dd59896bfd1f869435df369032383e294",
+            "outputBytes": 70454
+          }
+        ],
+        "identitySetSha256": "6d3e51dc6ff8afdf8073c94a479a26b59a4dd720db2e4ee6ff3376d4c25bf297",
+        "outputShaSetSha256": "d77c4e1ad5256110454768da85b6165b9e5cb810b05f747232797a95cefaf38f"
+      },
+      "resourceSampling": {
+        "measurementMethod": "windows-toolhelp32-working-set-sampling-v1",
+        "sampleIntervalMs": 20.0,
+        "sampleCount": 803,
+        "peakRssBytes": 1700950016,
+        "observedPeakFfmpegProcesses": 5,
+        "observedPeakChildProcesses": 10,
+        "peakWorkCandidateBytes": 590260
+      },
+      "formalBatchSummary": {
+        "contractVersion": "whiteboard-scene-render-batch-v2",
+        "status": "PASS",
+        "partialSuccess": false,
+        "projectId": "22222222-2222-4222-8222-222222222222",
+        "taskCount": 8,
+        "configured": 5,
+        "effective": 5,
+        "peak": 5,
+        "configuredSceneRenderConcurrency": 5,
+        "effectiveSceneRenderConcurrency": 5,
+        "peakSceneRenderWorkers": 5,
+        "sceneOrder": [
+          "scene-01",
+          "scene-02",
+          "scene-03",
+          "scene-04",
+          "scene-05",
+          "scene-06",
+          "scene-07",
+          "scene-08"
+        ],
+        "results": [
+          {
+            "sceneId": "scene-01",
+            "outputFile": "scenes/scene-01-whiteboard.mp4",
+            "renderIdentityHash": "bcc68e878efaf0b08ca999704831806257a29e4799098587d5aaf49349b1abe0",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-02",
+            "outputFile": "scenes/scene-02-whiteboard.mp4",
+            "renderIdentityHash": "2f74efbaa6ee2928b48ae6504767a0b3cfb04df44d5b575b41272841ea4012b5",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-03",
+            "outputFile": "scenes/scene-03-whiteboard.mp4",
+            "renderIdentityHash": "77846262d42fc1b29235468a3dbae5f0e6e8454d61598b2a8ff8f415546f4335",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-04",
+            "outputFile": "scenes/scene-04-whiteboard.mp4",
+            "renderIdentityHash": "f5e224846532a5c3931cea7ebc3060b6ce1677fbd8dd59bb205a5104c531be40",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-05",
+            "outputFile": "scenes/scene-05-whiteboard.mp4",
+            "renderIdentityHash": "43bad08c01db594ced957e78d28ae741d2ebc3f8a66738cc54561da07e2ef5f2",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-06",
+            "outputFile": "scenes/scene-06-whiteboard.mp4",
+            "renderIdentityHash": "2ff086c257b2ae8f2468049c5efb3d95b230c08e777166b7536d8f7f87cab14e",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-07",
+            "outputFile": "scenes/scene-07-whiteboard.mp4",
+            "renderIdentityHash": "8a7f4377b1e720d8b8750674c103debe92e4f73f282bced78d185020ea086680",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-08",
+            "outputFile": "scenes/scene-08-whiteboard.mp4",
+            "renderIdentityHash": "088a15d4c87809808b51491714ffd0f9fa525628c823a9371f9a9370704572bb",
+            "status": "published_current_technical"
+          }
+        ],
+        "successCount": 8,
+        "failureCount": 0,
+        "approvalWritten": false,
+        "userConfirmationRequired": true,
+        "wallMs": 29119.731,
+        "stageDurationsMs": {
+          "context": 52.404,
+          "prepare": 92.111,
+          "candidateExecution": 28586.828,
+          "coordinatorPublish": 388.322
+        },
+        "ffmpegProcessCount": 8,
+        "ffmpegProcessCountMetric": "sceneEncoderStarts",
+        "workerPhaseDurationsMs": {
+          "prepare": 2064.242,
+          "render": 112573.028,
+          "validation": 1291.143
+        },
+        "workerPhaseDurationAggregation": "sumAcrossScenes",
+        "candidateBytes": 590260,
+        "candidateBytesByScene": {
+          "scene-01": 72639,
+          "scene-02": 74604,
+          "scene-03": 77433,
+          "scene-04": 70454,
+          "scene-05": 72639,
+          "scene-06": 74604,
+          "scene-07": 77433,
+          "scene-08": 70454
+        }
+      },
+      "identityStableAgainstSerial": true,
+      "outputShaStableAgainstSerial": true,
+      "sceneOrderStableAgainstSerial": true
+    },
+    {
+      "temperature": "warm",
+      "configured": 5,
+      "effective": 5,
+      "peak": 5,
+      "taskCount": 8,
+      "wallMs": 29409.166,
+      "runnerWallMs": 29409.832,
+      "peakRssBytes": 1698545664,
+      "ffmpegProcessCount": 8,
+      "observedPeakFfmpegProcesses": 5,
+      "candidateBytes": 590260,
+      "candidateBytesByScene": {
+        "scene-01": 72639,
+        "scene-02": 74604,
+        "scene-03": 77433,
+        "scene-04": 70454,
+        "scene-05": 72639,
+        "scene-06": 74604,
+        "scene-07": 77433,
+        "scene-08": 70454
+      },
+      "peakWorkCandidateBytes": 590260,
+      "residualWorkBytes": 0,
+      "stageDurationsMs": {
+        "context": 42.173,
+        "prepare": 49.623,
+        "candidateExecution": 28921.139,
+        "coordinatorPublish": 396.169
+      },
+      "status": "PASS",
+      "partialSuccess": false,
+      "successCount": 8,
+      "failureCount": 0,
+      "approvalWritten": false,
+      "sceneOrder": [
+        "scene-01",
+        "scene-02",
+        "scene-03",
+        "scene-04",
+        "scene-05",
+        "scene-06",
+        "scene-07",
+        "scene-08"
+      ],
+      "outputFingerprint": {
+        "sceneOrder": [
+          "scene-01",
+          "scene-02",
+          "scene-03",
+          "scene-04",
+          "scene-05",
+          "scene-06",
+          "scene-07",
+          "scene-08"
+        ],
+        "scenes": [
+          {
+            "sceneId": "scene-01",
+            "outputFile": "scenes/scene-01-whiteboard.mp4",
+            "renderIdentityHash": "bcc68e878efaf0b08ca999704831806257a29e4799098587d5aaf49349b1abe0",
+            "outputSha256": "7c8a74d39d419738646d148280363061c9db83b61410a0126fa02a47fc513eca",
+            "outputBytes": 72639
+          },
+          {
+            "sceneId": "scene-02",
+            "outputFile": "scenes/scene-02-whiteboard.mp4",
+            "renderIdentityHash": "2f74efbaa6ee2928b48ae6504767a0b3cfb04df44d5b575b41272841ea4012b5",
+            "outputSha256": "68f8d0f5f456821e3f164a708c5a66330c1f7ba9104170c8adf9d4dac0425f15",
+            "outputBytes": 74604
+          },
+          {
+            "sceneId": "scene-03",
+            "outputFile": "scenes/scene-03-whiteboard.mp4",
+            "renderIdentityHash": "77846262d42fc1b29235468a3dbae5f0e6e8454d61598b2a8ff8f415546f4335",
+            "outputSha256": "30f43b6df086171baa4f21772d790d811442eefae79c28f340016820a6ab8157",
+            "outputBytes": 77433
+          },
+          {
+            "sceneId": "scene-04",
+            "outputFile": "scenes/scene-04-whiteboard.mp4",
+            "renderIdentityHash": "f5e224846532a5c3931cea7ebc3060b6ce1677fbd8dd59bb205a5104c531be40",
+            "outputSha256": "36b851dfa547210a8d389ed326dd4c1dd59896bfd1f869435df369032383e294",
+            "outputBytes": 70454
+          },
+          {
+            "sceneId": "scene-05",
+            "outputFile": "scenes/scene-05-whiteboard.mp4",
+            "renderIdentityHash": "43bad08c01db594ced957e78d28ae741d2ebc3f8a66738cc54561da07e2ef5f2",
+            "outputSha256": "7c8a74d39d419738646d148280363061c9db83b61410a0126fa02a47fc513eca",
+            "outputBytes": 72639
+          },
+          {
+            "sceneId": "scene-06",
+            "outputFile": "scenes/scene-06-whiteboard.mp4",
+            "renderIdentityHash": "2ff086c257b2ae8f2468049c5efb3d95b230c08e777166b7536d8f7f87cab14e",
+            "outputSha256": "68f8d0f5f456821e3f164a708c5a66330c1f7ba9104170c8adf9d4dac0425f15",
+            "outputBytes": 74604
+          },
+          {
+            "sceneId": "scene-07",
+            "outputFile": "scenes/scene-07-whiteboard.mp4",
+            "renderIdentityHash": "8a7f4377b1e720d8b8750674c103debe92e4f73f282bced78d185020ea086680",
+            "outputSha256": "30f43b6df086171baa4f21772d790d811442eefae79c28f340016820a6ab8157",
+            "outputBytes": 77433
+          },
+          {
+            "sceneId": "scene-08",
+            "outputFile": "scenes/scene-08-whiteboard.mp4",
+            "renderIdentityHash": "088a15d4c87809808b51491714ffd0f9fa525628c823a9371f9a9370704572bb",
+            "outputSha256": "36b851dfa547210a8d389ed326dd4c1dd59896bfd1f869435df369032383e294",
+            "outputBytes": 70454
+          }
+        ],
+        "identitySetSha256": "6d3e51dc6ff8afdf8073c94a479a26b59a4dd720db2e4ee6ff3376d4c25bf297",
+        "outputShaSetSha256": "d77c4e1ad5256110454768da85b6165b9e5cb810b05f747232797a95cefaf38f"
+      },
+      "resourceSampling": {
+        "measurementMethod": "windows-toolhelp32-working-set-sampling-v1",
+        "sampleIntervalMs": 20.0,
+        "sampleCount": 812,
+        "peakRssBytes": 1698545664,
+        "observedPeakFfmpegProcesses": 5,
+        "observedPeakChildProcesses": 10,
+        "peakWorkCandidateBytes": 590260
+      },
+      "formalBatchSummary": {
+        "contractVersion": "whiteboard-scene-render-batch-v2",
+        "status": "PASS",
+        "partialSuccess": false,
+        "projectId": "22222222-2222-4222-8222-222222222222",
+        "taskCount": 8,
+        "configured": 5,
+        "effective": 5,
+        "peak": 5,
+        "configuredSceneRenderConcurrency": 5,
+        "effectiveSceneRenderConcurrency": 5,
+        "peakSceneRenderWorkers": 5,
+        "sceneOrder": [
+          "scene-01",
+          "scene-02",
+          "scene-03",
+          "scene-04",
+          "scene-05",
+          "scene-06",
+          "scene-07",
+          "scene-08"
+        ],
+        "results": [
+          {
+            "sceneId": "scene-01",
+            "outputFile": "scenes/scene-01-whiteboard.mp4",
+            "renderIdentityHash": "bcc68e878efaf0b08ca999704831806257a29e4799098587d5aaf49349b1abe0",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-02",
+            "outputFile": "scenes/scene-02-whiteboard.mp4",
+            "renderIdentityHash": "2f74efbaa6ee2928b48ae6504767a0b3cfb04df44d5b575b41272841ea4012b5",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-03",
+            "outputFile": "scenes/scene-03-whiteboard.mp4",
+            "renderIdentityHash": "77846262d42fc1b29235468a3dbae5f0e6e8454d61598b2a8ff8f415546f4335",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-04",
+            "outputFile": "scenes/scene-04-whiteboard.mp4",
+            "renderIdentityHash": "f5e224846532a5c3931cea7ebc3060b6ce1677fbd8dd59bb205a5104c531be40",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-05",
+            "outputFile": "scenes/scene-05-whiteboard.mp4",
+            "renderIdentityHash": "43bad08c01db594ced957e78d28ae741d2ebc3f8a66738cc54561da07e2ef5f2",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-06",
+            "outputFile": "scenes/scene-06-whiteboard.mp4",
+            "renderIdentityHash": "2ff086c257b2ae8f2468049c5efb3d95b230c08e777166b7536d8f7f87cab14e",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-07",
+            "outputFile": "scenes/scene-07-whiteboard.mp4",
+            "renderIdentityHash": "8a7f4377b1e720d8b8750674c103debe92e4f73f282bced78d185020ea086680",
+            "status": "published_current_technical"
+          },
+          {
+            "sceneId": "scene-08",
+            "outputFile": "scenes/scene-08-whiteboard.mp4",
+            "renderIdentityHash": "088a15d4c87809808b51491714ffd0f9fa525628c823a9371f9a9370704572bb",
+            "status": "published_current_technical"
+          }
+        ],
+        "successCount": 8,
+        "failureCount": 0,
+        "approvalWritten": false,
+        "userConfirmationRequired": true,
+        "wallMs": 29409.166,
+        "stageDurationsMs": {
+          "context": 42.173,
+          "prepare": 49.623,
+          "candidateExecution": 28921.139,
+          "coordinatorPublish": 396.169
+        },
+        "ffmpegProcessCount": 8,
+        "ffmpegProcessCountMetric": "sceneEncoderStarts",
+        "workerPhaseDurationsMs": {
+          "prepare": 2000.702,
+          "render": 112697.27,
+          "validation": 1275.177
+        },
+        "workerPhaseDurationAggregation": "sumAcrossScenes",
+        "candidateBytes": 590260,
+        "candidateBytesByScene": {
+          "scene-01": 72639,
+          "scene-02": 74604,
+          "scene-03": 77433,
+          "scene-04": 70454,
+          "scene-05": 72639,
+          "scene-06": 74604,
+          "scene-07": 77433,
+          "scene-08": 70454
+        }
+      },
+      "identityStableAgainstSerial": true,
+      "outputShaStableAgainstSerial": true,
+      "sceneOrderStableAgainstSerial": true
+    }
+  ],
+  "stability": {
+    "baseline": {
+      "configured": 1,
+      "temperature": "cold",
+      "outputFingerprint": {
+        "sceneOrder": [
+          "scene-01",
+          "scene-02",
+          "scene-03",
+          "scene-04",
+          "scene-05",
+          "scene-06",
+          "scene-07",
+          "scene-08"
+        ],
+        "scenes": [
+          {
+            "sceneId": "scene-01",
+            "outputFile": "scenes/scene-01-whiteboard.mp4",
+            "renderIdentityHash": "bcc68e878efaf0b08ca999704831806257a29e4799098587d5aaf49349b1abe0",
+            "outputSha256": "7c8a74d39d419738646d148280363061c9db83b61410a0126fa02a47fc513eca",
+            "outputBytes": 72639
+          },
+          {
+            "sceneId": "scene-02",
+            "outputFile": "scenes/scene-02-whiteboard.mp4",
+            "renderIdentityHash": "2f74efbaa6ee2928b48ae6504767a0b3cfb04df44d5b575b41272841ea4012b5",
+            "outputSha256": "68f8d0f5f456821e3f164a708c5a66330c1f7ba9104170c8adf9d4dac0425f15",
+            "outputBytes": 74604
+          },
+          {
+            "sceneId": "scene-03",
+            "outputFile": "scenes/scene-03-whiteboard.mp4",
+            "renderIdentityHash": "77846262d42fc1b29235468a3dbae5f0e6e8454d61598b2a8ff8f415546f4335",
+            "outputSha256": "30f43b6df086171baa4f21772d790d811442eefae79c28f340016820a6ab8157",
+            "outputBytes": 77433
+          },
+          {
+            "sceneId": "scene-04",
+            "outputFile": "scenes/scene-04-whiteboard.mp4",
+            "renderIdentityHash": "f5e224846532a5c3931cea7ebc3060b6ce1677fbd8dd59bb205a5104c531be40",
+            "outputSha256": "36b851dfa547210a8d389ed326dd4c1dd59896bfd1f869435df369032383e294",
+            "outputBytes": 70454
+          },
+          {
+            "sceneId": "scene-05",
+            "outputFile": "scenes/scene-05-whiteboard.mp4",
+            "renderIdentityHash": "43bad08c01db594ced957e78d28ae741d2ebc3f8a66738cc54561da07e2ef5f2",
+            "outputSha256": "7c8a74d39d419738646d148280363061c9db83b61410a0126fa02a47fc513eca",
+            "outputBytes": 72639
+          },
+          {
+            "sceneId": "scene-06",
+            "outputFile": "scenes/scene-06-whiteboard.mp4",
+            "renderIdentityHash": "2ff086c257b2ae8f2468049c5efb3d95b230c08e777166b7536d8f7f87cab14e",
+            "outputSha256": "68f8d0f5f456821e3f164a708c5a66330c1f7ba9104170c8adf9d4dac0425f15",
+            "outputBytes": 74604
+          },
+          {
+            "sceneId": "scene-07",
+            "outputFile": "scenes/scene-07-whiteboard.mp4",
+            "renderIdentityHash": "8a7f4377b1e720d8b8750674c103debe92e4f73f282bced78d185020ea086680",
+            "outputSha256": "30f43b6df086171baa4f21772d790d811442eefae79c28f340016820a6ab8157",
+            "outputBytes": 77433
+          },
+          {
+            "sceneId": "scene-08",
+            "outputFile": "scenes/scene-08-whiteboard.mp4",
+            "renderIdentityHash": "088a15d4c87809808b51491714ffd0f9fa525628c823a9371f9a9370704572bb",
+            "outputSha256": "36b851dfa547210a8d389ed326dd4c1dd59896bfd1f869435df369032383e294",
+            "outputBytes": 70454
+          }
+        ],
+        "identitySetSha256": "6d3e51dc6ff8afdf8073c94a479a26b59a4dd720db2e4ee6ff3376d4c25bf297",
+        "outputShaSetSha256": "d77c4e1ad5256110454768da85b6165b9e5cb810b05f747232797a95cefaf38f"
+      }
+    },
+    "identityStableAcrossRuns": true,
+    "outputShaStableAcrossRuns": true,
+    "sceneOrderStableAcrossRuns": true,
+    "successfulRunCount": 8,
+    "totalRunCount": 8
+  },
+  "failurePolicyProbe": {
+    "status": "PASS",
+    "probeType": "controlled-worker-result-coordinator-contract-probe",
+    "notAPerformanceSample": true,
+    "failedScene": "scene-01",
+    "failedCurrentPreserved": true,
+    "allOutputBytesStable": true,
+    "partialSuccessStillFails": true,
+    "approvalWritten": false,
+    "sceneOrderStable": true,
+    "publishOrder": [
+      "scene-02-whiteboard.mp4",
+      "scene-03-whiteboard.mp4",
+      "scene-04-whiteboard.mp4",
+      "scene-05-whiteboard.mp4",
+      "scene-06-whiteboard.mp4",
+      "scene-07-whiteboard.mp4",
+      "scene-08-whiteboard.mp4"
+    ],
+    "expectedPublishOrder": [
+      "scene-02-whiteboard.mp4",
+      "scene-03-whiteboard.mp4",
+      "scene-04-whiteboard.mp4",
+      "scene-05-whiteboard.mp4",
+      "scene-06-whiteboard.mp4",
+      "scene-07-whiteboard.mp4",
+      "scene-08-whiteboard.mp4"
+    ],
+    "formalBatchSummary": {
+      "contractVersion": "whiteboard-scene-render-batch-v2",
+      "status": "FAIL",
+      "partialSuccess": true,
+      "projectId": "22222222-2222-4222-8222-222222222222",
+      "taskCount": 8,
+      "configured": 5,
+      "effective": 5,
+      "peak": 5,
+      "configuredSceneRenderConcurrency": 5,
+      "effectiveSceneRenderConcurrency": 5,
+      "peakSceneRenderWorkers": 5,
+      "sceneOrder": [
+        "scene-01",
+        "scene-02",
+        "scene-03",
+        "scene-04",
+        "scene-05",
+        "scene-06",
+        "scene-07",
+        "scene-08"
+      ],
+      "results": [
+        {
+          "sceneId": "scene-01",
+          "outputFile": "scenes/scene-01-whiteboard.mp4",
+          "status": "failed",
+          "stage": "benchmark_injected_worker_failure",
+          "errorType": "BenchmarkInjectedFailure",
+          "error": "受控 failure-policy probe",
+          "exitCode": 4
+        },
+        {
+          "sceneId": "scene-02",
+          "outputFile": "scenes/scene-02-whiteboard.mp4",
+          "renderIdentityHash": "2f74efbaa6ee2928b48ae6504767a0b3cfb04df44d5b575b41272841ea4012b5",
+          "status": "published_current_technical"
+        },
+        {
+          "sceneId": "scene-03",
+          "outputFile": "scenes/scene-03-whiteboard.mp4",
+          "renderIdentityHash": "77846262d42fc1b29235468a3dbae5f0e6e8454d61598b2a8ff8f415546f4335",
+          "status": "published_current_technical"
+        },
+        {
+          "sceneId": "scene-04",
+          "outputFile": "scenes/scene-04-whiteboard.mp4",
+          "renderIdentityHash": "f5e224846532a5c3931cea7ebc3060b6ce1677fbd8dd59bb205a5104c531be40",
+          "status": "published_current_technical"
+        },
+        {
+          "sceneId": "scene-05",
+          "outputFile": "scenes/scene-05-whiteboard.mp4",
+          "renderIdentityHash": "43bad08c01db594ced957e78d28ae741d2ebc3f8a66738cc54561da07e2ef5f2",
+          "status": "published_current_technical"
+        },
+        {
+          "sceneId": "scene-06",
+          "outputFile": "scenes/scene-06-whiteboard.mp4",
+          "renderIdentityHash": "2ff086c257b2ae8f2468049c5efb3d95b230c08e777166b7536d8f7f87cab14e",
+          "status": "published_current_technical"
+        },
+        {
+          "sceneId": "scene-07",
+          "outputFile": "scenes/scene-07-whiteboard.mp4",
+          "renderIdentityHash": "8a7f4377b1e720d8b8750674c103debe92e4f73f282bced78d185020ea086680",
+          "status": "published_current_technical"
+        },
+        {
+          "sceneId": "scene-08",
+          "outputFile": "scenes/scene-08-whiteboard.mp4",
+          "renderIdentityHash": "088a15d4c87809808b51491714ffd0f9fa525628c823a9371f9a9370704572bb",
+          "status": "published_current_technical"
+        }
+      ],
+      "successCount": 7,
+      "failureCount": 1,
+      "approvalWritten": false,
+      "userConfirmationRequired": true,
+      "wallMs": 450.567,
+      "stageDurationsMs": {
+        "context": 36.014,
+        "prepare": 45.168,
+        "candidateExecution": 5.26,
+        "coordinatorPublish": 364.079
+      },
+      "ffmpegProcessCount": 0,
+      "ffmpegProcessCountMetric": "sceneEncoderStarts",
+      "workerPhaseDurationsMs": {
+        "prepare": 0.0,
+        "render": 0.0,
+        "validation": 0.0
+      },
+      "workerPhaseDurationAggregation": "sumAcrossScenes",
+      "candidateBytes": 0,
+      "candidateBytesByScene": {}
+    }
+  },
+  "measurementSupport": {
+    "peakRss": "process-tree sampling; null when unsupported",
+    "ffmpeg": "formal batch cumulative launch proxy plus sampled peak descendants",
+    "candidateDisk": "formal batch candidateBytes plus sampled peak and residual .work bytes"
+  },
+  "resourceWarnings": [],
+  "workspace": "C:\\Users\\MOVER\\AppData\\Local\\Temp\\srt-whiteboard-scene-render-benchmark-3o47jo0s"
+}

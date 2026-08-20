@@ -612,6 +612,67 @@ def _deep_receipt(media: dict) -> dict:
     return receipt
 
 
+def _elapsed_ms(started_ns: int) -> float:
+    """返回适合运行审计的单调时钟毫秒值，不参与任何作品 identity。"""
+
+    return round((time.perf_counter_ns() - started_ns) / 1_000_000, 3)
+
+
+def _runtime_metrics_summary(
+    scene_metrics: list[dict],
+    *,
+    batch_started_ns: int,
+    context_ms: float,
+    prepare_ms: float,
+    candidate_execution_ms: float,
+    coordinator_publish_ms: float,
+) -> dict:
+    """汇总正式 batch 的本机运行指标；这些字段只用于审计与 benchmark。"""
+
+    candidate_bytes_by_scene = {
+        item["sceneId"]: item["candidateBytes"]
+        for item in scene_metrics
+        if isinstance(item.get("sceneId"), str)
+        and isinstance(item.get("candidateBytes"), int)
+        and item["candidateBytes"] > 0
+    }
+    worker_phase_durations_ms = {
+        phase: round(
+            sum(
+                item.get("phaseDurationsMs", {}).get(phase, 0.0)
+                for item in scene_metrics
+                if isinstance(item.get("phaseDurationsMs"), dict)
+                and isinstance(item["phaseDurationsMs"].get(phase, 0.0), (int, float))
+            ),
+            3,
+        )
+        for phase in ("prepare", "render", "validation")
+    }
+    return {
+        "wallMs": _elapsed_ms(batch_started_ns),
+        "stageDurationsMs": {
+            "context": context_ms,
+            "prepare": prepare_ms,
+            "candidateExecution": candidate_execution_ms,
+            "coordinatorPublish": coordinator_publish_ms,
+        },
+        # 每个成功创建的 FFmpegFrameSink 对应一个受控 scene encoder 子进程。
+        # 这是整批累计启动数/编码负载代理，不是 OS 级同时在途峰值。
+        "ffmpegProcessCount": sum(
+            item.get("ffmpegProcessCount", 0)
+            for item in scene_metrics
+            if isinstance(item.get("ffmpegProcessCount", 0), int)
+        ),
+        "ffmpegProcessCountMetric": "sceneEncoderStarts",
+        # worker 阶段为逐幕耗时之和，并发时可能大于 wallMs。
+        "workerPhaseDurationsMs": worker_phase_durations_ms,
+        "workerPhaseDurationAggregation": "sumAcrossScenes",
+        # 只累计通过 deep validation 的 candidate；失败 candidate 不冒充可用产物。
+        "candidateBytes": sum(candidate_bytes_by_scene.values()),
+        "candidateBytesByScene": candidate_bytes_by_scene,
+    }
+
+
 def _publish_and_bind_scene(
     candidate: Path,
     destination: Path,
@@ -815,6 +876,11 @@ def _render_formal_candidate_worker(task: dict) -> dict:
         "pid": os.getpid(),
         "startedNs": started_ns,
     }
+    ffmpeg_process_count = 0
+    prepare_ms = 0.0
+    render_ms = 0.0
+    validation_ms = 0.0
+    prepare_started_ns = time.perf_counter_ns()
     try:
         image_path = Path(task["imagePath"])
         annotation_path = Path(task["annotationPath"])
@@ -857,13 +923,25 @@ def _render_formal_candidate_worker(task: dict) -> dict:
             output_size=(profile["width"], profile["height"]),
             preloaded_hand=hand_data,
         )
+
+        prepare_ms = _elapsed_ms(prepare_started_ns)
+
+        def observed_sink_factory(*sink_args, **sink_kwargs):
+            nonlocal ffmpeg_process_count
+            sink = ffmpeg_frame_sink.FFmpegFrameSink(*sink_args, **sink_kwargs)
+            ffmpeg_process_count += 1
+            return sink
+
+        render_started_ns = time.perf_counter_ns()
         renderer.render_to(
             candidate,
             scene["sceneDurationMs"],
             target_frame_count=scene["frameCount"],
             scene_start_ms=scene["startMs"],
             scene_start_frame=scene["startFrame"],
+            sink_factory=observed_sink_factory,
         )
+        render_ms = _elapsed_ms(render_started_ns)
 
         if project_workspace.sha256_file(image_path) != task["imageSha256"]:
             raise render_timing.RenderTimingError(
@@ -880,16 +958,19 @@ def _render_formal_candidate_worker(task: dict) -> dict:
         ):
             raise render_timing.RenderTimingError("batch 期间 current hand 素材已变化")
 
+        validation_started_ns = time.perf_counter_ns()
         candidate_media = media_validation.validate_video(
             candidate,
             render_profile=profile,
             expected_frame_count=scene["frameCount"],
             expected_audio_streams=0,
         )
+        validation_ms = _elapsed_ms(validation_started_ns)
         result.update(
             {
                 "status": "succeeded",
                 "deepReceipt": _deep_receipt(candidate_media),
+                "candidateBytes": candidate.stat().st_size,
             }
         )
     except Exception as exc:
@@ -902,7 +983,17 @@ def _render_formal_candidate_worker(task: dict) -> dict:
                 "exitCode": _formal_error_exit_code(exc),
             }
         )
-    result["finishedNs"] = time.time_ns()
+    result.update(
+        {
+            "phaseDurationsMs": {
+                "prepare": prepare_ms,
+                "render": render_ms,
+                "validation": validation_ms,
+            },
+            "ffmpegProcessCount": ffmpeg_process_count,
+            "finishedNs": time.time_ns(),
+        }
+    )
     return result
 
 
@@ -981,7 +1072,9 @@ def _render_formal_context(
     hand_png: Path | None,
     preloaded_hand: tuple[np.ndarray, np.ndarray] | None,
     hand_sha256: str | None,
+    runtime_metrics: dict | None = None,
 ) -> tuple[Path, str]:
+    prepare_started_ns = time.perf_counter_ns()
     profile = context.project.render_profile
     render_timing.validate_formal_context_current(context.project, frozen)
     image_sha256 = project_workspace.sha256_file(context.image_path)
@@ -1006,13 +1099,25 @@ def _render_formal_context(
     run_dir = context.project.create_run_dir(f"render-scene-{uuid.uuid4().hex}")
     candidate = run_dir / "scene.h264.candidate.mp4"
     scene = context.timing_scene
+    ffmpeg_process_count = 0
+    prepare_ms = _elapsed_ms(prepare_started_ns)
+
+    def observed_sink_factory(*sink_args, **sink_kwargs):
+        nonlocal ffmpeg_process_count
+        sink = ffmpeg_frame_sink.FFmpegFrameSink(*sink_args, **sink_kwargs)
+        ffmpeg_process_count += 1
+        return sink
+
+    render_started_ns = time.perf_counter_ns()
     renderer.render_to(
         candidate,
         scene["sceneDurationMs"],
         target_frame_count=scene["frameCount"],
         scene_start_ms=scene["startMs"],
         scene_start_frame=scene["startFrame"],
+        sink_factory=observed_sink_factory,
     )
+    render_ms = _elapsed_ms(render_started_ns)
     render_timing.validate_formal_context_current(context.project, frozen)
     if project_workspace.sha256_file(context.image_path) != image_sha256:
         raise render_timing.RenderTimingError(
@@ -1022,12 +1127,16 @@ def _render_formal_context(
         raise render_timing.RenderTimingError(
             f"batch 期间 {context.scene_id} current annotation 已变化"
         )
+    validation_started_ns = time.perf_counter_ns()
     candidate_media = media_validation.validate_video(
         candidate,
         render_profile=profile,
         expected_frame_count=scene["frameCount"],
         expected_audio_streams=0,
     )
+    validation_ms = _elapsed_ms(validation_started_ns)
+    candidate_bytes = candidate.stat().st_size
+    publish_started_ns = time.perf_counter_ns()
     media = _publish_and_bind_scene(
         candidate,
         context.output_path,
@@ -1046,6 +1155,20 @@ def _render_formal_context(
     except OSError:
         pass
     identity = manifest["scenes"][context.scene_id]["renderIdentityHash"]
+    if runtime_metrics is not None:
+        runtime_metrics.update(
+            {
+                "sceneId": context.scene_id,
+                "phaseDurationsMs": {
+                    "prepare": prepare_ms,
+                    "render": render_ms,
+                    "validation": validation_ms,
+                },
+                "coordinatorPublishMs": _elapsed_ms(publish_started_ns),
+                "ffmpegProcessCount": ffmpeg_process_count,
+                "candidateBytes": candidate_bytes,
+            }
+        )
     return context.output_path, identity
 
 
@@ -1075,9 +1198,13 @@ def _run_formal(args) -> tuple[Path, str]:
 
 
 def _run_formal_batch(args) -> dict:
+    batch_started_ns = time.perf_counter_ns()
+    context_started_ns = time.perf_counter_ns()
     frozen, contexts = _formal_contexts(args)
+    context_ms = _elapsed_ms(context_started_ns)
     if not contexts:
         raise render_timing.RenderTimingError("正式 batch 没有可渲染场景")
+    prepare_started_ns = time.perf_counter_ns()
     project = contexts[0].project
     configured = project_workspace.load_workspace_config(
         verify_writable=False
@@ -1087,7 +1214,13 @@ def _run_formal_batch(args) -> dict:
     effective = min(configured, len(contexts))
     if effective == 1:
         results: list[dict] = []
+        scene_metrics: list[dict] = []
+        prepare_ms = _elapsed_ms(prepare_started_ns)
+        candidate_execution_ms = 0.0
+        coordinator_publish_ms = 0.0
         for context in contexts:
+            runtime_metrics: dict = {}
+            scene_started_ns = time.perf_counter_ns()
             output, identity = _render_formal_context(
                 args,
                 context,
@@ -1096,7 +1229,13 @@ def _run_formal_batch(args) -> dict:
                 hand_png=hand_png,
                 preloaded_hand=hand_data,
                 hand_sha256=hand_sha256,
+                runtime_metrics=runtime_metrics,
             )
+            scene_wall_ms = _elapsed_ms(scene_started_ns)
+            publish_ms = runtime_metrics.get("coordinatorPublishMs", 0.0)
+            coordinator_publish_ms += publish_ms
+            candidate_execution_ms += max(0.0, scene_wall_ms - publish_ms)
+            scene_metrics.append(runtime_metrics)
             results.append(
                 {
                     "sceneId": context.scene_id,
@@ -1105,7 +1244,7 @@ def _run_formal_batch(args) -> dict:
                     "status": "published_current_technical",
                 }
             )
-        return {
+        summary = {
             "contractVersion": "whiteboard-scene-render-batch-v2",
             "status": "PASS",
             "partialSuccess": False,
@@ -1124,6 +1263,17 @@ def _run_formal_batch(args) -> dict:
             "approvalWritten": False,
             "userConfirmationRequired": True,
         }
+        summary.update(
+            _runtime_metrics_summary(
+                scene_metrics,
+                batch_started_ns=batch_started_ns,
+                context_ms=context_ms,
+                prepare_ms=prepare_ms,
+                candidate_execution_ms=round(candidate_execution_ms, 3),
+                coordinator_publish_ms=round(coordinator_publish_ms, 3),
+            )
+        )
+        return summary
 
     render_options = _formal_render_options(args, cfg, hand_sha256=hand_sha256)
     tasks: list[dict] = []
@@ -1156,11 +1306,31 @@ def _run_formal_batch(args) -> dict:
             }
         )
 
+    prepare_ms = _elapsed_ms(prepare_started_ns)
+    candidate_execution_started_ns = time.perf_counter_ns()
     worker_results, peak = _execute_formal_candidate_tasks(
         tasks,
         max_workers=effective,
     )
+    candidate_execution_ms = _elapsed_ms(candidate_execution_started_ns)
+    scene_metrics = [
+        {
+            "sceneId": context.scene_id,
+            "phaseDurationsMs": worker_results.get(context.scene_id, {}).get(
+                "phaseDurationsMs",
+                {"prepare": 0.0, "render": 0.0, "validation": 0.0},
+            ),
+            "ffmpegProcessCount": worker_results.get(context.scene_id, {}).get(
+                "ffmpegProcessCount", 0
+            ),
+            "candidateBytes": worker_results.get(context.scene_id, {}).get(
+                "candidateBytes", 0
+            ),
+        }
+        for context in contexts
+    ]
     results: list[dict] = []
+    coordinator_publish_started_ns = time.perf_counter_ns()
     for context in contexts:
         worker_result = worker_results.get(context.scene_id)
         if not isinstance(worker_result, dict) or worker_result.get("status") != "succeeded":
@@ -1239,7 +1409,8 @@ def _run_formal_batch(args) -> dict:
             )
     success_count = sum(item["status"] == "published_current_technical" for item in results)
     failure_count = len(results) - success_count
-    return {
+    coordinator_publish_ms = _elapsed_ms(coordinator_publish_started_ns)
+    summary = {
         "contractVersion": "whiteboard-scene-render-batch-v2",
         "status": "PASS" if failure_count == 0 else "FAIL",
         "partialSuccess": success_count > 0 and failure_count > 0,
@@ -1258,6 +1429,17 @@ def _run_formal_batch(args) -> dict:
         "approvalWritten": False,
         "userConfirmationRequired": True,
     }
+    summary.update(
+        _runtime_metrics_summary(
+            scene_metrics,
+            batch_started_ns=batch_started_ns,
+            context_ms=context_ms,
+            prepare_ms=prepare_ms,
+            candidate_execution_ms=candidate_execution_ms,
+            coordinator_publish_ms=coordinator_publish_ms,
+        )
+    )
+    return summary
 
 
 def _formal_error_exit_code(exc: Exception) -> int:

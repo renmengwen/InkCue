@@ -1,0 +1,25 @@
+{
+  "contractVersion": "whiteboard-scene-render-benchmark-fixture-v1",
+  "fixtureId": "fixture-small",
+  "description": "2 幕短场景的合成白板正式渲染基准；不含真实用户内容或外部 provider。",
+  "sceneCount": 2,
+  "sceneDurationMs": 650,
+  "canvas": {
+    "width": 1920,
+    "height": 1080,
+    "background": "#F5EBD7"
+  },
+  "annotation": {
+    "elementCount": 1,
+    "revealStartMs": 0,
+    "revealDurationMs": 100,
+    "protectedRegions": []
+  },
+  "handAsset": "assets/drawing-hand.png",
+  "renderArguments": {
+    "inkPath": "grid",
+    "colorFill": "contour-wipe",
+    "pause": "off",
+    "gridEdge": 120
+  }
+}
