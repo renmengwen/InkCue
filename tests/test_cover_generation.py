@@ -68,7 +68,8 @@ class CoverGenerationTests(unittest.TestCase):
         manifest = generate_cover(self.root)
         cover = self.root / "previews" / "social-cover.png"
         self.assertTrue(cover.is_file())
-        self.assertEqual(Image.open(cover).size, (1920, 1080))
+        with Image.open(cover) as image:
+            self.assertEqual(image.size, (1920, 1080))
         self.assertEqual(manifest["semanticSource"], "whole_video")
         self.assertRegex(manifest["sha256"], r"^[0-9a-f]{64}$")
         saved = json.loads((self.root / "manifests" / "cover-manifest.json").read_text(encoding="utf-8"))

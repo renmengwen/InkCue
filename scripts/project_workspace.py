@@ -574,6 +574,10 @@ def validate_generation_plan_data(plan: Any, *, project_id: str) -> dict[str, An
         label = f"scenes[{index}]"
         if not isinstance(scene, dict):
             raise ProjectValidationError(f"{label} 必须是对象")
+        if "imagePrompt" in scene:
+            raise ProjectValidationError(
+                f"{label}.imagePrompt 仅属于 content draft；formal generation plan 必须使用 prompt"
+            )
         scene_id = scene.get("sceneId")
         if not isinstance(scene_id, str) or not scene_id:
             raise ProjectValidationError(f"{label}.sceneId 不能为空")

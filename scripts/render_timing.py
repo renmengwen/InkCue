@@ -45,6 +45,19 @@ FORMAL_CONTEXT_VALIDATOR_CONTRACT = "whiteboard-formal-validation-context-valida
 FORMAL_CONTEXT_RECEIPT_TTL_SECONDS = 600
 FORMAL_CONTEXT_RECEIPT_MAX_TTL_SECONDS = 3600
 _FORMAL_RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+# Scheduler settings are operational audit only.  Keep accepting them in a
+# persisted renderOptions object for recovery/diagnostics, but never let a
+# concurrency-only change produce a new work/scene identity.
+_NON_IDENTITY_RENDER_OPTIONS = frozenset(
+    {
+        "concurrency",
+        "configuredConcurrency",
+        "effectiveConcurrency",
+        "peakConcurrency",
+        "sceneRender",
+        "sceneRenderConcurrency",
+    }
+)
 
 
 class RenderTimingError(ValueError):
@@ -802,6 +815,11 @@ def local_frame_boundary(local_ms: int, *, scene_start_ms: int, scene_start_fram
 
 def render_identity(context: FormalSceneRender, *, render_options: Mapping[str, Any]) -> str:
     scene = context.timing_scene
+    identity_render_options = {
+        key: value
+        for key, value in dict(render_options).items()
+        if key not in _NON_IDENTITY_RENDER_OPTIONS
+    }
     return sha256_json(
         {
             "contractVersion": RENDER_CONTRACT_VERSION,
@@ -819,7 +837,7 @@ def render_identity(context: FormalSceneRender, *, render_options: Mapping[str, 
                 "endFrameExclusive": scene["endFrameExclusive"],
                 "frameCount": scene["frameCount"],
             },
-            "renderOptions": dict(render_options),
+            "renderOptions": identity_render_options,
         }
     )
 

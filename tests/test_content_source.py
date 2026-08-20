@@ -21,7 +21,11 @@ from content_source import (  # noqa: E402
     content_draft_identity,
     validate_content_draft,
 )
-from project_workspace import validate_generation_plan_data  # noqa: E402
+from project_workspace import (  # noqa: E402
+    ProjectValidationError,
+    validate_generation_plan_data,
+    validate_pre_project_generation_plan_data,
+)
 from srt_timeline import parse_srt  # noqa: E402
 
 
@@ -210,6 +214,37 @@ class DeterministicDerivationTests(unittest.TestCase):
         self.assertEqual(plan["scenes"][0]["subtitleRange"]["startMs"], 0)
         self.assertEqual(plan["scenes"][-1]["subtitleRange"]["endMs"], 60000)
         self.assertEqual(sum(scene["sceneDurationMs"] for scene in plan["scenes"]), 60000)
+
+    def test_prompt_schema_mapping_is_unique_and_does_not_leak_image_prompt(self) -> None:
+        draft = topic_draft()
+        plan = build_generation_plan(draft)
+
+        # The coordinator mapping is intentionally boring: same scene/order and
+        # byte-for-byte prompt text, with only the formal field name materialized.
+        self.assertEqual(
+            [scene["prompt"] for scene in plan["scenes"]],
+            [scene["imagePrompt"] for scene in draft["scenes"]],
+        )
+        self.assertEqual(
+            [scene["sceneId"] for scene in plan["scenes"]],
+            [scene["sceneId"] for scene in draft["scenes"]],
+        )
+        self.assertTrue(all("imagePrompt" not in scene for scene in plan["scenes"]))
+
+        # A formal plan carrying the content-draft-only field is not a valid
+        # substitute for the coordinator mapping.
+        invalid = copy.deepcopy(plan)
+        invalid["scenes"][0]["imagePrompt"] = invalid["scenes"][0]["prompt"]
+        with self.assertRaisesRegex(ProjectValidationError, "imagePrompt"):
+            validate_generation_plan_data(invalid, project_id="")
+        with self.assertRaisesRegex(ProjectValidationError, "imagePrompt"):
+            # The pre-project validator is the storyboard/formal boundary and
+            # must fail closed before timing or project creation.
+            source = EXAMPLES / "一分钟理解习惯回路.srt"
+            candidate = copy.deepcopy(invalid)
+            candidate.pop("projectId", None)
+            validate_pre_project_generation_plan_data(candidate, source_srt_path=source)
+
 
     def test_too_many_cues_for_minimum_readability_is_rejected(self) -> None:
         draft = topic_draft()

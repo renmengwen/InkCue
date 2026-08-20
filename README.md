@@ -277,10 +277,21 @@ runner 中断后可直接恢复，也可退回逐步 CLI；保留 current bindin
 自动测试使用 fake provider，不会调用真实图片或语音服务：
 
 ```powershell
-& $envPy -m unittest discover -s tests -p "test_*.py"
+$runtimePython = "D:\SRTWhiteboard\runtime\.venv\Scripts\python.exe"
+& $runtimePython -m unittest discover -s tests -p "test_*.py"
 ```
 
 自动测试通过不代表真实 provider 或人工视觉、听觉验收通过。
+
+测试/CI 报告必须分别标记三类状态：本地 fake/fixture 的自动 `PASS`、真实图片或语音 provider/媒体不可用时的 `SKIP` 或 `BLOCKED`，以及尚未由用户明确确认的人工 Gate（`待确认`）。fixture 的通过不能冒充真实 provider、真实媒体或人工验收通过。
+
+固定场景 benchmark 同样只属于第一类；例如：
+
+```powershell
+& $runtimePython benchmarks\run_scene_render_benchmark.py --fixture fixture-medium
+```
+
+该命令输出的 `PASS` 只覆盖仓库 fixture 的渲染、技术验证和恢复探针。真实 provider 未执行时必须另报 `SKIP`（外部条件不可用则报 `BLOCKED`），人工 Gate 必须保留为“待确认”且 `approvalWritten=false`。
 
 ## 已知限制
 

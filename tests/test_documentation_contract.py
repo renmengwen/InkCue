@@ -54,6 +54,13 @@ class DocumentationContractTests(unittest.TestCase):
 
         self.assertIn("current approved scene review bundle", readme)
 
+    def test_readme_test_runtime_and_ci_status_categories_are_explicit(self) -> None:
+        readme = read_document("README.md")
+        self.assertIn('D:\\SRTWhiteboard\\runtime\\.venv\\Scripts\\python.exe', readme)
+        for status in ("自动 `PASS`", "`SKIP`", "`BLOCKED`", "人工 Gate", "待确认"):
+            with self.subTest(status=status):
+                self.assertIn(status, readme)
+
     def test_content_image_prompt_mapping_to_formal_prompt_is_documented(self) -> None:
         image_generation = read_document("references/image-generation.md")
         orchestration = read_document("references/subagent-orchestration.md")
@@ -149,6 +156,11 @@ class DocumentationContractTests(unittest.TestCase):
             for claim in obsolete_claims:
                 with self.subTest(path=path.relative_to(SKILL_ROOT), claim=claim):
                     self.assertNotIn(claim, document)
+
+    def test_historical_phase8_claims_are_explicitly_marked_as_historical(self) -> None:
+        plan = read_document("docs/superpowers/plans/2026-08-20-srt-whiteboard-optimization-plan.md")
+        self.assertIn("历史设计状态（2026-08-15）", plan)
+        self.assertIn("当前实现状态请以 SKILL.md、scripts/render_stream_whiteboard.py 和测试为准", plan)
 
 
 if __name__ == "__main__":

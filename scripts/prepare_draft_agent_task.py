@@ -118,8 +118,8 @@ STORYBOARD_ROLE_CONTRACT = """# storyboardPlanning frozen role contract
 - scenes 必须按 parsed-srt 顺序覆盖全部 cue；每幕包含 sceneId、name、cueRange、sceneDurationMs、outputFile、prompt、coreIdea、visualSubject。
 - prompt 必须是可独立生图的暖米黄纸张白板线稿提示词并禁止文字、水印；不得使用 imagePrompt 或 sourceCueRange 字段。
 - cue 到 scene 按视觉状态变化拆分，不按具体名词类别机械拆分；允许通过增加 scene 降低单图叙事负担，但不得预设固定场景数量。
-- 每幕只表达一个核心视觉命题；当语义包含多个可依次呈现的状态或主体时，imagePrompt 应组织 2–3 个可独立揭示的视觉区域。只有不可分割的连续主体才合并，不设固定 scene 数量。
-- imagePrompt 应明确左到右或上到下的视觉阅读方向（只作为静态构图顺序，不是绘制元数据），为每个区域指定完整主体和真实、连续的暖米黄纸面留白；不得画漫画格、编号或标题。
+- 每幕只表达一个核心视觉命题；当语义包含多个可依次呈现的状态或主体时，prompt 应组织 2–3 个可独立揭示的视觉区域。只有不可分割的连续主体才合并，不设固定 scene 数量。
+- prompt 应明确左到右或上到下的视觉阅读方向（只作为静态构图顺序，不是绘制元数据），为每个区域指定完整主体和真实、连续的暖米黄纸面留白；不得画漫画格、编号或标题。
 - 不得用跨区域的连续背景、共同底面、道路、长线、箭头、光束、河流、山脉或其他贯穿结构把区域连接起来；空间独立区域优先保持不遮挡，但局部接近不等于必须合并。
 - 若多个概念在视觉上确实必须组成不可分割的连续构图，则合并为一个视觉簇；不得为了凑数量强拆，也不得因为担心区域交叠把所有内容强行合并为一个簇。
 - 只写 allowedOutputs 中的 candidate.generation-plan.json 与 result.json；不得修改 SRT、调用 provider、写策略批准或正式文件。
