@@ -167,17 +167,17 @@ def select_authoritative_srt(project: Project) -> AuthoritativeSrt:
             cues=_read_srt(path),
         )
 
-    if mode != "edge-tts":
+    if mode not in {"edge-tts", "minimax"}:
         raise SubtitleDeliveryError(f"不支持的 voiceoverMode: {mode}")
     timeline_relative = "audio/timeline.json"
-    if active.get("kind") != "edge-tts-audio-timeline" or active.get("file") != timeline_relative:
-        raise SubtitleStaleError("Edge TTS timing plan 未绑定 current audio/timeline.json")
+    if active.get("kind") not in {"edge-tts-audio-timeline", "audio-authoritative-timeline"} or active.get("file") != timeline_relative:
+        raise SubtitleStaleError("音频 timing plan 未绑定 current audio/timeline.json")
     timeline_path = project.path(timeline_relative)
     if not timeline_path.is_file():
-        raise SubtitleStaleError("Edge TTS current audio/timeline.json 缺失")
+        raise SubtitleStaleError("current audio/timeline.json 缺失")
     timeline_sha = sha256_file(timeline_path)
     if active.get("sha256") != timeline_sha:
-        raise SubtitleStaleError("Edge TTS audio/timeline.json SHA-256 stale")
+        raise SubtitleStaleError("audio/timeline.json SHA-256 stale")
     timeline = _read_json(timeline_path, "audio timeline")
     binding = timeline.get("narrationSrt")
     relative = "audio/narration.srt"
@@ -186,7 +186,7 @@ def select_authoritative_srt(project: Project) -> AuthoritativeSrt:
     path = project.path(relative)
     actual_sha = sha256_file(path) if path.is_file() else ""
     if not actual_sha or binding.get("sha256") != actual_sha:
-        raise SubtitleStaleError("Edge TTS audio/narration.srt 缺失或 stale，禁止回退 source SRT")
+        raise SubtitleStaleError("audio/narration.srt 缺失或 stale，禁止回退 source SRT")
     return AuthoritativeSrt(
         mode=mode,
         source_kind="edge-tts-narration-srt",

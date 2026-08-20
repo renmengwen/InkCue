@@ -197,13 +197,13 @@ def install(py: Path, packages: list[str], env: dict[str, str]) -> bool:
 
 def _parse_arguments(arguments: list[str]) -> tuple[bool, str | None]:
     parser = argparse.ArgumentParser(
-        description="准备基础白板渲染环境；Edge TTS 依赖仅在显式 feature 下安装。"
+        description="准备基础白板渲染环境；语音 provider 依赖仅在显式 feature 下安装。"
     )
     parser.add_argument("--check", action="store_true", help="只检查，不安装缺失依赖")
     parser.add_argument(
         "--feature",
         choices=sorted(FEATURE_DEPS),
-        help="可选能力；首版仅支持 edge-tts",
+        help="可选能力；Edge TTS 需要显式 edge-tts，MiniMax 使用 Python 标准库",
     )
     parsed = parser.parse_args(arguments)
     return parsed.check, parsed.feature

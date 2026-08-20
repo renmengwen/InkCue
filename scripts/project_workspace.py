@@ -35,7 +35,8 @@ PROJECT_PATHS_V2 = {
     "subtitles": "subtitles",
 }
 PROJECT_PATHS = PROJECT_PATHS_V2
-VOICEOVER_MODES = {"disabled", "edge-tts"}
+AUDIO_VOICEOVER_MODES = {"edge-tts", "minimax"}
+VOICEOVER_MODES = {"disabled", *AUDIO_VOICEOVER_MODES}
 CONTENT_SOURCE_FIELDS = {
     "contractVersion",
     "inputFile",
@@ -620,7 +621,7 @@ def validate_pre_project_generation_plan_data(
     generation/timing validator。它不创建项目、不写批准，也不修改 source SRT。
     """
     if voiceover_mode not in VOICEOVER_MODES:
-        raise ProjectValidationError("voiceoverMode 只允许 disabled 或 edge-tts")
+        raise ProjectValidationError("voiceoverMode 只允许 disabled、edge-tts 或 minimax")
     source_path = _resolved(Path(source_srt_path))
     if not source_path.is_file():
         raise ProjectValidationError(f"原始 SRT 不存在: {source_path}")
@@ -802,7 +803,7 @@ def validate_timing_plan_data(
     if not isinstance(active, dict):
         raise ProjectValidationError("timing plan activeTimeline 必须是对象")
     kind = active.get("kind")
-    if kind not in {"source-srt", "edge-tts-audio-timeline"}:
+    if kind not in {"source-srt", "edge-tts-audio-timeline", "audio-authoritative-timeline"}:
         raise ProjectValidationError("timing plan activeTimeline.kind 无效")
     active_file = _validate_relative_posix_file(
         active.get("file"), label="timing plan activeTimeline.file"
@@ -812,7 +813,7 @@ def validate_timing_plan_data(
     if kind == "source-srt":
         if active_file != "source/source.srt" or active["sha256"] != source_srt_sha256:
             raise ProjectValidationError("source timing plan 必须绑定 current source/source.srt")
-    elif voiceover_mode != "edge-tts" or active_file != "audio/timeline.json":
+    elif voiceover_mode not in AUDIO_VOICEOVER_MODES or active_file != "audio/timeline.json":
         raise ProjectValidationError("音频权威 timing plan 仅允许 Edge 模式绑定 audio/timeline.json")
 
     scenes = timing_plan.get("scenes")
@@ -915,13 +916,13 @@ def validate_project_metadata_data(root: Path, metadata: Any) -> dict[str, Any]:
         safe_project_path(root, paths[key])
     if schema_version == 2:
         if metadata.get("voiceoverMode") not in VOICEOVER_MODES:
-            raise ProjectValidationError("project.json voiceoverMode 只允许 disabled 或 edge-tts")
+            raise ProjectValidationError("project.json voiceoverMode 只允许 disabled、edge-tts 或 minimax")
         if metadata.get("renderProfile") != FIXED_RENDER_PROFILE:
             raise ProjectValidationError("project.json renderProfile 必须严格为 whiteboard-render-v2")
     content_source = metadata.get("contentSource")
     if content_source is not None:
-        if schema_version != 2 or metadata.get("voiceoverMode") != "edge-tts":
-            raise ProjectValidationError("contentSource 仅允许 schema v2 的 edge-tts 项目")
+        if schema_version != 2 or metadata.get("voiceoverMode") not in AUDIO_VOICEOVER_MODES:
+            raise ProjectValidationError("contentSource 仅允许 schema v2 的音频旁白项目")
         if not isinstance(content_source, dict) or set(content_source) != CONTENT_SOURCE_FIELDS:
             raise ProjectValidationError("project.json contentSource 字段集合无效")
         if content_source.get("contractVersion") != "whiteboard-source-package-v1":
@@ -1002,7 +1003,7 @@ def _load_persisted_timing_plan(
             )
             if timing_plan != expected:
                 raise ProjectValidationError("source timing plan 与 current SRT/语义场景的确定性结果不一致")
-        elif active.get("kind") == "edge-tts-audio-timeline":
+        elif active.get("kind") in {"edge-tts-audio-timeline", "audio-authoritative-timeline"}:
             active_path = safe_project_path(root, active["file"])
             if not active_path.is_file() or sha256_file(active_path) != active["sha256"]:
                 raise ProjectValidationError("timing plan 绑定的 audio/timeline.json 缺失或 SHA-256 不一致")
@@ -1047,7 +1048,7 @@ def upgrade_project(
     if to_schema != 2:
         raise ProjectValidationError("首版只支持显式升级到 schema 2")
     if voiceover_mode not in VOICEOVER_MODES:
-        raise ProjectValidationError("voiceoverMode 只允许 disabled 或 edge-tts")
+        raise ProjectValidationError("voiceoverMode 只允许 disabled、edge-tts 或 minimax")
     root = _resolved(Path(project_root))
     project = load_project(root)
     if project.schema_version == 2:
@@ -1153,7 +1154,7 @@ class ProjectWorkspace:
         source_plan: str | Path | None = None,
     ) -> Project:
         if voiceover_mode not in VOICEOVER_MODES:
-            raise ProjectValidationError("voiceoverMode 只允许 disabled 或 edge-tts")
+            raise ProjectValidationError("voiceoverMode 只允许 disabled、edge-tts 或 minimax")
         project_name = sanitize_project_name(name)
         source_path = _resolved(Path(source_srt))
         if not source_path.is_file():
@@ -1168,8 +1169,8 @@ class ProjectWorkspace:
                 )
             if confirmed_plan is None:
                 raise ProjectValidationError("content source 创建必须提供已确认 generation plan")
-            if voiceover_mode != "edge-tts":
-                raise ProjectValidationError("首版 topic/text content source 只允许 edge-tts")
+            if voiceover_mode not in AUDIO_VOICEOVER_MODES:
+                raise ProjectValidationError("topic/text content source 只允许 edge-tts 或 minimax")
             from content_source import ContentSourceError, validate_source_package
 
             try:

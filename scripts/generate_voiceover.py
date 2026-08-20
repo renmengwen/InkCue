@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Edge TTS 旁白样音、完整生成、恢复与人工批准 CLI。"""
+"""语音旁白样音、完整生成、恢复与人工批准 CLI。"""
 from __future__ import annotations
 
 import argparse
@@ -58,6 +58,8 @@ try:
     # edge_tts_adapter intentionally imports the protocol through the
     # top-level alias installed by scripts.voiceover.
     from .edge_tts_adapter import EdgeTtsAdapter
+    from .minimax_adapter import MiniMaxAdapter, MINIMAX_PROVIDER_CONTRACT_VERSION
+    from .voice_provider_config import VoiceProviderConfigError, active_provider_id, load_voice_provider_config
 except ImportError:  # pragma: no cover - direct script execution
     from audio_normalization import (
         AudioNormalizationError,
@@ -69,6 +71,8 @@ except ImportError:  # pragma: no cover - direct script execution
         validate_canonical_wav,
     )
     from edge_tts_adapter import EdgeTtsAdapter
+    from minimax_adapter import MiniMaxAdapter, MINIMAX_PROVIDER_CONTRACT_VERSION
+    from voice_provider_config import VoiceProviderConfigError, active_provider_id, load_voice_provider_config
     from project_workspace import (
         Project,
         ProjectValidationError,
@@ -101,8 +105,8 @@ except ImportError:  # pragma: no cover - direct script execution
 
 
 VOICE_TIMELINE_SCHEMA_VERSION = 1
-VOICE_TIMELINE_CONTRACT_VERSION = "edge-tts-audio-timeline-v1"
-VOICE_CLI_CONTRACT_VERSION = "edge-tts-voiceover-cli-v1"
+VOICE_TIMELINE_CONTRACT_VERSION = "audio-authoritative-timeline-v1"
+VOICE_CLI_CONTRACT_VERSION = "voiceover-cli-v2"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0
 CANONICAL_WAV_VALIDATOR_RECEIPT_VERSION = "canonical-wav-validator-receipt-v1"
 
@@ -145,8 +149,8 @@ def _voice_paths(project: Project) -> dict[str, Path]:
 
 
 def _load_source_context(project: Project) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    if project.schema_version != 2 or project.voiceover_mode != "edge-tts":
-        raise VoiceoverStateError("旁白 CLI 只允许 schema v2 的 edge-tts 项目")
+    if project.schema_version != 2 or project.voiceover_mode not in {"edge-tts", "minimax"}:
+        raise VoiceoverStateError("旁白 CLI 只允许 schema v2 的音频旁白项目")
     source_path = project.path(project.metadata["source"]["file"])
     cues = parse_srt(source_path.read_text(encoding="utf-8-sig"))
     scenes = [
@@ -166,15 +170,28 @@ def _build_plan_and_units(
     *,
     voice: str,
     rate: int | str,
+    provider_id: str = "edge-tts",
+    provider_config: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     cues, scenes = _load_source_context(project)
+    config = dict(provider_config or {})
+    protocol = "MiniMax" if provider_id == "minimax" else "edge-tts"
+    contract = config.get("contractVersion") or (MINIMAX_PROVIDER_CONTRACT_VERSION if provider_id == "minimax" else "edge-tts-python-7.2.8-v1")
     plan = build_voice_plan(
         project_id=project.project_id,
         source_srt_sha256=project.metadata["source"]["sha256"],
         cues=cues,
         scenes=scenes,
         voice=voice,
+        language=str(config.get("language", "zh-CN")),
         rate=rate,
+        pitch=config.get("pitch", 0),
+        volume=config.get("volume", 0),
+        output_format=str(config.get("outputFormat", "audio-24khz-48kbitrate-mono-mp3")),
+        provider_id=provider_id,
+        protocol=protocol,
+        provider_contract_version=contract,
+        provider_options={key: config[key] for key in ("model", "emotion", "textNormalization", "stream", "endpoint") if key in config},
     )
     units = bind_synthesis_identities(
         plan_speech_units(cues, scenes, segmentation=plan["segmentation"]), plan
@@ -204,6 +221,7 @@ def _load_current_plan_units(project: Project) -> tuple[dict[str, Any], list[dic
         provider_id=plan["provider"]["id"],
         protocol=plan["provider"]["protocol"],
         provider_contract_version=plan["provider"]["contractVersion"],
+        provider_options=plan["provider"].get("options", {}),
         source_file=plan["source"]["file"],
         segmentation=plan["segmentation"],
     )
@@ -237,6 +255,25 @@ def _request(plan: Mapping[str, Any], text: str) -> SynthesisRequest:
         timeoutSeconds=DEFAULT_REQUEST_TIMEOUT_SECONDS,
         cancellationToken=None,
     )
+
+
+def _adapter_from_plan(plan: Mapping[str, Any]) -> ProviderAdapter:
+    provider_id = plan["provider"]["id"]
+    if provider_id == "edge-tts":
+        return EdgeTtsAdapter()
+    if provider_id == "minimax":
+        config = load_voice_provider_config(provider_id="minimax")
+        options = plan["provider"].get("options", {})
+        return MiniMaxAdapter(
+            api_key=str(config["apiKey"]),
+            model=str(options.get("model", config.get("model", "speech-2.8-hd"))),
+            emotion=str(options.get("emotion", config.get("emotion", "calm"))),
+            text_normalization=bool(options.get("textNormalization", config.get("textNormalization", True))),
+            endpoint=str(options.get("endpoint", config.get("endpoint", "https://api.minimaxi.com/v1/t2a_v2"))),
+            max_attempts=int(config.get("maxRetries", 2)) + 1,
+            queue_interval_seconds=float(config.get("queueIntervalMs", 500)) / 1000.0,
+        )
+    raise VoiceoverStateError(f"不支持的旁白 provider: {provider_id}")
 
 
 def _media_dict(result: CanonicalAudioResult) -> dict[str, Any]:
@@ -314,10 +351,14 @@ def _sample(
     *,
     voice: str,
     rate: int,
+    provider_id: str = "edge-tts",
+    provider_config: Mapping[str, Any] | None = None,
     adapter: ProviderAdapter,
     normalizer: Callable[..., CanonicalAudioResult],
 ) -> tuple[str, str]:
-    plan, units = _build_plan_and_units(project, voice=voice, rate=rate)
+    plan, units = _build_plan_and_units(
+        project, voice=voice, rate=rate, provider_id=provider_id, provider_config=provider_config
+    )
     paths = _voice_paths(project)
     old = _read_json(paths["manifest"], "voice manifest") if paths["manifest"].is_file() else None
     manifest = _fresh_manifest_with_reuse(project, plan, units, old)
@@ -1367,11 +1408,11 @@ def _approve_full(
     timing_plan = {
         "schemaVersion": 1,
         "projectId": project.project_id,
-        "voiceoverMode": "edge-tts",
+        "voiceoverMode": project.voiceover_mode,
         "sourceSrtSha256": project.metadata["source"]["sha256"],
         "renderProfileSha256": sha256_json(project.render_profile),
         "activeTimeline": {
-            "kind": "edge-tts-audio-timeline",
+            "kind": "edge-tts-audio-timeline" if project.voiceover_mode == "edge-tts" else "audio-authoritative-timeline",
             "file": "audio/timeline.json",
             "sha256": timeline_sha,
         },
@@ -1386,7 +1427,7 @@ def _approve_full(
     validate_timing_plan_data(
         timing_plan,
         project_id=project.project_id,
-        voiceover_mode="edge-tts",
+        voiceover_mode=project.voiceover_mode,
         source_srt_sha256=project.metadata["source"]["sha256"],
         render_profile=project.render_profile,
         generation_scenes=project.plan["scenes"],
@@ -1440,12 +1481,13 @@ def _status(project: Project) -> dict[str, Any]:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="生成、批准和检查 Edge TTS 旁白")
+    parser = argparse.ArgumentParser(description="生成、批准和检查语音旁白")
     sub = parser.add_subparsers(dest="command", required=True)
     sample = sub.add_parser("sample", help="生成 canonical 样音，但不自动批准")
     sample.add_argument("--project", required=True, type=Path)
-    sample.add_argument("--voice", default="zh-CN-YunjianNeural")
-    sample.add_argument("--rate", default=0, type=int)
+    sample.add_argument("--provider", choices=("edge-tts", "minimax"))
+    sample.add_argument("--voice")
+    sample.add_argument("--rate", type=int)
     approve_sample = sub.add_parser("approve-sample", help="持久化用户已试听的 current 样音批准")
     approve_sample.add_argument("--project", required=True, type=Path)
     approve_sample.add_argument("--identity-hash", required=True)
@@ -1476,9 +1518,21 @@ def main(
             execution = load_workspace_config()
         concurrency = execution.concurrency if execution is not None else ExecutionConcurrency()
         if args.command == "sample":
+            provider_id = args.provider or project.voiceover_mode
+            if provider_id == "disabled":
+                raise VoiceoverStateError("disabled 项目不能生成旁白样音")
+            provider_config = load_voice_provider_config(provider_id=provider_id)
+            voice = args.voice or str(provider_config.get("voice", "zh-CN-YunjianNeural"))
+            rate = args.rate if args.rate is not None else provider_config.get("rate", 0)
+            if provider_id != project.voiceover_mode:
+                raise VoiceoverStateError("--provider 必须与项目 voiceoverMode 一致；请创建或升级为对应旁白模式")
             audio, identity = _sample(
-                project, voice=args.voice, rate=args.rate,
-                adapter=adapter or EdgeTtsAdapter(),
+                project, voice=voice, rate=rate, provider_id=provider_id,
+                provider_config=provider_config,
+                adapter=adapter or (_adapter_from_plan(_build_plan_and_units(
+                    project, voice=voice, rate=rate, provider_id=provider_id,
+                    provider_config=provider_config,
+                )[0]) if provider_id == "minimax" else EdgeTtsAdapter()),
                 normalizer=normalizer or normalize_and_publish,
             )
             print(f"SAMPLE_AUDIO={audio}")
@@ -1487,9 +1541,10 @@ def main(
             identity = _approve_sample(project, args.identity_hash)
             print(f"SAMPLE_APPROVED_IDENTITY={identity}")
         elif args.command == "full":
+            current_plan, _ = _load_current_plan_units(project)
             identity = _full(
                 project, retry_failed=args.retry_failed,
-                adapter=adapter or EdgeTtsAdapter(),
+                adapter=adapter or _adapter_from_plan(current_plan),
                 normalizer=normalizer or normalize_to_candidate,
                 configured_concurrency=concurrency.for_stage("voiceGeneration"),
             )

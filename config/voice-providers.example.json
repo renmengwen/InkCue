@@ -15,6 +15,23 @@
       "requestTimeoutSeconds": 60,
       "queueIntervalMs": 1800,
       "maxRetries": 2
+    },
+    "MiniMax": {
+      "protocol": "MiniMax",
+      "contractVersion": "minimax-t2a-v2-v1",
+      "voice": "male-qn-jingying",
+      "language": "zh-CN",
+      "rate": "+10%",
+      "pitch": "+0Hz",
+      "volume": "+10%",
+      "outputFormat": "audio-32khz-128kbitrate-mono-mp3",
+      "requestTimeoutSeconds": 60,
+      "queueIntervalMs": 1800,
+      "maxRetries": 2,
+      "model": "speech-2.8-hd",
+      "stream": false,
+      "emotion": "calm",
+      "textNormalization": true
     }
   }
 }

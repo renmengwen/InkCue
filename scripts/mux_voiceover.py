@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把 current、已批准的 Edge canonical WAV 封装进烧录字幕视频。"""
+"""把 current、已批准的 canonical WAV 封装进烧录字幕视频。"""
 from __future__ import annotations
 
 import argparse
@@ -114,7 +114,7 @@ def _load_delivery(project: Project) -> tuple[Path, dict[str, Any]]:
     if (
         manifest.get("schemaVersion") != 1
         or manifest.get("projectId") != project.project_id
-        or manifest.get("voiceoverMode") != "edge-tts"
+        or manifest.get("voiceoverMode") not in {"edge-tts", "minimax"}
     ):
         raise MuxStaleError("delivery manifest 项目或 mode 身份 stale")
     return path, manifest
@@ -122,8 +122,8 @@ def _load_delivery(project: Project) -> tuple[Path, dict[str, Any]]:
 
 def _assert_current_timing(project: Project, manifest: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
     active = _mapping(project.timing_plan.get("activeTimeline"), "timing plan activeTimeline")
-    if active.get("kind") != "edge-tts-audio-timeline" or active.get("file") != "audio/timeline.json":
-        raise MuxStaleError("Edge timing plan 必须绑定 audio/timeline.json")
+    if active.get("kind") not in {"edge-tts-audio-timeline", "audio-authoritative-timeline"} or active.get("file") != "audio/timeline.json":
+        raise MuxStaleError("音频 timing plan 必须绑定 audio/timeline.json")
     timeline_path = project.path("audio/timeline.json")
     if not timeline_path.is_file():
         raise MuxStaleError("current audio/timeline.json 缺失")
@@ -136,7 +136,7 @@ def _assert_current_timing(project: Project, manifest: Mapping[str, Any]) -> tup
     expected = {
         "file": "planning/timing-plan.json" if project.timing_plan_persisted else None,
         "sha256": _timing_plan_sha(project),
-        "voiceoverMode": "edge-tts",
+        "voiceoverMode": project.voiceover_mode,
         "activeTimeline": dict(active),
         "renderProfileSha256": project.timing_plan["renderProfileSha256"],
         "frameRounding": project.render_profile["frameRounding"],
@@ -336,8 +336,8 @@ def mux_project(
     force_deep: bool = False,
 ) -> dict[str, Any]:
     project = load_project(project_root)
-    if project.voiceover_mode != "edge-tts":
-        raise MuxStaleError("mux_voiceover.py 只允许 edge-tts 项目")
+    if project.voiceover_mode not in {"edge-tts", "minimax"}:
+        raise MuxStaleError("mux_voiceover.py 只允许带音频的旁白项目")
     manifest_path, manifest = _load_delivery(project)
     timeline_sha, timeline = _assert_current_timing(project, manifest)
     current_voice, canonical, full_approval = _assert_current_voice(project, timeline_sha)
@@ -452,7 +452,7 @@ def mux_project(
         style = _mapping(subtitles.get("style"), "subtitles.style")
         font = _mapping(style.get("font"), "subtitles.style.font")
         inputs, final_identity = compute_final_identity(
-            voiceover_mode="edge-tts",
+            voiceover_mode=project.voiceover_mode,
             clean_video_sha256=clean_media["sha256"],
             audio_sha256=canonical.sha256,
             timeline_sha256=selection.timeline_sha256,

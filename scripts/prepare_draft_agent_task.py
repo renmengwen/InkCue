@@ -170,8 +170,8 @@ def validate_content_input(value: Any) -> dict[str, Any]:
         raise PrepareError("text 只允许 rewritePolicy=preserve|polish")
     if mode not in {"topic", "text"}:
         raise PrepareError("inputMode 只允许 topic|text")
-    if value.get("voiceoverMode") != "edge-tts":
-        raise PrepareError("topic/text 首版只允许 voiceoverMode=edge-tts")
+    if value.get("voiceoverMode") not in {"edge-tts", "minimax"}:
+        raise PrepareError("topic/text 只允许 voiceoverMode=edge-tts 或 minimax")
     target = value.get("targetDurationSeconds")
     if isinstance(target, bool) or not isinstance(target, (int, float)) or not math.isfinite(target) or not 15 <= target <= 600:
         raise PrepareError("targetDurationSeconds 必须是 15–600 的有限数字")
@@ -196,7 +196,7 @@ def validate_content_input(value: Any) -> dict[str, Any]:
         "body": body,
         "rewritePolicy": policy,
         "targetDurationSeconds": target_ms // 1000 if target_ms % 1000 == 0 else target_ms / 1000,
-        "voiceoverMode": "edge-tts",
+        "voiceoverMode": value.get("voiceoverMode", "edge-tts"),
     }
 
 

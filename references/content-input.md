@@ -1,6 +1,6 @@
 # 主题 / 正文内容入口合同
 
-本文说明阶段 0 的 `topic | text` 首版入口、`whiteboard-content-draft-v1`、artifact-first 审阅与修订、内容与制作方案联合确认、确定性 source package、正式项目 provenance、stale/恢复与验收边界。传统 `inputMode=srt` 路径保持一次独立的模式/语义分镜确认；其 `voiceoverMode=disabled | edge-tts`、严格 SRT、人工关卡和最终交付语义不得回归。
+本文说明阶段 0 的 `topic | text` 首版入口、`whiteboard-content-draft-v1`、artifact-first 审阅与修订、内容与制作方案联合确认、确定性 source package、正式项目 provenance、stale/恢复与验收边界。传统 `inputMode=srt` 路径保持一次独立的模式/语义分镜确认；其 `voiceoverMode=disabled | edge-tts | minimax`、严格 SRT、人工关卡和最终交付语义不得回归。
 
 ## 首版能力边界
 
@@ -15,9 +15,9 @@ rewritePolicy = preserve | polish | generate
 
 | inputMode | 必要内容 | rewritePolicy | 首版 voiceoverMode |
 |---|---|---|---|
-| `srt` | 现有严格 SRT | 不适用 | `disabled | edge-tts` |
-| `topic` | 非空主题 | 仅 `generate` | 仅 `edge-tts` |
-| `text` | 非空正文 | `preserve | polish` | 仅 `edge-tts` |
+| `srt` | 现有严格 SRT | 不适用 | `disabled | edge-tts | minimax` |
+| `topic` | 非空主题 | 仅 `generate` | `edge-tts | minimax` |
+| `text` | 非空正文 | `preserve | polish` | `edge-tts | minimax` |
 
 `topic + preserve`、`topic + polish`、`text + generate` 以及非 SRT + `disabled` 均须拒绝。topic/text 首版不使用估算阅读时长作为最终权威时钟；target 只用于内容预算与 provisional SRT，获批的真实 Edge audio timeline 才接管正式时钟。
 

@@ -33,7 +33,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--voiceover-mode",
-        choices=("disabled", "edge-tts"),
+        choices=("disabled", "edge-tts", "minimax"),
         help="新项目旁白模式；省略时为 disabled，创建后按项目合同冻结",
     )
     parser.add_argument(

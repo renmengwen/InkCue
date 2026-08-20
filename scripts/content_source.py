@@ -161,8 +161,8 @@ def validate_content_draft(value: Any) -> dict[str, Any]:
         raise ContentSourceError("topic 只允许 rewritePolicy=generate")
     if input_mode == "text" and rewrite_policy not in allowed_policy["text"]:
         raise ContentSourceError("text 只允许 rewritePolicy=preserve 或 polish")
-    if value.get("voiceoverMode") != "edge-tts":
-        raise ContentSourceError("首版非 SRT 输入只允许 voiceoverMode=edge-tts")
+    if value.get("voiceoverMode") not in {"edge-tts", "minimax"}:
+        raise ContentSourceError("非 SRT 输入只允许 voiceoverMode=edge-tts 或 minimax")
 
     topic = _normalise_text(value.get("topic"), label="topic", allow_null=input_mode == "text")
     body = _normalise_text(value.get("body"), label="body", allow_null=input_mode == "topic")
@@ -243,7 +243,7 @@ def validate_content_draft(value: Any) -> dict[str, Any]:
         "body": body,
         "rewritePolicy": rewrite_policy,
         "targetDurationSeconds": _normalise_target_seconds(value.get("targetDurationSeconds")),
-        "voiceoverMode": "edge-tts",
+        "voiceoverMode": value["voiceoverMode"],
         "narrationCues": cues,
         "scenes": scenes,
     }
@@ -386,7 +386,7 @@ def build_source_package(draft: Mapping[str, Any]) -> tuple[dict[str, Any], str,
         "inputMode": normalised["inputMode"],
         "rewritePolicy": normalised["rewritePolicy"],
         "targetDurationSeconds": normalised["targetDurationSeconds"],
-        "voiceoverMode": "edge-tts",
+        "voiceoverMode": normalised["voiceoverMode"],
         "timingAlgorithmVersion": PROVISIONAL_TIMING_VERSION,
         "toolVersion": PREPARE_SOURCE_TOOL_VERSION,
         "files": {

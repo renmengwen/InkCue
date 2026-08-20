@@ -58,7 +58,7 @@ class VoiceoverCliTests(unittest.TestCase):
         cls._drive_patcher.stop()
         cls._temporary_root.cleanup()
 
-    def make_project(self, cue_count: int = 2):
+    def make_project(self, cue_count: int = 2, voiceover_mode: str = "edge-tts"):
         case = self.root / uuid.uuid4().hex[:8]
         case.mkdir()
         config = case / "workspace.json"
@@ -92,7 +92,7 @@ class VoiceoverCliTests(unittest.TestCase):
             ],
         }
         return ProjectWorkspace.from_config(config).create_project(
-            f"v-{uuid.uuid4().hex[:8]}", source, confirmed_plan=plan, voiceover_mode="edge-tts"
+            f"v-{uuid.uuid4().hex[:8]}", source, confirmed_plan=plan, voiceover_mode=voiceover_mode
         )
 
     def execution_config(self, project, *, voice_generation: int) -> WorkspaceConfig:
@@ -170,6 +170,26 @@ class VoiceoverCliTests(unittest.TestCase):
         self.assertEqual(manifest["fullApproval"]["durationDecision"], "within_threshold")
         self.assertEqual(manifest["fullApproval"]["identityHash"], full_identity)
         self.assertNotIn("reviewIdentityHash", manifest["fullApproval"])
+
+    def test_minimax_mode_uses_shared_sample_full_timeline_gate_with_fake_adapter(self) -> None:
+        project = self.make_project(voiceover_mode="minimax")
+        adapter = FakeProviderAdapter(canonical_wav_bytes(), "audio/wav")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(
+                voice_main(["sample", "--project", str(project.root), "--provider", "minimax"], adapter=adapter), 0
+            )
+        sample_identity = next(line.split("=", 1)[1] for line in output.getvalue().splitlines() if line.startswith("SAMPLE_IDENTITY="))
+        self.assertEqual(voice_main(["approve-sample", "--project", str(project.root), "--identity-hash", sample_identity]), 0)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(voice_main(["full", "--project", str(project.root)], adapter=adapter), 0)
+        full_identity = next(line.split("=", 1)[1] for line in output.getvalue().splitlines() if line.startswith("FULL_IDENTITY="))
+        self.assertEqual(voice_main(["approve-full", "--project", str(project.root), "--identity-hash", full_identity]), 0)
+        plan = json.loads(project.path("planning/voice-plan.json").read_text(encoding="utf-8"))
+        timing = json.loads(project.path("planning/timing-plan.json").read_text(encoding="utf-8"))
+        self.assertEqual(plan["mode"], "minimax")
+        self.assertEqual(timing["activeTimeline"]["kind"], "audio-authoritative-timeline")
 
     def test_retry_failed_only_requests_unfinished_segment_and_classifies_failures(self) -> None:
         project = self.make_project()

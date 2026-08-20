@@ -1,6 +1,6 @@
 ---
 name: srt-whiteboard-animation
-description: 将主题、正文或 SRT 制作成暖米黄纸张底、按叙事顺序流式落墨的白板手绘视频；支持传统 SRT 的无旁白/Edge TTS 路径，以及经一次内容与制作方案联合确认后派生严格 SRT 的 topic/text Edge TTS 路径。流程包含严格 SRT、分镜、完整旁白与真实时长确认、统一线稿、标注/区域/时序联合审阅、有界并行逐幕候选渲染与场景 bundle 联合审阅、正式字幕烧录、媒体验证和 identity 绑定的人工关卡。当用户要求“把主题/正文/SRT 做成白板手绘视频”“按文案分镜画手绘”“生成带字幕或 Edge TTS 旁白的白板动画”时触发。
+description: 将主题、正文或 SRT 制作成暖米黄纸张底、按叙事顺序流式落墨的白板手绘视频；支持传统 SRT 的无旁白/Edge TTS/MiniMax 路径，以及经一次内容与制作方案联合确认后派生严格 SRT 的 topic/text Edge TTS/MiniMax 路径。流程包含严格 SRT、分镜、完整旁白与真实时长确认、统一线稿、标注/区域/时序联合审阅、有界并行逐幕候选渲染与场景 bundle 联合审阅、正式字幕烧录、媒体验证和 identity 绑定的人工关卡。当用户要求“把主题/正文/SRT 做成白板手绘视频”“按文案分镜画手绘”“生成带字幕或 Edge TTS/MiniMax 旁白的白板动画”时触发。
 ---
 
 # SRT 白板动画（mask 编排 + stream 画法）
@@ -13,11 +13,11 @@ description: 将主题、正文或 SRT 制作成暖米黄纸张底、按叙事�
 
 | inputMode | rewritePolicy | voiceoverMode |
 |---|---|---|
-| `srt` | 不适用 | `disabled | edge-tts` |
-| `topic` | 仅 `generate` | 仅 `edge-tts` |
-| `text` | `preserve | polish` | 仅 `edge-tts` |
+| `srt` | 不适用 | `disabled | edge-tts | minimax` |
+| `topic` | 仅 `generate` | `edge-tts | minimax` |
+| `text` | `preserve | polish` | `edge-tts | minimax` |
 
-`topic + preserve/polish`、`text + generate` 均为非法组合。非 SRT 输入必须有 15–600 秒的 `targetDurationSeconds`；未提供时 Codex 可以建议 60 秒，但必须在生成草案前与其他缺失配置一次性展示并等待用户确认。用户已经明确给出的 target、rewritePolicy 或 voiceoverMode 直接沿用，不得为相同具体值重复提问。该 target 只用于内容预算与 provisional source SRT，Edge 获批后的真实 audio timeline 才是权威时钟。
+`topic + preserve/polish`、`text + generate` 均为非法组合。非 SRT 输入必须有 15–600 秒的 `targetDurationSeconds`；未提供时 Codex 可以建议 60 秒，但必须在生成草案前与其他缺失配置一次性展示并等待用户确认。用户已经明确给出的 target、rewritePolicy 或 voiceoverMode 直接沿用，不得为相同具体值重复提问。该 target 只用于内容预算与 provisional source SRT，任一音频 provider 获批后的真实 audio timeline 才是权威时钟。
 
 ## 视觉分幕、构图与标注首版合同
 
@@ -32,7 +32,7 @@ description: 将主题、正文或 SRT 制作成暖米黄纸张底、按叙事�
 正式项目必须显式选择：
 
 ```text
-voiceoverMode = disabled | edge-tts
+voiceoverMode = disabled | edge-tts | minimax
 ```
 
 无论采用哪种模式，正式 `output/final.mp4` 都必须有可见的烧录字幕：
@@ -42,7 +42,7 @@ voiceoverMode = disabled | edge-tts
 | `disabled` | 原始 SRT 全局时间轴 | `source/source.srt` | H.264 + 烧录字幕，0 音频流 |
 | `edge-tts` | 已批准的 canonical audio timeline | `audio/narration.srt` | H.264 + 烧录字幕 + AAC 旁白 |
 
-Edge 模式缺少 current narration SRT、timeline、完整旁白批准或 identity 绑定时必须失败，不能回退到 source SRT。Disabled 模式即使项目里残留 narration SRT，也只能使用 source SRT。
+音频旁白模式缺少 current narration SRT、timeline、完整旁白批准或 identity 绑定时必须失败，不能回退到 source SRT。Disabled 模式即使项目里残留 narration SRT，也只能使用 source SRT。
 
 ## 强制人工确认原则
 
@@ -54,7 +54,7 @@ Edge 模式缺少 current narration SRT、timeline、完整旁白批准或 ident
 - 完整旁白与真实时长批准：Edge `full` 只生成并技术校验 current WAV、timeline 与 narration SRT，不编码无画面的预审视频。用户必须完整试听 `audio/narration.wav`，同时查看真实时长差值；`approve-full` 绑定 current `FULL_IDENTITY`，该 identity 已覆盖 WAV/timeline/narration SRT。偏差超过 10% 时还必须显式 `accept_actual`。
 - 标注联合审阅批准：全量 annotation 技术 current 后可直接生成本地区域预览；`generate_annotation_previews.py` 调用 `annotation_review.py` 写入/验证 current review manifest，并在摘要输出 `annotationReviewIdentitySha256`。用户一次确认标注内容、区域预览、`protectedRegions` 与 reveal 时序后，`approve_annotation_review.py` 只批准该 current identity，并绑定有序 annotation/preview bundle、timing plan、render profile 与 Edge 按需音频证据。
 - 场景联合审阅批准：正式 batch 按 `sceneRender` 有界并行生成并技术检查彼此独立的单幕候选，coordinator 仍按 generation plan 顺序单写发布；全部 current scene 组成有序 review bundle 后，`scene_review.py` 输出 `sceneReviewIdentityHash`，用户一次确认全部场景或指出拒绝的 scene。`approve_scene_review.py` 只批准该 current identity，并把 `sceneReviewApproval` 写入 `manifests/render-manifest.json` 顶层；合并前必须硬校验该批准。
-- 最终成片批准：技术验证之后，用户完整看片；Edge 模式还要完整听音。`approve_final_media.py` 只批准 current final identity。
+- 最终成片批准：技术验证之后，用户完整看片；音频旁白模式还要完整听音。`approve_final_media.py` 只批准 current final identity。
 
 线稿仍是独立聊天关卡，但必须以 identity 绑定的 Markdown 文件交接：主窗口只交付 review 文件链接、identity、场景计数和异常摘要，不得把全部原图、完整提示词或逐幕长说明重新嵌入聊天。标注内容、区域预览、重叠保护与 reveal 时序合并为一次 identity 绑定的联合关卡；全部正式单幕合并为一次有序 scene review bundle 关卡。它们不能被 manifest 的技术 `validated` 状态替代。尤其是：**current scene review approval 通过后才能进入合并、字幕烧录和封装链路。** `final-video-only.mp4` 只是内部技术工件，不设独立人工确认；正常链路不得在生成 clean master 后停下询问用户。样音、完整旁白与真实时长、线稿和最终成片仍为彼此独立的关卡；`unknown_external_outcome` 后是否重新调用 provider 仍须在异常发生时取得单独授权，不能并入任何批量批准。
 
@@ -252,7 +252,7 @@ Edge TTS 不需要 API Key，但依赖外网和微软语音服务，不是离线
 
 旁白阶段不再生成字幕预审视频。本阶段的 contact sheet 才是字幕在最终线稿画面上的换行、对比度、遮挡和安全区证据。
 
-此阶段完全不需要浏览器、预览台或文件选择框。Disabled 模式在 captioned candidate 验证后，同时把相同已验证字节原子发布为 `output/final.mp4`；Edge 模式继续阶段 10。
+此阶段完全不需要浏览器、预览台或文件选择框。Disabled 模式在 captioned candidate 验证后，同时把相同已验证字节原子发布为 `output/final.mp4`；音频旁白模式继续阶段 10。
 
 ### 阶段 10：音频封装、技术验证和最终批准
 
@@ -390,7 +390,7 @@ python scripts/prepare_env.py
   --draft <已获用户确认的-content-draft.json> `
   --output-dir <D:\SRTWhiteboard\drafts\项目名>
 
-# topic/text：source evidence 必须成对传入；首版仅 edge-tts
+# topic/text：source evidence 必须成对传入；可选 edge-tts 或 minimax
 <ENV_PY> scripts/create_project.py --name <项目名> `
   --srt <draft-dir\source.srt> `
   --plan <draft-dir\generation-plan.json> `
@@ -436,11 +436,16 @@ python scripts/prepare_env.py
 
 两种策略在全量技术 PASS 后都必须输出 `lineArtReview.reviewFile`、`lineArtReview.lineArtReviewIdentitySha256` 与 `lineArtReview.manifestFile`。主窗口必须把 review 文件作为线稿交接入口，只发送可点击文件链接、identity、计数和异常摘要，不得把其中全部图片或完整内容重新粘贴进聊天。`user_first` 固定输出 `semanticReview.status=skipped_by_user`；`agent_first` 返回的 `visualReview.spawnPackage.spawnAgentCall` 非空时立即调用宿主真实 `spawn_agent`，child 通过 `findings.json/result.json` 文件交接完整审阅意见。`preparedOnly:true`、`hostSpawnExecuted:false` 与 `peakChildAgents:0` 表示尚未派发，不能继续阅读 Python 源码代替宿主调用，也不能把 prepare 写成 dispatch PASS。旧 `--prepare-visual-review` 仍作为 `agent_first` 兼容入口；两条策略都不得写线稿批准。
 
-Edge 样音、完整旁白、状态与技术验证：
+Edge / MiniMax 样音、完整旁白、状态与技术验证：
 
 ```powershell
 <ENV_PY> scripts/generate_voiceover.py sample --project <项目根目录> `
   --voice zh-CN-YunjianNeural --rate 0
+
+# MiniMax 项目从 config/voice-providers.local.json 读取 voice/rate/model；
+# 也可以显式指定 provider 和 voice 覆盖配置中的对应字段：
+<ENV_PY> scripts/generate_voiceover.py sample --project <项目根目录> `
+  --provider minimax --voice male-qn-jingying --rate 10
 
 <ENV_PY> scripts/generate_voiceover.py approve-sample --project <项目根目录> `
   --identity-hash <刚完整试听的 SAMPLE_IDENTITY>
@@ -545,7 +550,7 @@ annotation prepare 的 `--runtime-child-slots`、`--coordinator-resource-budget`
 
 <ENV_PY> scripts/burn_subtitles.py --project <项目根目录>
 
-# 仅 Edge 模式：
+# 仅音频旁白模式（Edge 或 MiniMax）：
 <ENV_PY> scripts/mux_voiceover.py --project <项目根目录>
 
 <ENV_PY> scripts/validate_final_media.py --project <项目根目录>
@@ -555,7 +560,7 @@ annotation prepare 的 `--runtime-child-slots`、`--coordinator-resource-budget`
   --identity-hash <刚完整看片听音的 FINAL_IDENTITY>
 ```
 
-current scene review approval 通过后，连续执行 `merge_scenes.py → burn_subtitles.py →（仅 Edge）mux_voiceover.py → validate_final_media.py`。`merge_scenes.py` 在任何 concat/candidate 写入前硬校验批准所绑定的有序 scene 集合与 current render identities；缺失或 stale 时返回 5。clean master 只接受技术验证，不向用户索要独立确认；只有链路失败时才停下修复。链路成功后直接提供 `output/final.mp4` 供最终完整看片，Edge 模式同时完整听音，再等待 final identity 的明确确认。
+current scene review approval 通过后，连续执行 `merge_scenes.py → burn_subtitles.py →（音频旁白模式）mux_voiceover.py → validate_final_media.py`。`merge_scenes.py` 在任何 concat/candidate 写入前硬校验批准所绑定的有序 scene 集合与 current render identities；缺失或 stale 时返回 5。clean master 只接受技术验证，不向用户索要独立确认；只有链路失败时才停下修复。链路成功后直接提供 `output/final.mp4` 供最终完整看片，音频旁白模式同时完整听音，再等待 final identity 的明确确认。
 
 字幕 preset 只读取 workspace JSON 的 `execution.videoEncoding.subtitlePreset`，CLI 不接受 `--preset` 临时覆盖。默认 `medium`；`fast` 与 `veryfast` 只改变正式编码 preset，并随 `subtitle-burn-v2` 进入 manifest、technical receipt、subtitle/captioned/final identity。硬件编码器自动探测与 NVENC/QSV/AMF 均未实施。
 

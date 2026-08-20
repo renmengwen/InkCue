@@ -1,6 +1,6 @@
-# Edge TTS 旁白合同
+# 语音旁白合同
 
-本文说明 `voiceoverMode=edge-tts` 首版的 provider、配置、样音、完整旁白、canonical WAV、真实时间轴、恢复/stale 和外部验收边界。Disabled 模式不安装、不调用也不要求 Edge TTS；其正式交付仍需按 [字幕合同](subtitles.md) 烧录 source SRT。topic/text 首版只允许 Edge；其内容确认和 source package 合同见 [内容入口合同](content-input.md)。
+本文说明 `voiceoverMode=edge-tts | minimax` 的 provider、配置、样音、完整旁白、canonical WAV、真实时间轴、恢复/stale 和外部验收边界。Disabled 模式不安装、不调用语音 provider；其正式交付仍需按 [字幕合同](subtitles.md) 烧录 source SRT。topic/text 可选择 Edge 或 MiniMax；其内容确认和 source package 合同见 [内容入口合同](content-input.md)。
 
 ## 目录
 
@@ -20,7 +20,7 @@
 
 ## 能力边界
 
-首版只支持 Python `edge-tts` provider：
+当前支持两个语音 provider：
 
 - provider/protocol：`edge-tts`。
 - provider contract：`edge-tts-python-7.2.8-v1`。
@@ -30,9 +30,19 @@
 - provider 临时格式：`audio-24khz-48kbitrate-mono-mp3`。
 - 正式 canonical 格式：WAV `pcm_s16le / mono / 24000Hz`。
 
+MiniMax T2A V2：
+
+- provider/protocol：`minimax` / `MiniMax`；contract：`minimax-t2a-v2-v1`。
+- endpoint：`https://api.minimaxi.com/v1/t2a_v2`，使用 `Authorization: Bearer <apiKey>`。
+- 配置中的 `+10%` rate、`+10%` volume、`+0Hz` pitch 分别映射为 MiniMax `speed=1.1`、`vol=1.1`、`pitch=0`；speed 限制为 `0.5–2`，pitch 限制为 `-12–12`。
+- 请求使用 `speech-2.8-hd`、`output_format=hex`、32 kHz mono MP3；返回的 hex 必须先解码，再经过 FFmpeg/ffprobe 规范化为本合同的 24 kHz mono canonical WAV。
+- API Key 只能放在未提交的 `config/voice-providers.local.json`，不写入 plan、manifest、日志或异常；`trace_id` 只保存不可逆摘要。
+
+MiniMax adapter 仅使用 Python 标准库，不需要安装额外 provider 包。可重试范围与 Edge 相同：DNS/连接、timeout、429、502、503、504；401/403、参数/音色错误、协议或媒体格式错误不自动重试，也不会自动切换 Edge。
+
 Edge TTS 不需要 API Key 或 Base URL，但不是离线模型。它依赖外网和微软语音服务，可能受服务规则、可用性、限流、音色和返回格式变化影响。不得把“无 Key”写成“无需网络”，也不得在失败后自动改 voice/rate、切换 provider 或降级到其他 TTS。
 
-Skill 不调用、不导入、不读取 Yingshu 的 API、数据库、模型配置或 `node_modules`，也不接触任何外部凭据。首版不支持第二 provider、多角色、情绪/SSML、克隆音色、背景音乐、浏览器试听 UI 或自动 voice 推荐。
+Skill 不调用、不导入、不读取 Yingshu 的 API、数据库、模型配置或 `node_modules`，也不接触任何外部凭据。当前不支持多角色、SSML、克隆音色、背景音乐、浏览器试听 UI 或自动 voice 推荐。
 
 ## 环境与配置
 
@@ -48,7 +58,7 @@ python scripts/prepare_env.py
 
 `config/voice-providers.example.json` 是无秘密的首版 provider 合同示例，记录 package/contract、voice、language、规范化 rate/pitch/volume、输出格式及请求策略字段。它不是凭据文件，也不允许加入 key、Cookie、Token 或临时 URL。
 
-当前样音 CLI 只暴露 `--voice` 与整数百分点 `--rate`；其余首版字段由实现合同冻结。`--rate 0` 规范化为 `+0%`，`10` 为 `+10%`，`-10` 为 `-10%`。持久化 identity 使用规范化字符串，不依赖调用点猜单位。全局示例配置不能自动覆盖项目中已经生成或批准的 `planning/voice-plan.json`。
+当前样音 CLI 支持 `--provider {edge-tts,minimax}`、`--voice` 与整数百分点 `--rate`；未指定 provider 时使用项目的 `voiceoverMode`。MiniMax 未指定 voice/rate 时从 local provider 配置读取。`--rate 0` 规范化为 `+0%`，`10` 为 `+10%`，`-10` 为 `-10%`。持久化 identity 使用规范化字符串，不依赖调用点猜单位。全局示例配置不能自动覆盖项目中已经生成或批准的 `planning/voice-plan.json`。
 
 ## 项目文件
 
@@ -192,7 +202,7 @@ FULL_IDENTITY=<64位 sha256>
 - 每幕记录全局 `startMs/endMs` 及累计计算的 `startFrame/endFrameExclusive/frameCount`。
 - 包含 source SRT、voice plan audit、audio 与 narration SRT 的 current binding。
 
-`audio/narration.srt` 的文本和时间从 canonical units/timeline 派生，从 0 连续覆盖真实音频；它不复制 source SRT 的旧时间戳，也不能由字幕阶段手工改写。Edge 正式字幕唯一使用该文件。
+`audio/narration.srt` 的文本和时间从 canonical units/timeline 派生，从 0 连续覆盖真实音频；它不复制 source SRT 的旧时间戳，也不能由字幕阶段手工改写。所有音频旁白模式唯一使用该文件。
 
 只读技术验证：
 
@@ -261,7 +271,7 @@ Edge annotation 必须绑定 current audio SHA、timeline SHA、timing plan SHA�
 <ENV_PY> scripts/validate_final_media.py --project <项目根目录>
 ```
 
-mux 只允许 Edge 模式，要求 current full approval、captioned video、WAV、timeline、字幕和 delivery identity 全部有效。它以 `-c:v copy` 保持已经烧录字幕的视频，以 `AAC 192k / 24000Hz / mono` 编码旁白，原子发布 `output/final.mp4`，输出 `FINAL_IDENTITY`。
+mux 允许 Edge 或 MiniMax 模式，要求 current full approval、captioned video、WAV、timeline、字幕和 delivery identity 全部有效。它以 `-c:v copy` 保持已经烧录字幕的视频，以 `AAC 192k / 24000Hz / mono` 编码旁白，原子发布 `output/final.mp4`，输出 `FINAL_IDENTITY`。
 
 完整旁白批准和技术验证都不等于最终人工批准。用户必须完整看片听音，确认最终真实画面上的字幕、画面、音频和尾部均无截断后，才允许执行：
 

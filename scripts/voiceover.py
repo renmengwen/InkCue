@@ -33,6 +33,7 @@ VOICE_PLAN_SCHEMA_VERSION = 1
 VOICE_MANIFEST_SCHEMA_VERSION = 1
 SEGMENTATION_CONTRACT_VERSION = "speech-unit-v1"
 DEFAULT_PROVIDER_CONTRACT_VERSION = "edge-tts-python-7.2.8-v1"
+SUPPORTED_AUDIO_PROVIDERS = {"edge-tts", "minimax"}
 DEFAULT_OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3"
 DEFAULT_SEGMENTATION = {
     "contractVersion": SEGMENTATION_CONTRACT_VERSION,
@@ -417,6 +418,7 @@ def _unit_from_fragments(
                 "language": synthesis["language"],
                 "segmentationContractVersion": segmentation["contractVersion"],
                 "providerContractVersion": synthesis["providerContractVersion"],
+                "providerOptions": synthesis.get("providerOptions", {}),
             }
         )
     return unit
@@ -650,6 +652,7 @@ def build_voice_plan(
     provider_id: str = "edge-tts",
     protocol: str = "edge-tts",
     provider_contract_version: str = DEFAULT_PROVIDER_CONTRACT_VERSION,
+    provider_options: Mapping[str, Any] | None = None,
     source_file: str = "source/source.srt",
     segmentation: Mapping[str, Any] | None = None,
     duration_review_threshold_ratio: float = 0.10,
@@ -658,8 +661,10 @@ def build_voice_plan(
         raise VoiceoverValidationError("projectId 不能为空")
     if not all(isinstance(value, str) and value for value in (voice, language, output_format, provider_id, protocol, provider_contract_version)):
         raise VoiceoverValidationError("provider、voice、language、output format 不能为空")
-    if protocol != "edge-tts" or provider_id != "edge-tts":
-        raise VoiceoverValidationError("首版只支持 edge-tts provider/protocol")
+    provider_id = provider_id.lower() if provider_id.lower() == "minimax" else provider_id
+    expected_protocol = "MiniMax" if provider_id == "minimax" else "edge-tts"
+    if provider_id not in SUPPORTED_AUDIO_PROVIDERS or protocol != expected_protocol:
+        raise VoiceoverValidationError("provider/protocol 必须是 edge-tts/edge-tts 或 minimax/MiniMax")
     if isinstance(duration_review_threshold_ratio, bool) or not isinstance(duration_review_threshold_ratio, (int, float)) or duration_review_threshold_ratio != 0.10:
         raise VoiceoverValidationError("首版 durationReviewThresholdRatio 固定为 0.10")
     source_sha = _require_sha256(source_srt_sha256, label="source.sha256")
@@ -667,11 +672,12 @@ def build_voice_plan(
     plan = {
         "schemaVersion": VOICE_PLAN_SCHEMA_VERSION,
         "projectId": project_id,
-        "mode": "edge-tts",
+        "mode": provider_id,
         "provider": {
             "id": provider_id,
             "protocol": protocol,
             "contractVersion": provider_contract_version,
+            "options": copy.deepcopy(dict(provider_options or {})),
         },
         "selection": {
             "voice": voice,
@@ -704,18 +710,24 @@ def validate_voice_plan(value: Mapping[str, Any]) -> dict[str, Any]:
         raise VoiceoverValidationError("voice plan schemaVersion 不受支持")
     if not isinstance(plan.get("projectId"), str) or not plan["projectId"]:
         raise VoiceoverValidationError("voice plan projectId 不能为空")
-    if plan.get("mode") != "edge-tts":
-        raise VoiceoverValidationError("voice plan mode 必须为 edge-tts")
+    if plan.get("mode") not in SUPPORTED_AUDIO_PROVIDERS:
+        raise VoiceoverValidationError("voice plan mode 必须是 edge-tts 或 minimax")
     provider = plan.get("provider")
     selection = plan.get("selection")
     source = plan.get("source")
     timing = plan.get("timingPolicy")
     if not all(isinstance(item, Mapping) for item in (provider, selection, source, timing)):
         raise VoiceoverValidationError("voice plan 缺少 provider/selection/source/timingPolicy")
-    if provider.get("id") != "edge-tts" or provider.get("protocol") != "edge-tts":
-        raise VoiceoverValidationError("首版 provider/protocol 必须为 edge-tts")
+    provider_id = provider.get("id")
+    expected_protocol = "MiniMax" if provider_id == "minimax" else "edge-tts"
+    if provider_id not in SUPPORTED_AUDIO_PROVIDERS or provider.get("protocol") != expected_protocol:
+        raise VoiceoverValidationError("provider/protocol 与支持的 provider 不匹配")
+    if plan.get("mode") != provider_id:
+        raise VoiceoverValidationError("voice plan mode 必须与 provider.id 一致")
     if not isinstance(provider.get("contractVersion"), str) or not provider["contractVersion"]:
         raise VoiceoverValidationError("provider.contractVersion 不能为空")
+    if not isinstance(provider.get("options", {}), Mapping):
+        raise VoiceoverValidationError("provider.options 必须是对象")
     for field in ("voice", "language", "outputFormat"):
         if not isinstance(selection.get(field), str) or not selection[field]:
             raise VoiceoverValidationError(f"selection.{field} 不能为空")
@@ -772,6 +784,7 @@ def bind_synthesis_identities(
                 "language": settings["language"],
                 "segmentationContractVersion": contract["contractVersion"],
                 "providerContractVersion": settings["providerContractVersion"],
+                "providerOptions": plan["provider"].get("options", {}),
             }
         )
         bound.append(unit)
