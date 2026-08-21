@@ -468,136 +468,45 @@ class AgentTaskContractTests(unittest.TestCase):
                 expected_current_bindings=changed_bindings,
             )
 
-    def test_effective_concurrency_converts_child_slots_only_once(self) -> None:
+    def test_prepared_task_descriptor_contains_only_frozen_task_contract(self) -> None:
         task = self.validate_task()
-        decision = atc.decide_agent_dispatch(
+        descriptor = atc.build_prepared_task_descriptor(
             task,
-            configured=3,
-            ready_tasks=8,
-            runtime_child_slots=2,
-            resource_budget=4,
-            runtime_role_capabilities=self.task_data["requiredCapabilities"],
-            coordinator_capabilities=self.task_data["requiredCapabilities"],
+            result_writer="coordinator",
         )
-        self.assertTrue(decision.dispatch_allowed)
-        self.assertEqual(decision.effective_agent_concurrency, 2)
-        self.assertEqual(decision.mode, "dispatch")
-
-    def test_missing_runtime_capability_falls_back_and_missing_view_is_blocked(self) -> None:
-        task = self.validate_task()
-        fallback = atc.decide_agent_dispatch(
-            task,
-            configured=3,
-            ready_tasks=8,
-            runtime_child_slots=2,
-            resource_budget=2,
-            runtime_role_capabilities=[],
-            coordinator_capabilities=self.task_data["requiredCapabilities"],
-        )
-        self.assertFalse(fallback.dispatch_allowed)
-        self.assertEqual(fallback.effective_agent_concurrency, 0)
-        self.assertEqual(fallback.mode, "fallback")
-
-        blocked = atc.decide_agent_dispatch(
-            task,
-            configured=1,
-            ready_tasks=1,
-            runtime_child_slots=0,
-            resource_budget=1,
-            runtime_role_capabilities=[],
-            coordinator_capabilities=["readFiles", "writeCandidateJson"],
-        )
-        self.assertEqual(blocked.mode, "blocked")
-        self.assertIn("viewImage", blocked.reason)
-
-    def test_host_collaboration_dispatch_is_audited(self) -> None:
-        task = self.validate_task()
-        decision = atc.decide_agent_dispatch(
-            task,
-            configured=3,
-            ready_tasks=8,
-            runtime_child_slots=2,
-            resource_budget=4,
-            runtime_role_capabilities=self.task_data["requiredCapabilities"],
-            coordinator_capabilities=self.task_data["requiredCapabilities"],
-        )
-        self.assertTrue(decision.dispatch_allowed)
-        self.assertEqual(decision.effective_agent_concurrency, 2)
-        audit = atc.build_agent_batch_audit(
-            stage="annotationDrafting",
-            configured=3,
-            task_count=8,
-            decision=decision,
-            peak_child_agents=2,
-            task_agents=[
-                {
-                    "taskId": "ann-scene-01",
-                    "agentId": "/root/integration_forward_test/gate34_phase0_a",
-                    "status": "completed",
-                },
-                {
-                    "taskId": "ann-scene-02",
-                    "agentId": "agent/child-02",
-                    "status": "running",
-                },
-            ],
-        )
-        self.assertEqual(audit["mode"], "host_collaboration_dispatch")
-        self.assertEqual(audit["adapter"], "codex_collaboration")
-        self.assertEqual(audit["peakChildAgents"], 2)
-        self.assertEqual(len(audit["taskAgents"]), 2)
         self.assertEqual(
-            audit["taskAgents"][0]["agentId"],
-            "/root/integration_forward_test/gate34_phase0_a",
+            descriptor["contractVersion"],
+            atc.PREPARED_TASK_CONTRACT_VERSION,
+        )
+        self.assertTrue(descriptor["preparedOnly"])
+        self.assertEqual(descriptor["taskId"], task.data["taskId"])
+        self.assertEqual(descriptor["taskKind"], task.data["taskKind"])
+        self.assertEqual(descriptor["taskSha256"], task.task_sha256)
+        self.assertEqual(
+            descriptor["roleContractSha256"],
+            task.data["roleContractSha256"],
+        )
+        self.assertEqual(descriptor["resultWriter"], "coordinator")
+        self.assertEqual(descriptor["allowedOutputs"], task.data["allowedOutputs"])
+        self.assertEqual(
+            descriptor["requiredCapabilities"],
+            task.data["requiredCapabilities"],
+        )
+        self.assertEqual(
+            Path(descriptor["allowedAttemptDir"]),
+            self.context.task_dir.resolve(),
         )
 
-    def test_runtime_agent_id_allows_only_bounded_collaboration_namespaces(self) -> None:
-        for accepted in (
-            "/root",
-            "/root/integration_forward_test/gate34_phase0_a",
-            "agent/child-01",
-            "019f-agent-id",
+        serialized = json.dumps(descriptor, ensure_ascii=False)
+        for forbidden in (
+            "spawnAgentCall",
+            "spawnRequest",
+            "dispatchAllowed",
+            "runtimeChildSlots",
+            "coordinatorFallback",
+            "agentId",
         ):
-            with self.subTest(accepted=accepted):
-                self.assertEqual(atc._require_runtime_id(accepted, "agentId"), accepted)
-
-        rejected = (
-            "/tmp/child-agent",
-            "C:/temp/child-agent",
-            r"C:\temp\child-agent",
-            "/root/../child-agent",
-            "/root//child-agent",
-            "/root/secret/child-agent",
-            "/root/token",
-            "agent\nchild",
-            "a" * 257,
-            "",
-        )
-        for value in rejected:
-            with self.subTest(rejected=value):
-                with self.assertRaises(atc.AgentContractError):
-                    atc._require_runtime_id(value, "agentId")
-
-    def test_zero_runtime_capacity_audit_uses_fallback(self) -> None:
-        task = self.validate_task()
-        decision = atc.decide_agent_dispatch(
-            task,
-            configured=3,
-            ready_tasks=8,
-            runtime_child_slots=0,
-            resource_budget=4,
-            runtime_role_capabilities=self.task_data["requiredCapabilities"],
-            coordinator_capabilities=self.task_data["requiredCapabilities"],
-        )
-        audit = atc.build_agent_batch_audit(
-            stage="annotationDrafting",
-            configured=3,
-            task_count=8,
-            decision=decision,
-        )
-        self.assertFalse(audit["dispatchAllowed"])
-        self.assertEqual(audit["effectiveAgentConcurrency"], 0)
-        self.assertEqual(audit["peakChildAgents"], 0)
+            self.assertNotIn(forbidden, serialized)
 
     def test_prompt_contains_only_frozen_locator_contract(self) -> None:
         task = self.validate_task()

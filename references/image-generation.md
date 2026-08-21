@@ -247,7 +247,7 @@ coordinator 面向用户只能交付可点击 review 文件链接、完整 ident
 
 `user_first` 不创建或派发 visualReview，在机器摘要记录 `reviewPolicy=user_first`、`semanticReview.status=skipped_by_user`、`approvalWritten=false` 和 `userConfirmationRequired=true`，随后直接交付 current 线稿 review 文件。`agent_first` 通过现有 `whiteboard-agent-task-v1` 合同创建并重验 `visualReview` task：task 冻结 generation plan、generation manifest、全部 current PNG/SHA、role contract 与 current bindings；只允许写 attempt 内 `findings.json/result.json`，`formalWritesAllowed=false`、`approvalWritesAllowed=false`。旧 `--prepare-visual-review` 保留为 `agent_first` 兼容入口。
 
-命令返回 `visualReview.spawnPackage`，其中 `spawnAgentCall` 已包含宿主真实 `spawn_agent` 所需的短 task name、`fork_turns:none` 和最小冻结 prompt。`preparedOnly:true`、`hostSpawnExecuted:false`、`peakChildAgents:0` 明确表示 Python 只准备了 attempt，没有创建 child、没有伪造 agentId。coordinator 收到该包后应立即调用宿主协作工具，不得再阅读 Python 源码重新研究派发方式；真实 agent/task 标识只能在宿主派发后补入审计。child 或 fallback coordinator 都必须实际具备 `viewImage`，否则报告 `BLOCKED`。
+命令返回 `visualReview.preparedTask`，只包含 task/role 的定位路径、SHA、允许 attempt、required capabilities 与结果位置；不包含宿主调用参数、child slots、fallback 判断或 agentId。coordinator 收到 descriptor 后直接按当前真实宿主状态调用协作工具；真实 effective/peak 与 agent/task 映射只能在实际派发后记录。child 或 fallback coordinator 都必须实际具备 `viewImage`，否则报告 `BLOCKED`。
 
 visualReview findings 只用于提示跨幕人物、配色、纸张、构图漂移和建议重点重生成的 scene；它不修改图片、不调用 provider、不写 generation manifest、不重试生图，也绝不写线稿批准。即使 result 为 completed，仍须等待用户逐图明确确认。
 

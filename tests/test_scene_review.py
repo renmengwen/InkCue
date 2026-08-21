@@ -267,9 +267,9 @@ class SceneReviewTests(unittest.TestCase):
             )
         self.assertEqual(result["reviewPolicy"], "user_first")
         self.assertEqual(result["semanticReview"]["status"], "skipped_by_user")
-        self.assertIsNone(result["semanticReview"]["spawnPackage"])
+        self.assertIsNone(result["semanticReview"]["preparedTask"])
 
-    def test_agent_first_prepares_one_scene_bundle_spawn_package(self) -> None:
+    def test_agent_first_prepares_one_host_neutral_scene_bundle_task(self) -> None:
         workspace = self._workspace()
         workspace.config.root = self.root.parent
         workspace.config.for_role.return_value = 1
@@ -281,8 +281,9 @@ class SceneReviewTests(unittest.TestCase):
             )
         self.assertEqual(result["reviewPolicy"], "agent_first")
         review = result["semanticReview"]
-        self.assertEqual(review["status"], "ready_for_host_spawn")
-        package = review["spawnPackage"]
+        self.assertEqual(review["status"], "ready_for_coordinator_dispatch")
+        self.assertEqual(review["preparationMode"], "artifact_only")
+        package = review["preparedTask"]
         self.assertIsNotNone(package)
         self.assertEqual(package["taskKind"], "visualReview")
         self.assertTrue(package["preparedOnly"])
@@ -292,6 +293,7 @@ class SceneReviewTests(unittest.TestCase):
             [item["file"] for item in task["inputs"] if item["file"].endswith(".mp4")],
             ["scenes/scene-01-whiteboard.mp4", "scenes/scene-02-whiteboard.mp4"],
         )
+        self.assertNotIn("spawnAgentCall", json.dumps(review, ensure_ascii=False))
 
 
 if __name__ == "__main__":

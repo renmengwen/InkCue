@@ -127,7 +127,7 @@ class VisualReviewPrepareCliTests(unittest.TestCase):
         self.assertEqual(resolved.parent, TEST_ROOT.resolve())
         shutil.rmtree(resolved)
 
-    def test_cli_emits_frozen_spawn_package_without_spawning_or_approval(self) -> None:
+    def test_cli_emits_frozen_host_neutral_task_without_spawning_or_approval(self) -> None:
         workspace = mock.Mock()
         workspace.config = SimpleNamespace(
             root=self.project_root.parent,
@@ -151,21 +151,16 @@ class VisualReviewPrepareCliTests(unittest.TestCase):
         summary = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0, summary)
         review = summary["visualReview"]
-        self.assertEqual(review["mode"], "host_collaboration_dispatch")
-        self.assertEqual(review["status"], "ready_for_host_spawn")
-        self.assertTrue(review["dispatchAllowed"])
+        self.assertEqual(review["preparationMode"], "artifact_only")
+        self.assertEqual(review["status"], "ready_for_coordinator_dispatch")
         self.assertTrue(review["preparedOnly"])
-        self.assertFalse(review["hostSpawnExecuted"])
-        self.assertEqual(review["peakChildAgents"], 0)
-        self.assertEqual(review["taskAgents"], [])
 
-        package = review["spawnPackage"]
+        package = review["preparedTask"]
         self.assertEqual(
             package["contractVersion"],
-            "whiteboard-host-spawn-package-v1",
+            "whiteboard-prepared-agent-task-v1",
         )
         self.assertTrue(package["preparedOnly"])
-        self.assertFalse(package["hostSpawnExecuted"])
         for key in (
             "taskJsonPath",
             "roleContractPath",
@@ -178,11 +173,8 @@ class VisualReviewPrepareCliTests(unittest.TestCase):
             package["roleContractPath"],
             str(Path(package["allowedAttemptDir"]) / "role-contract.md"),
         )
-        spawn_call = package["spawnAgentCall"]
-        self.assertEqual(spawn_call["fork_turns"], "none")
-        self.assertIn(f"TASK_SHA256={package['taskSha256']}", spawn_call["message"])
-        self.assertIn(package["taskJsonPath"], spawn_call["message"])
-        self.assertIn(package["roleContractPath"], spawn_call["message"])
+        for forbidden in ("spawnAgentCall", "dispatchAllowed", "hostSpawnExecuted"):
+            self.assertNotIn(forbidden, json.dumps(review, ensure_ascii=False))
 
         attempt_dir = Path(package["allowedAttemptDir"])
         self.assertEqual(

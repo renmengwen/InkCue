@@ -1426,6 +1426,7 @@ def validate_current_voiceover(
         {
             "fullIdentityHash": expected_full,
             "fullApproved": bool(manifest["fullApproval"]["approved"]),
+            "reviewPolicy": manifest["fullApproval"].get("reviewPolicy"),
             "durationReview": copy.deepcopy(manifest.get("durationReview")),
             "timelineSha256": manifest["timeline"]["sha256"],
             "audioSha256": composite.sha256,
@@ -1441,6 +1442,7 @@ def _approve_full(
     project: Project,
     identity_hash: str,
     duration_decision: str | None,
+    review_policy: str,
 ) -> str:
     current = validate_current_voiceover(project, require_full=True)
     if identity_hash != current["fullIdentityHash"]:
@@ -1496,6 +1498,7 @@ def _approve_full(
         "approved": True,
         "identityHash": identity_hash,
         "durationDecision": recorded_decision,
+        "reviewPolicy": review_policy,
         "approvedAt": _now(),
     }
     # Prepare both candidates first. The timing plan is published first and the
@@ -1535,6 +1538,7 @@ def _status(project: Project) -> dict[str, Any]:
         "identityHash": manifest.get("fullIdentityHash"),
         "approved": manifest.get("fullApproval", {}).get("approved", False),
         "durationDecision": manifest.get("fullApproval", {}).get("durationDecision"),
+        "reviewPolicy": manifest.get("fullApproval", {}).get("reviewPolicy"),
     }
     return payload
 
@@ -1556,6 +1560,12 @@ def _parser() -> argparse.ArgumentParser:
     approve_full.add_argument("--project", required=True, type=Path)
     approve_full.add_argument("--identity-hash", required=True)
     approve_full.add_argument("--duration-decision", choices=("accept_actual",))
+    approve_full.add_argument(
+        "--review-policy",
+        choices=("user_first", "agent_first"),
+        required=True,
+        help="冻结后续图片、annotation 和 scene bundle 的检查顺序",
+    )
     status = sub.add_parser("status", help="只读输出旁白状态")
     status.add_argument("--project", required=True, type=Path)
     return parser
@@ -1616,8 +1626,10 @@ def main(
                 project,
                 args.identity_hash,
                 args.duration_decision,
+                args.review_policy,
             )
             print(f"FULL_APPROVED_IDENTITY={identity}")
+            print(f"REVIEW_POLICY={args.review_policy}")
             print(f"TIMING_PLAN={project.timing_plan_path}")
         else:
             print(json.dumps(_status(project), ensure_ascii=False, sort_keys=True))

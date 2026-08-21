@@ -29,9 +29,7 @@ try:
         TASK_CONTRACT_VERSION,
         TrustedTaskContext,
         ValidatedAgentTask,
-        build_agent_batch_audit,
-        build_agent_prompt,
-        decide_agent_dispatch,
+        build_prepared_task_descriptor,
         sha256_file as agent_sha256_file,
         validate_agent_task,
     )
@@ -43,6 +41,7 @@ try:
         WorkspaceError,
         load_project,
         load_workspace_config,
+        resolve_project_review_policy,
         sha256_file,
         sha256_json,
         write_json_atomic,
@@ -74,9 +73,7 @@ except ImportError:  # pragma: no cover - direct script execution
         TASK_CONTRACT_VERSION,
         TrustedTaskContext,
         ValidatedAgentTask,
-        build_agent_batch_audit,
-        build_agent_prompt,
-        decide_agent_dispatch,
+        build_prepared_task_descriptor,
         sha256_file as agent_sha256_file,
         validate_agent_task,
     )
@@ -88,6 +85,7 @@ except ImportError:  # pragma: no cover - direct script execution
         WorkspaceError,
         load_project,
         load_workspace_config,
+        resolve_project_review_policy,
         sha256_file,
         sha256_json,
         write_json_atomic,
@@ -113,7 +111,6 @@ PREVIEW_BATCH_CONTRACT = "whiteboard-annotation-preview-batch-v1"
 PREVIEW_VALIDATOR_CONTRACT = "whiteboard-annotation-preview-png-validator-v1"
 EXPECTED_SIZE = (1920, 1080)
 REVIEW_POLICIES = frozenset({"user_first", "agent_first"})
-HOST_SPAWN_PACKAGE_VERSION = "whiteboard-host-spawn-package-v1"
 ANNOTATION_VISUAL_REVIEW_ROLE_CONTRACT = """# annotation preview visualReview frozen role contract
 
 - 只读 task.json 冻结的 generation/timing plan、current source PNG、annotation JSON、
@@ -167,8 +164,7 @@ def _annotation_semantic_review_skipped() -> dict[str, Any]:
         "scope": "annotation_preview_bundle",
         "status": "skipped_by_user",
         "preparedOnly": False,
-        "hostSpawnExecuted": False,
-        "spawnPackage": None,
+        "preparedTask": None,
         "findingsAreAdvisory": True,
         "approvalWritten": False,
     }
@@ -208,56 +204,6 @@ def _annotation_review_input_paths(
         )
     paths.append(project.path("previews/annotation-preview-contact-sheet.png"))
     return paths
-
-
-def _build_annotation_visual_review_spawn_package(
-    task: ValidatedAgentTask,
-    audit: Mapping[str, Any],
-) -> dict[str, Any] | None:
-    if not audit.get("dispatchAllowed"):
-        return None
-    role_contract = (task.context.task_dir / "role-contract.md").resolve()
-    task_json = task.context.task_json.resolve()
-    attempt_dir = task.context.task_dir.resolve()
-    result_json = task.context.result_json.resolve()
-    prompt = build_agent_prompt(
-        task_json=task_json,
-        role_contract=role_contract,
-        task_kind=str(task.data["taskKind"]),
-        task_sha256=task.task_sha256,
-        role_contract_sha256=str(task.data["roleContractSha256"]),
-    )
-    run_suffix = re.sub(r"[^a-z0-9_]", "_", task.context.run_id.lower())
-    task_name = f"annotation_review_{run_suffix}"[:64].rstrip("_")
-    return {
-        "contractVersion": HOST_SPAWN_PACKAGE_VERSION,
-        "preparedOnly": True,
-        "hostSpawnRequired": True,
-        "hostSpawnExecuted": False,
-        "taskId": task.data["taskId"],
-        "taskKind": task.data["taskKind"],
-        "taskJsonPath": str(task_json),
-        "taskSha256": task.task_sha256,
-        "roleContractPath": str(role_contract),
-        "roleContractSha256": task.data["roleContractSha256"],
-        "allowedAttemptDir": str(attempt_dir),
-        "resultJsonPath": str(result_json),
-        "requiredCapabilities": list(task.data["requiredCapabilities"]),
-        "spawnAgentCall": {
-            "task_name": task_name,
-            "fork_turns": "none",
-            "message": prompt,
-        },
-        "completionContract": {
-            "resultJsonPath": str(result_json),
-            "returnFields": [
-                "TASK_STATUS",
-                "RESULT_JSON",
-                "VALIDATOR_STATUS",
-                "SUMMARY",
-            ],
-        },
-    }
 
 
 def prepare_annotation_visual_review_dispatch(
@@ -316,46 +262,21 @@ def prepare_annotation_visual_review_dispatch(
         trusted,
         expected_current_bindings=bindings,
     )
-    decision = decide_agent_dispatch(
-        task,
-        configured=workspace.for_role("visualReview"),
-        ready_tasks=1,
-        runtime_child_slots=1,
-        resource_budget=1,
-        runtime_role_capabilities=HOST_ANNOTATION_VISUAL_REVIEW_CAPABILITIES,
-        coordinator_capabilities=HOST_ANNOTATION_VISUAL_REVIEW_CAPABILITIES,
-    )
-    audit = build_agent_batch_audit(
-        stage="visualReview",
-        configured=workspace.for_role("visualReview"),
-        task_count=1,
-        decision=decision,
-    )
-    audit.update(
-        {
-            "taskKind": "visualReview",
-            "scope": "annotation_preview_bundle",
-            "status": (
-                "pending_child_result"
-                if decision.mode == "dispatch"
-                else "pending_coordinator_findings"
-                if decision.mode == "fallback"
-                else "blocked"
-            ),
-            "taskFile": trusted.relative_posix(trusted.task_json),
-            "preparedOnly": True,
-            "hostSpawnExecuted": False,
-            "findingsAreAdvisory": True,
-            "approvalWritten": False,
-        }
-    )
-    spawn_package = _build_annotation_visual_review_spawn_package(task, audit)
-    audit.update(
-        {
-            "status": "ready_for_host_spawn" if spawn_package is not None else audit["status"],
-            "spawnPackage": spawn_package,
-        }
-    )
+    audit = {
+        "stage": "visualReview",
+        "configuredAgentConcurrency": workspace.for_role("visualReview"),
+        "taskCount": 1,
+        "preparedTaskCount": 1,
+        "preparationMode": "artifact_only",
+        "taskKind": "visualReview",
+        "scope": "annotation_preview_bundle",
+        "status": "ready_for_coordinator_dispatch",
+        "taskFile": trusted.relative_posix(trusted.task_json),
+        "preparedOnly": True,
+        "preparedTask": build_prepared_task_descriptor(task),
+        "findingsAreAdvisory": True,
+        "approvalWritten": False,
+    }
     return task, audit
 
 
@@ -562,7 +483,7 @@ def generate_annotation_preview_batch(
     workspace: WorkspaceConfig,
     project: Project,
     *,
-    review_policy: str = "user_first",
+    review_policy: str | None = None,
     allow_v1_disabled_compat: bool = False,
     executor_factory: Callable[[int], Any] | None = None,
     context: FormalValidationContext | None = None,
@@ -571,10 +492,7 @@ def generate_annotation_preview_batch(
 ) -> dict[str, Any]:
     """Validate the complete Phase 4 technical gate, render, and publish in plan order."""
 
-    if review_policy not in REVIEW_POLICIES:
-        raise AnnotationPreviewBatchError(
-            "review_policy 必须是 user_first 或 agent_first"
-        )
+    review_policy = resolve_project_review_policy(project, review_policy)
 
     if context is not None and formal_context_receipt is not None:
         raise AnnotationPreviewBatchError("context 与 formal_context_receipt 不能同时提供")
@@ -720,8 +638,7 @@ def generate_annotation_preview_batch(
         "scope": "annotation_preview_bundle",
         "status": "not_started_technical_failure",
         "preparedOnly": False,
-        "hostSpawnExecuted": False,
-        "spawnPackage": None,
+        "preparedTask": None,
         "findingsAreAdvisory": True,
         "approvalWritten": False,
     }
@@ -748,8 +665,7 @@ def generate_annotation_preview_batch(
                 "scope": "annotation_preview_bundle",
                 "status": "blocked",
                 "preparedOnly": False,
-                "hostSpawnExecuted": False,
-                "spawnPackage": None,
+                "preparedTask": None,
                 "findingsAreAdvisory": True,
                 "approvalWritten": False,
                 "error": contact_error,
@@ -791,7 +707,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--review-policy",
         choices=sorted(REVIEW_POLICIES),
-        default="user_first",
+        default=None,
         help="annotation preview 完成后直接交用户，或先准备一次 AI 语义预审",
     )
     parser.add_argument("--allow-v1-disabled-compat", action="store_true")
@@ -847,8 +763,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "scope": "annotation_preview_bundle",
                 "status": "not_started_technical_failure",
                 "preparedOnly": False,
-                "hostSpawnExecuted": False,
-                "spawnPackage": None,
+                "preparedTask": None,
                 "findingsAreAdvisory": True,
                 "approvalWritten": False,
             },

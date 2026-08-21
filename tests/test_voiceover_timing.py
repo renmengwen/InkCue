@@ -9,10 +9,13 @@ import sys
 import wave
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import scripts.generate_voiceover as voice_module
+import scripts.project_workspace as workspace_module
 from scripts.generate_voiceover import main as voice_main
 from scripts.project_workspace import (
     DEFAULT_GLOBAL_PROMPT,
@@ -40,14 +43,24 @@ def canonical_wav_bytes(duration_ms: int = 200) -> bytes:
 class VoiceoverTimingTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.root = Path(r"D:\SRTWhiteboard\.test-runs") / f"vt-{uuid.uuid4().hex[:8]}"
+        cls.root = ROOT / f".test-voiceover-timing-{uuid.uuid4().hex[:8]}"
         cls.root.mkdir(parents=True, exist_ok=False)
+        cls._drive_patcher = mock.patch.object(
+            workspace_module, "_require_d_drive", return_value=None
+        )
+        cls._drive_patcher.start()
+        cls._provider_patcher = mock.patch.object(
+            voice_module, "active_provider_id", return_value="edge-tts"
+        )
+        cls._provider_patcher.start()
 
     @classmethod
     def tearDownClass(cls) -> None:
         target = cls.root.resolve()
-        target.relative_to(Path(r"D:\SRTWhiteboard\.test-runs").resolve())
+        target.relative_to(ROOT.resolve())
         shutil.rmtree(target)
+        cls._provider_patcher.stop()
+        cls._drive_patcher.stop()
 
     def make_project(self):
         case = self.root / uuid.uuid4().hex[:8]
@@ -237,6 +250,7 @@ class VoiceoverTimingTests(unittest.TestCase):
             voice_main([
                 "approve-full", "--project", str(project.root),
                 "--identity-hash", identity,
+                "--review-policy", "user_first",
             ]), 5
         )
         self.assertEqual(project.timing_plan_path.read_bytes(), timing_before)
@@ -244,6 +258,7 @@ class VoiceoverTimingTests(unittest.TestCase):
             voice_main([
                 "approve-full", "--project", str(project.root), "--identity-hash", identity,
                 "--duration-decision", "accept_actual",
+                "--review-policy", "user_first",
             ]),
             0,
         )

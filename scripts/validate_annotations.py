@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 4 批量 annotation 候选校验、顺序发布与 coordinator fallback。"""
+"""Phase 4 annotation task 冻结、候选校验与顺序发布。"""
 
 from __future__ import annotations
 
@@ -25,9 +25,7 @@ try:
         TrustedTaskContext,
         ValidatedAgentResult,
         ValidatedAgentTask,
-        build_agent_batch_audit,
-        build_agent_bundle_prompt,
-        decide_agent_dispatch,
+        build_prepared_task_descriptor,
         sha256_file as agent_sha256_file,
         validate_agent_result,
         validate_agent_task,
@@ -70,9 +68,7 @@ except ImportError:  # pragma: no cover - direct script execution
         TrustedTaskContext,
         ValidatedAgentResult,
         ValidatedAgentTask,
-        build_agent_batch_audit,
-        build_agent_bundle_prompt,
-        decide_agent_dispatch,
+        build_prepared_task_descriptor,
         sha256_file as agent_sha256_file,
         validate_agent_result,
         validate_agent_task,
@@ -108,8 +104,8 @@ except ImportError:  # pragma: no cover - direct script execution
 
 
 ANNOTATION_BATCH_CONTRACT = "whiteboard-annotation-batch-v1"
-ANNOTATION_PREPARE_CONTRACT = "whiteboard-annotation-prepare-v2"
-ANNOTATION_DISPATCH_BUNDLE_CONTRACT = "whiteboard-agent-task-bundle-v1"
+ANNOTATION_PREPARE_CONTRACT = "whiteboard-annotation-prepare-v3"
+ANNOTATION_DISPATCH_BUNDLE_CONTRACT = "whiteboard-agent-task-unit-v1"
 ANNOTATION_MAX_TASKS_PER_DISPATCH_UNIT = 3
 _ATTEMPT_RE = re.compile(r"^attempt-([0-9]{4})$")
 _REFERENCE = Path(__file__).resolve().parents[1] / "references" / "annotation-drafting-role.md"
@@ -189,14 +185,10 @@ def prepare_annotation_drafting_tasks(
     context: FormalValidationContext | None = None,
     scene_ids: Iterable[str] | None = None,
     run_id: str | None = None,
-    coordinator_can_view: bool,
     attempt_by_scene: Mapping[str, int] | None = None,
     retry_status_by_scene: Mapping[str, str] | None = None,
-    runtime_child_slots: int = 0,
-    coordinator_resource_budget: int = 1,
-    runtime_role_capabilities: Iterable[str] = (),
 ) -> tuple[tuple[AnnotationDraftingTask, ...], dict[str, Any]]:
-    """创建冻结 task，并给出宿主协作决策。"""
+    """创建冻结 task；宿主派发与 fallback 只由 coordinator 决定。"""
 
     if images_confirmed is not True:
         raise AnnotationBatchError("annotationDrafting 只能在线稿已获用户明确确认后准备")
@@ -213,10 +205,8 @@ def prepare_annotation_drafting_tasks(
     run = run_id or f"ad-{uuid.uuid4().hex[:8]}"
     bindings = context_bindings(project, frozen)
     prepared: list[AnnotationDraftingTask] = []
-    decisions = []
     attempts = dict(attempt_by_scene or {})
     retry_statuses = dict(retry_status_by_scene or {})
-    runtime_caps = tuple(runtime_role_capabilities)
     if set(attempts) - set(ordered) or set(retry_statuses) - set(ordered):
         raise AnnotationBatchError("attempt/retry status 只能引用本批 scene")
 
@@ -320,19 +310,6 @@ def prepare_annotation_drafting_tasks(
             trusted,
             expected_current_bindings=bindings,
         )
-        coordinator_caps = {"readFiles", "writeCandidateJson"}
-        if coordinator_can_view:
-            coordinator_caps.add("viewImage")
-        decision = decide_agent_dispatch(
-            validated,
-            configured=workspace.for_role("annotationDrafting"),
-            ready_tasks=len(ordered),
-            runtime_child_slots=runtime_child_slots,
-            resource_budget=coordinator_resource_budget,
-            runtime_role_capabilities=runtime_caps,
-            coordinator_capabilities=coordinator_caps,
-        )
-        decisions.append(decision)
         prepared.append(
             AnnotationDraftingTask(
                 scene_id=scene_id,
@@ -343,36 +320,16 @@ def prepare_annotation_drafting_tasks(
                 formal_path=project.scenes_dir / f"{Path(scene['outputFile']).stem}.annotation.json",
             )
         )
-    if decisions:
-        selected = next(
-            (decision for decision in decisions if decision.mode == "blocked"),
-            decisions[0],
-        )
-        audit = build_agent_batch_audit(
-            stage="annotationDrafting",
-            configured=workspace.for_role("annotationDrafting"),
-            task_count=len(prepared),
-            decision=selected,
-        )
-    else:
-        audit = {
-            "stage": "annotationDrafting",
-            "configuredAgentConcurrency": workspace.for_role("annotationDrafting"),
-            "effectiveAgentConcurrency": 0,
-            "dispatchAllowed": False,
-            "mode": "no_ready",
-            "adapter": "none",
-            "taskCount": 0,
-            "peakChildAgents": 0,
-            "taskAgents": [],
-            "reason": "没有 ready task",
-        }
-    audit.update(
-        {
-            "formalWritesAllowed": False,
-            "approvalWritesAllowed": False,
-        }
-    )
+    audit = {
+        "stage": "annotationDrafting",
+        "configuredAgentConcurrency": workspace.for_role("annotationDrafting"),
+        "taskCount": len(prepared),
+        "preparedTaskCount": len(prepared),
+        "preparationMode": "artifact_only",
+        "preparedOnly": True,
+        "formalWritesAllowed": False,
+        "approvalWritesAllowed": False,
+    }
     return tuple(prepared), audit
 
 
@@ -823,7 +780,7 @@ def build_annotation_prepare_summary(
     tasks: Sequence[AnnotationDraftingTask],
     audit: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """把冻结 tasks 转成宿主可直接消费、但不执行 spawn 的机器可读计划。"""
+    """把冻结 tasks 转成宿主中立的有序 unit；不判断或编码派发方式。"""
 
     if not tasks:
         raise AnnotationBatchError("annotation prepare 没有 ready task")
@@ -839,15 +796,11 @@ def build_annotation_prepare_summary(
         result_json = task.context.result_json.resolve(strict=False)
         ordered_tasks.append(
             {
+                **build_prepared_task_descriptor(task, result_writer="coordinator"),
                 "taskId": task.data["taskId"],
                 "sceneId": drafting.scene_id,
                 "sequence": drafting.sequence,
                 "attempt": task.data["attempt"],
-                "taskJsonPath": str(task_json),
-                "taskSha256": task.task_sha256,
-                "roleContractPath": str(role_contract),
-                "roleContractSha256": task.data["roleContractSha256"],
-                "allowedAttemptDir": str(attempt_dir),
                 # Retained as the deterministic coordinator output location;
                 # annotation children are not allowed to author this file.
                 "resultJsonPath": str(result_json),
@@ -866,27 +819,10 @@ def build_annotation_prepare_summary(
     for offset in range(0, len(tasks), unit_size):
         unit_tasks = list(tasks[offset : offset + unit_size])
         unit_number = len(dispatch_units) + 1
-        first_scene = unit_tasks[0].scene_id
-        last_scene = unit_tasks[-1].scene_id
-        prompt = build_agent_bundle_prompt(
-            [drafting.task for drafting in unit_tasks],
-            max_tasks=unit_size,
-        )
         result_paths = [
             str(drafting.task.context.result_json.resolve(strict=False))
             for drafting in unit_tasks
         ]
-        spawn_request = None
-        if audit.get("dispatchAllowed"):
-            range_suffix = first_scene.replace("-", "_")
-            if last_scene != first_scene:
-                range_suffix += f"_to_{last_scene.replace('-', '_')}"
-            spawn_request = {
-                "taskName": f"annotation_{range_suffix}",
-                "forkTurns": "none",
-                "prompt": prompt,
-                "dispatchManifestPath": str(dispatch_manifest_path.resolve(strict=False)),
-            }
         dispatch_units.append(
             {
                 "contractVersion": ANNOTATION_DISPATCH_BUNDLE_CONTRACT,
@@ -901,26 +837,27 @@ def build_annotation_prepare_summary(
                     for drafting in unit_tasks
                 ],
                 "resultWriter": "coordinator",
-                "spawnRequest": spawn_request,
+                "preparedTasks": [
+                    build_prepared_task_descriptor(
+                        drafting.task,
+                        result_writer="coordinator",
+                    )
+                    for drafting in unit_tasks
+                ],
             }
         )
 
-    task_concurrency_ceiling = int(audit["effectiveAgentConcurrency"])
-    effective_child_concurrency = min(task_concurrency_ceiling, len(dispatch_units))
     dispatch_audit = dict(audit)
-    dispatch_audit["artifactTaskConcurrencyCeiling"] = task_concurrency_ceiling
-    dispatch_audit["effectiveAgentConcurrency"] = effective_child_concurrency
     dispatch_audit["dispatchUnitCount"] = len(dispatch_units)
     dispatch_audit["tasksPerDispatchUnit"] = [
         unit["taskCount"] for unit in dispatch_units
     ]
-    dispatch_audit.setdefault("auditContractVersion", "whiteboard-annotation-dispatch-audit-v1")
+    dispatch_audit.setdefault("auditContractVersion", "whiteboard-annotation-preparation-audit-v1")
     timestamps = dispatch_audit.setdefault("timestamps", {})
     timestamps.setdefault("dispatchStartedAt", None)
     timestamps["prepareCompletedAt"] = utc_now()
     durations = dispatch_audit.setdefault("durationsMs", {})
     durations.setdefault("prepare", None)
-    durations.setdefault("spawnSubmit", None)
     durations.setdefault("candidate", None)
     durations.setdefault("childTail", None)
     durations.setdefault("resultMaterialize", None)
@@ -929,15 +866,14 @@ def build_annotation_prepare_summary(
     counters.setdefault("candidateInvalidCount", 0)
     counters.setdefault("candidateStaleCount", 0)
     counters.setdefault("childCancelCount", 0)
-    # The manifest is a coordinator-owned, structured handoff.  Host adapters
-    # can consume it directly instead of reparsing a long natural-language
-    # prompt; writing it here is deterministic and does not perform spawn.
+    # The manifest is a coordinator-owned, structured handoff. It contains
+    # frozen task locators only; the coordinator chooses spawn/followup/fallback.
     dispatch_manifest = build_dispatch_manifest(
         run_id=run_id,
         candidate_root=candidate_root,
         tasks=ordered_tasks,
         dispatch_units=dispatch_units,
-        effective_concurrency=effective_child_concurrency,
+        configured_concurrency=int(audit["configuredAgentConcurrency"]),
         audit=dispatch_audit,
     )
     write_json_atomic(dispatch_manifest_path, dispatch_manifest)
@@ -951,15 +887,13 @@ def build_annotation_prepare_summary(
         "dispatchManifestSha256": sha256_file(dispatch_manifest_path),
         "taskCount": len(ordered_tasks),
         "dispatchUnitCount": len(dispatch_units),
-        "effectiveAgentConcurrency": effective_child_concurrency,
-        "dispatchAudit": dispatch_audit,
+        "configuredAgentConcurrency": int(audit["configuredAgentConcurrency"]),
+        "preparationAudit": dispatch_audit,
         "dispatchPlan": {
-            "hostAdapter": audit["adapter"],
-            "hostSpawnRequired": bool(audit["dispatchAllowed"]),
-            "hostSpawnPerformed": False,
+            "coordinatorDispatchRequired": True,
             "granularity": "contiguous-bundle-v1",
             "maxTasksPerDispatchUnit": unit_size,
-            "maxParallel": effective_child_concurrency,
+            "configuredMaxParallel": int(audit["configuredAgentConcurrency"]),
             "orderedDispatchUnitIds": [
                 unit["dispatchUnitId"] for unit in dispatch_units
             ],
@@ -976,43 +910,15 @@ class _StructuredArgumentParser(argparse.ArgumentParser):
         raise AnnotationPrepareCLIError("invalid_arguments", message, 2)
 
 
-def _nonnegative_int(value: str) -> int:
-    try:
-        parsed = int(value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("必须是非负整数") from exc
-    if parsed < 0:
-        raise argparse.ArgumentTypeError("必须是非负整数")
-    return parsed
-
-
 def _prepare_parser() -> argparse.ArgumentParser:
     parser = _StructuredArgumentParser(
-        description="冻结 annotationDrafting tasks 并输出宿主 spawn 计划"
+        description="冻结 annotationDrafting tasks 并输出宿主中立的有序 unit"
     )
     parser.add_argument("--project", required=True)
     parser.add_argument("--config")
     parser.add_argument("--images-confirmed", action="store_true")
     parser.add_argument("--run-id")
     parser.add_argument("--scene-id", action="append", dest="scene_ids")
-    parser.add_argument(
-        "--runtime-child-slots",
-        type=_nonnegative_int,
-        default=0,
-        help="宿主已换算、且已为 coordinator 预留后的 child slots",
-    )
-    parser.add_argument(
-        "--coordinator-resource-budget",
-        type=_nonnegative_int,
-        default=0,
-    )
-    parser.add_argument(
-        "--runtime-role-capability",
-        action="append",
-        default=[],
-        choices=("readFiles", "viewImage", "writeCandidateJson"),
-    )
-    parser.add_argument("--coordinator-can-view", action="store_true")
     return parser
 
 
@@ -1063,10 +969,6 @@ def _prepare_main(argv: Sequence[str]) -> int:
             context=context,
             scene_ids=args.scene_ids,
             run_id=args.run_id,
-            coordinator_can_view=args.coordinator_can_view,
-            runtime_child_slots=args.runtime_child_slots,
-            coordinator_resource_budget=args.coordinator_resource_budget,
-            runtime_role_capabilities=args.runtime_role_capability,
         )
         summary = build_annotation_prepare_summary(tasks, audit)
     except Exception as exc:
@@ -1078,7 +980,7 @@ def _prepare_main(argv: Sequence[str]) -> int:
             "error": {"code": failure.code, "message": str(failure)},
             "formalWritesAllowed": False,
             "approvalWritesAllowed": False,
-            "hostSpawnPerformed": False,
+            "preparedOnly": False,
         }
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
         return failure.exit_code

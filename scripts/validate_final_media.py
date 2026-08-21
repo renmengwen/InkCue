@@ -354,6 +354,7 @@ def _assert_edge_audio(
             "approved": True,
             "identityHash": full_approval["identityHash"],
             "durationDecision": full_approval.get("durationDecision"),
+            "reviewPolicy": full_approval.get("reviewPolicy"),
             "approvedAt": full_approval.get("approvedAt"),
             "fullIdentityHash": voice_manifest["fullIdentityHash"],
         },

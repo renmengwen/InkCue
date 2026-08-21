@@ -11,6 +11,7 @@ to avoid starting a new Python process for each deterministic step.
 from __future__ import annotations
 
 import re
+import time
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -22,6 +23,11 @@ try:
         generate_annotation_preview_batch,
     )
     from .project_workspace import Project, WorkspaceConfig
+    from .burn_subtitles import burn_project
+    from .merge_scenes import merge_project_scenes, ordered_scene_inputs
+    from .mux_voiceover import mux_project
+    from .scene_review import assert_current_scene_review_approval
+    from .validate_final_media import validate_project_final_media
     from .render_timing import (
         FormalValidationContext,
         RenderTimingError,
@@ -36,6 +42,11 @@ except ImportError:  # pragma: no cover - direct script execution
         generate_annotation_preview_batch,
     )
     from project_workspace import Project, WorkspaceConfig  # type: ignore
+    from burn_subtitles import burn_project  # type: ignore
+    from merge_scenes import merge_project_scenes, ordered_scene_inputs  # type: ignore
+    from mux_voiceover import mux_project  # type: ignore
+    from scene_review import assert_current_scene_review_approval  # type: ignore
+    from validate_final_media import validate_project_final_media  # type: ignore
     from render_timing import (  # type: ignore
         FormalValidationContext,
         RenderTimingError,
@@ -47,6 +58,7 @@ except ImportError:  # pragma: no cover - direct script execution
 
 
 PHASE_ADAPTER_CONTRACT = "whiteboard-phase-adapters-v1"
+FINAL_DELIVERY_CONTRACT = "whiteboard-final-delivery-runner-v1"
 _RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 
@@ -179,7 +191,7 @@ def run_annotation_preview(
     *,
     run_id: str | None = None,
     formal_context_receipt: str | Path | None = None,
-    review_policy: str = "user_first",
+    review_policy: str | None = None,
     allow_v1_disabled_compat: bool = False,
 ) -> dict[str, Any]:
     """Run deterministic annotation technical validation and preview generation.
@@ -238,8 +250,138 @@ def run_annotation_preview(
     )
 
 
+def run_final_delivery(
+    workspace: WorkspaceConfig,
+    project: Project,
+    *,
+    run_id: str | None = None,
+    force_deep: bool = False,
+) -> dict[str, Any]:
+    """连续执行 merge/burn/mux/validate，并停在最终人工看片听音 Gate。"""
+
+    requested_run_id = (
+        _safe_run_id(run_id)
+        if run_id is not None
+        else f"phase-final-{uuid.uuid4().hex[:20]}"
+    )
+    started = time.perf_counter()
+    timings: dict[str, int] = {}
+    failures: list[dict[str, Any]] = []
+    last_completed: str | None = None
+    outputs: dict[str, Any] = {}
+
+    def execute(step: str, action: Any) -> bool:
+        nonlocal last_completed
+        step_started = time.perf_counter()
+        try:
+            value = action()
+            outputs[step] = value
+            last_completed = step
+            return True
+        except Exception as exc:
+            failures.append(
+                {"scope": step, "error": f"{type(exc).__name__}: {exc}"}
+            )
+            return False
+        finally:
+            timings[step] = round((time.perf_counter() - step_started) * 1000)
+
+    scene_inputs = ordered_scene_inputs(project)
+    ok = execute(
+        "preflight",
+        lambda: assert_current_scene_review_approval(project, inputs=scene_inputs),
+    )
+    if ok:
+        ok = execute(
+            "merge",
+            lambda: merge_project_scenes(
+                project,
+                inputs=scene_inputs,
+                force_deep=force_deep,
+                run_id=requested_run_id,
+            ),
+        )
+    if ok:
+        ok = execute(
+            "burnSubtitles",
+            lambda: burn_project(
+                project.root,
+                run_id=f"subtitle-{requested_run_id}",
+                force_deep=force_deep,
+                subtitle_preset=workspace.video_encoding.subtitle_preset,
+            ),
+        )
+    if ok and project.voiceover_mode in {"edge-tts", "minimax"}:
+        ok = execute(
+            "muxVoiceover",
+            lambda: mux_project(
+                project.root,
+                run_id=f"mux-{requested_run_id}",
+                force_deep=force_deep,
+            ),
+        )
+    else:
+        timings["muxVoiceover"] = 0
+        if ok:
+            outputs["muxVoiceover"] = {"skipped": True, "reason": "voiceover_disabled"}
+    if ok:
+        ok = execute(
+            "validateFinalMedia",
+            lambda: validate_project_final_media(
+                project.root,
+                configured_concurrency=workspace.for_stage("finalMediaValidation"),
+                force_deep=force_deep,
+            ),
+        )
+
+    for step in (
+        "preflight",
+        "merge",
+        "burnSubtitles",
+        "muxVoiceover",
+        "validateFinalMedia",
+    ):
+        timings.setdefault(step, 0)
+    timings["total"] = round((time.perf_counter() - started) * 1000)
+    validation = outputs.get("validateFinalMedia")
+    final_identity = (
+        validation.get("finalIdentitySha256")
+        if isinstance(validation, Mapping)
+        else None
+    )
+    artifact = project.path("output/final.mp4")
+    return {
+        "contractVersion": PHASE_ADAPTER_CONTRACT,
+        "phaseContractVersion": FINAL_DELIVERY_CONTRACT,
+        "status": "PASS" if ok else "FAIL",
+        "projectId": project.project_id,
+        "runId": requested_run_id,
+        "taskCount": 5 if project.voiceover_mode in {"edge-tts", "minimax"} else 4,
+        "successCount": len([name for name in outputs if name != "muxVoiceover" or project.voiceover_mode != "disabled"]),
+        "failureCount": len(failures),
+        "partialSuccess": bool(last_completed and not ok),
+        "currentIdentity": final_identity,
+        "approvalWritten": False,
+        "userConfirmationRequired": True,
+        "nextGate": "final_media_review" if ok else None,
+        "failures": failures,
+        "artifact": str(artifact) if ok else None,
+        "artifactPaths": [str(artifact)] if ok else [],
+        "timingsMs": timings,
+        "lastCompletedStep": last_completed,
+        "outputs": outputs,
+        "confirmationRequest": (
+            f"请完整看片并听音后确认 final identity {final_identity}；确认前不得写入 finalApproval。"
+            if ok
+            else "最终技术链未完成，不能进入成片人工批准。"
+        ),
+    }
+
+
 __all__ = [
     "PHASE_ADAPTER_CONTRACT",
+    "FINAL_DELIVERY_CONTRACT",
     "PhaseAdapterError",
     "run_annotation_preview",
+    "run_final_delivery",
 ]

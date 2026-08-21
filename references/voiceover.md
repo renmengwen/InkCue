@@ -228,7 +228,7 @@ FULL_IDENTITY=<64位 sha256>
 1. 配音内容、音色、语速与完整听感可接受，没有漏读、重复、断裂或奇怪停顿。
 2. 查看 target/source provisional duration 与真实 audio duration 的差值和比例，决定是否接受真实时长。
 
-同一条完整旁白确认请求还必须展示本次运行的生成后审阅策略：`user_first` 直接把各阶段通过技术校验的 current artifact 交给用户，`agent_first` 在交付用户前为各阶段准备一次辅助 AI 语义预审。用户应能在一次回复中同时确认完整旁白、作出所需的真实时长决定并选择策略，例如“确认完整旁白，选择 user_first”；不得先完成 `approve-full`，再设置一次只用于选择策略的独立聊天关卡。若用户确认旁白但未指定策略，默认使用 `user_first`。
+同一条完整旁白确认请求还必须展示本次运行的生成后审阅策略：`user_first` 直接把各阶段通过技术校验的 current artifact 交给用户，`agent_first` 在交付用户前为各阶段准备一次辅助 AI 语义预审。用户应能在一次回复中同时确认完整旁白、作出所需的真实时长决定并选择策略，例如“确认完整旁白，选择 user_first”；不得先完成 `approve-full`，再设置一次只用于选择策略的独立聊天关卡。用户未指定策略时必须继续停在本 Gate 询问，禁止静默默认。
 
 `audio/narration.srt` 继续作为 current 权威字幕源和技术证据，但此时尚无真实画面，因此不做字幕视觉批准。换行、对比度、遮挡与安全区统一在正式字幕 contact sheet 和最终成片中审查。
 
@@ -238,16 +238,18 @@ FULL_IDENTITY=<64位 sha256>
 # 偏差在 10% 阈值内：
 <ENV_PY> scripts/generate_voiceover.py approve-full `
   --project <项目根目录> `
-  --identity-hash <刚完整试听旁白所对应的 FULL_IDENTITY>
+  --identity-hash <刚完整试听旁白所对应的 FULL_IDENTITY> `
+  --review-policy user_first
 
 # 偏差超过 10%，且用户明确接受真实时长：
 <ENV_PY> scripts/generate_voiceover.py approve-full `
   --project <项目根目录> `
   --identity-hash <FULL_IDENTITY> `
-  --duration-decision accept_actual
+  --duration-decision accept_actual `
+  --review-policy agent_first
 ```
 
-`--identity-hash` 必须是 current full identity；不匹配时返回 5，且不得修改旧批准。阈值内不得传 `accept_actual` 冒充超阈值人工决定；manifest 应记录 `within_threshold`。超阈值未显式接受时返回 5，另一条合法路径是修改 rate/文本后重新生成、完整试听和批准。
+`--identity-hash` 必须是 current full identity；不匹配时返回 5，且不得修改旧批准。`--review-policy` 必填并持久化到 `fullApproval.reviewPolicy`；后续视觉阶段省略参数时读取冻结值，显式冲突时返回 stale。旧批准缺少该字段时可以读取和重新试听，但不得进入视觉阶段，必须对 current identity 重新执行带策略的 `approve-full`。阈值内不得传 `accept_actual` 冒充超阈值人工决定；manifest 应记录 `within_threshold`。超阈值未显式接受时返回 5，另一条合法路径是修改 rate/文本后重新生成、完整试听和批准。
 
 coordinator 收到同时包含两项决定的回复后，必须先核对 current `FULL_IDENTITY` 并成功执行 `approve-full`，再采用审阅策略并开始生图；旁白被拒绝、identity stale 或超阈值时长未获接受时，不得只凭同一回复中的策略选择启动任何视觉生成。审阅策略不是人工批准，不进入作品 identity，也不能替代后续线稿、annotation review bundle、scene review bundle 或最终成片批准。
 

@@ -52,9 +52,14 @@ class VoiceoverCliTests(unittest.TestCase):
             raise AssertionError(f"语音 CLI 测试根必须位于 C 盘: {cls.root}")
         cls._drive_patcher = mock.patch.object(workspace_module, "_require_d_drive", return_value=None)
         cls._drive_patcher.start()
+        cls._provider_patcher = mock.patch.object(
+            voice_module, "active_provider_id", return_value="edge-tts"
+        )
+        cls._provider_patcher.start()
 
     @classmethod
     def tearDownClass(cls) -> None:
+        cls._provider_patcher.stop()
         cls._drive_patcher.stop()
         cls._temporary_root.cleanup()
 
@@ -155,6 +160,7 @@ class VoiceoverCliTests(unittest.TestCase):
             voice_main([
                 "approve-full", "--project", str(project.root),
                 "--identity-hash", "f" * 64,
+                "--review-policy", "user_first",
             ]), 5
         )
         self.assertEqual(project.timing_plan_path.read_bytes(), timing_before)
@@ -164,11 +170,18 @@ class VoiceoverCliTests(unittest.TestCase):
             voice_main([
                 "approve-full", "--project", str(project.root),
                 "--identity-hash", full_identity,
+                "--review-policy", "agent_first",
             ]), 0
         )
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(manifest["fullApproval"]["durationDecision"], "within_threshold")
         self.assertEqual(manifest["fullApproval"]["identityHash"], full_identity)
+        self.assertEqual(manifest["fullApproval"]["reviewPolicy"], "agent_first")
+        self.assertEqual(
+            workspace_module.resolve_project_review_policy(project), "agent_first"
+        )
+        with self.assertRaisesRegex(workspace_module.ProjectValidationError, "不一致"):
+            workspace_module.resolve_project_review_policy(project, "user_first")
         self.assertNotIn("reviewIdentityHash", manifest["fullApproval"])
 
     def test_minimax_mode_uses_shared_sample_full_timeline_gate_with_fake_adapter(self) -> None:
@@ -185,7 +198,10 @@ class VoiceoverCliTests(unittest.TestCase):
         with redirect_stdout(output):
             self.assertEqual(voice_main(["full", "--project", str(project.root)], adapter=adapter), 0)
         full_identity = next(line.split("=", 1)[1] for line in output.getvalue().splitlines() if line.startswith("FULL_IDENTITY="))
-        self.assertEqual(voice_main(["approve-full", "--project", str(project.root), "--identity-hash", full_identity]), 0)
+        self.assertEqual(voice_main([
+            "approve-full", "--project", str(project.root), "--identity-hash", full_identity,
+            "--review-policy", "user_first",
+        ]), 0)
         plan = json.loads(project.path("planning/voice-plan.json").read_text(encoding="utf-8"))
         timing = json.loads(project.path("planning/timing-plan.json").read_text(encoding="utf-8"))
         self.assertEqual(plan["mode"], "minimax")

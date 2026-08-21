@@ -402,6 +402,48 @@ class ProjectWorkspaceTests(unittest.TestCase):
             with self.assertRaisesRegex(WorkspaceError, "不可写"):
                 load_workspace_config(self.config_path)
 
+    def test_workspace_access_probe_reports_stable_stage_and_error_code(self) -> None:
+        success = workspace_module.probe_workspace_access(self.workspace_root)
+        self.assertTrue(success.ok)
+        self.assertEqual(success.code, "workspace_access_ok")
+        self.assertEqual(success.stage, "complete")
+        self.assertFalse(list(self.workspace_root.glob(".workspace-write-test-*")))
+
+        with mock.patch.object(
+            workspace_module.Path,
+            "open",
+            side_effect=PermissionError(13, "access denied"),
+        ):
+            denied = workspace_module.probe_workspace_access(self.workspace_root)
+        self.assertFalse(denied.ok)
+        self.assertEqual(denied.code, "workspace_write_denied")
+        self.assertEqual(denied.stage, "write_and_read")
+        self.assertIn("新回合", denied.message)
+
+    def test_prepare_env_workspace_only_probe_does_not_prepare_venv(self) -> None:
+        output = io.StringIO()
+        access = workspace_module.WorkspaceAccessProbe(
+            root=self.workspace_root,
+            ok=True,
+            code="workspace_access_ok",
+            stage="complete",
+            message="ok",
+        )
+        with mock.patch.object(
+            prepare_env,
+            "load_workspace_config",
+            return_value=self.workspace().config,
+        ), mock.patch.object(
+            prepare_env, "probe_workspace_access", return_value=access
+        ), mock.patch.object(
+            prepare_env, "ensure_venv"
+        ) as ensure, redirect_stdout(output):
+            result = prepare_env.main(["--check-workspace-access"])
+        self.assertEqual(result, 0)
+        ensure.assert_not_called()
+        payload = json.loads(output.getvalue().split("=", 1)[1])
+        self.assertEqual(payload["code"], "workspace_access_ok")
+
     def test_project_name_cleanup_preserves_chinese_and_rejects_empty(self) -> None:
         self.assertEqual(sanitize_project_name('中文:项目?*.  '), "中文-项目--")
         self.assertEqual(sanitize_project_name("清晰中文"), "清晰中文")

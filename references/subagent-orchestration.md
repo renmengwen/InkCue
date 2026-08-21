@@ -111,11 +111,13 @@ formal.scenes[i].sceneId/name/coreIdea/visualSubject/cueRange = candidate 对应
 
 effective concurrency 取 configured、ready task 数、宿主已换算 child slots 与 coordinator resource budget 的最小值。coordinator 始终保留自己的槽位；总 slot 到 child slot 只换算一次。
 
-role capability 齐全且 effective 大于 0 时，由 coordinator 调用宿主真实 `spawn_agent`、`followup` 和等待机制。否则由具备相同 role capability 的 coordinator fallback；双方都缺能力时报告 `BLOCKED`。
+只有 coordinator 能从当前实际宿主工具、live agents 和任务状态得知 child slots 与 role capability，并据此调用真实 `spawn_agent`、`followup` 和等待机制。Python prepare/validate 脚本只冻结 task descriptor 或有序 unit：不得接收/推断 runtime child slots、coordinator budget、宿主 capability，不得输出 `spawnAgentCall`/`spawnRequest`、`dispatchAllowed` 或替宿主选择 fallback。真实派发不可用时，才由具备相同 role capability 的 coordinator fallback，并报告当前宿主的真实原因；双方都缺能力时报告 `BLOCKED`。
+
+attempt 是 artifact 版本边界，不是 agent 生命周期边界。首次独立 draft/plan/review 使用短上下文 child；用户修订 content 草案仍创建新 attempt，但上一 attempt 的同 role child 仍存在、idle、上一结果 completed 且 role contract 兼容时，优先 followup 原 child，让它只读取新 task/base/revision 的路径与 SHA。原 child 不可用、失败、role 改变、修订升级为全面独立重写或用户明确要求换执行者时才 spawn 新 child。同一 attempt 的执行性补正也 followup 原 child；无论是否复用，磁盘 current 与 SHA 始终高于代理记忆。
 
 `contentDrafting`、`storyboardPlanning` 和 global `visualReview` 使用一 task一 child。`annotationDrafting` 保持一幕一 task/attempt/candidate/result（child 只写 candidate，result 由 coordinator 生成），但把按 plan 连续的最多 3 个 task 组成一个 dispatch unit，由同一 child 顺序执行。多个 ready unit 必须先填满 effective 并发再等待，不能串行伪装成并发。
 
-审计只记录 configured/effective/peak/task count、`dispatchAllowed`、mode、adapter、reason 和真实 task/agent 映射。fake scheduler 只验证协议，不算真实 dispatch。
+prepare 摘要只记录 configured concurrency、task/unit 数和冻结 descriptor；effective/peak、mode、真实原因和 task/agent 映射只能由 coordinator 在真实派发或 fallback 后记录。fake scheduler 和 prepared artifact 都不算真实 dispatch。
 
 agent pool 与 worker pool 独立，不做乘法。agent task 不得内部再启动 provider、FFmpeg、深验或其他 worker batch。
 
@@ -147,10 +149,10 @@ Phase 4 只能在线稿已获用户明确确认后开始。coordinator 先构建
 
 生图消费验证、annotation preview bundle 和 scene review bundle 都接受 `--review-policy user_first|agent_first`。两种策略都必须先完成当前阶段的确定性技术验证，并保留对应人工批准；策略只决定用户关卡之前是否多一次 AI 语义预审，不进入作品内容 identity，也不得写批准。
 
-该策略应在交付完整旁白、等待用户确认的同一条消息中征询，使用户一次回复即可同时表达完整旁白与真实时长决定以及 `user_first|agent_first` 选择。coordinator 必须先成功写入 current `approve-full`，再采用策略并开始视觉阶段；不得在旁白批准后另设一次只用于选择策略的聊天停顿，也不得在旁白未获批准时仅凭策略选择启动生图。用户确认旁白但未指定时默认 `user_first`。
+该策略应在交付完整旁白、等待用户确认的同一条消息中征询，使用户一次回复即可同时表达完整旁白与真实时长决定以及 `user_first|agent_first` 选择。coordinator 必须先成功写入 current `approve-full`，再采用策略并开始视觉阶段；不得在旁白批准后另设一次只用于选择策略的聊天停顿，也不得在旁白未获批准时仅凭策略选择启动生图。用户确认旁白但未指定时继续停在 Gate 追问，禁止静默默认。
 
 - `user_first`：不创建或派发额外 `visualReview`，机器摘要记录 `semanticReview.status=skipped_by_user`，只把 current 线稿 review Markdown 链接、identity、计数和异常摘要交给用户；不得把全部图片重新嵌入主聊天。
-- `agent_first`：只冻结 `visualReview` task 并准备宿主 `spawnPackage`；`preparedOnly:true` 和 `hostSpawnExecuted:false` 不能报告成真实派发或 review 完成。coordinator 必须调用宿主协作工具完成真实 spawn/wait，child 把完整意见写入 attempt 的 `findings.json/result.json`；coordinator 只接收路径、status、validator 状态和精简摘要，不得再次逐图审阅，再把 advisory findings 摘要与 current review 文件一并交用户。
+- `agent_first`：只冻结宿主中立 `visualReview` task descriptor；coordinator 必须直接调用宿主协作工具完成真实 spawn/wait。child 把完整意见写入 attempt 的 `findings.json/result.json`；coordinator 只接收路径、status、validator 状态和精简摘要，不得再次逐图审阅，再把 advisory findings 摘要与 current review 文件一并交用户。prepared descriptor 不能报告成真实派发或 review 完成。
 - 生图复用覆盖全部 current PNG 的 global `visualReview`；annotation 只复查已生成的 preview bundle，不能跳过 `annotationDrafting` 对原图的实际查看；scene 只在全部 current 单幕形成一次有序 bundle 后预审，每幕仅抽首帧、中段和完成帧等少量关键帧，不逐幕重复 AI review。
 
 ## 9. 人工关卡

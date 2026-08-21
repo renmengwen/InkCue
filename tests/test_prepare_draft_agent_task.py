@@ -89,25 +89,36 @@ class PrepareDraftAgentTaskTests(unittest.TestCase):
             int(result["attempt"]),
         )
         task = validate_agent_task(context.task_json, context)
-        package = result["spawnPackage"]
-        assert isinstance(package, dict)
-        self.assertEqual(package["taskSha256"], task.task_sha256)
-        self.assertEqual(package["roleContractSha256"], task.data["roleContractSha256"])
-        self.assertEqual(package["allowedOutputs"], task.data["allowedOutputs"])
-        self.assertIn("TASK_JSON_PATH=", package["spawnAgentCall"]["message"])
-        self.assertIn("ALLOWED_ATTEMPT_DIR=", package["spawnAgentCall"]["message"])
+        descriptor = result["preparedTask"]
+        assert isinstance(descriptor, dict)
+        self.assertEqual(descriptor["contractVersion"], "whiteboard-prepared-agent-task-v1")
+        self.assertTrue(descriptor["preparedOnly"])
+        self.assertEqual(descriptor["taskSha256"], task.task_sha256)
+        self.assertEqual(descriptor["roleContractSha256"], task.data["roleContractSha256"])
+        self.assertEqual(descriptor["allowedOutputs"], task.data["allowedOutputs"])
+        self.assertEqual(descriptor["resultWriter"], "child")
+        self.assertEqual(Path(descriptor["taskJsonPath"]), context.task_json.resolve())
+        self.assertEqual(Path(descriptor["allowedAttemptDir"]), context.task_dir.resolve())
+        for forbidden in (
+            "spawnAgentCall",
+            "spawnRequest",
+            "dispatchAllowed",
+            "runtimeChildSlots",
+            "coordinatorFallback",
+        ):
+            self.assertNotIn(forbidden, descriptor)
         return dict(task.data)
 
     def assert_visual_cluster_contract(self, result: dict[str, object]) -> None:
-        package = result["spawnPackage"]
-        assert isinstance(package, dict)
-        role_contract = Path(str(package["roleContractPath"]))
+        descriptor = result["preparedTask"]
+        assert isinstance(descriptor, dict)
+        role_contract = Path(str(descriptor["roleContractPath"]))
         contract_text = role_contract.read_text(encoding="utf-8")
         for required_text in self.VISUAL_CLUSTER_CONTRACT:
             with self.subTest(required_text=required_text):
                 self.assertIn(required_text, contract_text)
 
-    def test_content_prepare_freezes_input_and_emits_host_spawn_package(self) -> None:
+    def test_content_prepare_freezes_input_and_emits_host_neutral_descriptor(self) -> None:
         source = self.root / "content.json"
         source.write_text(
             json.dumps(
@@ -132,8 +143,11 @@ class PrepareDraftAgentTaskTests(unittest.TestCase):
         task = self.assert_task_valid(result, "content-draft")
         self.assertEqual(task["taskKind"], "contentDrafting")
         self.assertEqual(task["formalWritesAllowed"], False)
-        self.assertEqual(result["dispatchAudit"]["mode"], "host_collaboration_dispatch")
-        self.assertEqual(result["dispatchAudit"]["peakChildAgents"], 0)
+        self.assertEqual(result["contractVersion"], "whiteboard-draft-agent-prepare-v2")
+        self.assertTrue(result["preparedOnly"])
+        self.assertEqual(result["configuredAgentConcurrency"], 3)
+        self.assertNotIn("dispatchAudit", result)
+        self.assertNotIn("spawnPackage", result)
         self.assertFalse(result["formalPublished"])
         self.assertFalse(result["approvalWritten"])
         self.assertTrue((Path(str(result["draftRoot"])) / "content-input.json").is_file())
@@ -159,10 +173,10 @@ class PrepareDraftAgentTaskTests(unittest.TestCase):
         parsed = json.loads((Path(str(result["draftRoot"])) / "parsed-srt.json").read_text(encoding="utf-8"))
         self.assertEqual(len(parsed["cues"]), 2)
         self.assertEqual(parsed["scenes"][0]["cueRange"], [1, 2])
-        self.assertTrue(result["spawnPackage"]["hostSpawnRequired"])
+        self.assertTrue(result["preparedTask"]["preparedOnly"])
         self.assert_visual_cluster_contract(result)
 
-    def test_content_prepare_offers_host_spawn_call(self) -> None:
+    def test_content_prepare_never_encodes_a_host_spawn_call(self) -> None:
         source = self.root / "content.json"
         source.write_text(
             json.dumps(
@@ -187,9 +201,11 @@ class PrepareDraftAgentTaskTests(unittest.TestCase):
             return_value=self.workspace(),
         ):
             result = prepare.prepare_draft_task(args)
-        self.assertTrue(result["dispatchAudit"]["dispatchAllowed"])
-        self.assertEqual(result["dispatchAudit"]["mode"], "host_collaboration_dispatch")
-        self.assertIsNotNone(result["spawnPackage"]["spawnAgentCall"])
+        self.assertEqual(result["configuredAgentConcurrency"], 3)
+        self.assertIn("preparedTask", result)
+        serialized = json.dumps(result, ensure_ascii=False)
+        for forbidden in ("spawnAgentCall", "spawnPackage", "dispatchAllowed"):
+            self.assertNotIn(forbidden, serialized)
 
     def test_content_prepare_derives_voiceover_mode_from_active_provider(self) -> None:
         source = self.root / "content-without-provider.json"

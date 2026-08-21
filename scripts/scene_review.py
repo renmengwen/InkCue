@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import re
 import sys
 import uuid
 from pathlib import Path
@@ -18,9 +17,7 @@ try:
         TASK_CONTRACT_VERSION,
         AgentContractError,
         TrustedTaskContext,
-        build_agent_batch_audit,
-        build_agent_prompt,
-        decide_agent_dispatch,
+        build_prepared_task_descriptor,
         sha256_file as agent_sha256_file,
         validate_agent_task,
     )
@@ -30,6 +27,7 @@ try:
         ProjectValidationError,
         ProjectWorkspace,
         WorkspaceError,
+        resolve_project_review_policy,
         sha256_file,
         sha256_json,
         write_json_atomic,
@@ -48,9 +46,7 @@ except ImportError:  # pragma: no cover - direct script execution
         TASK_CONTRACT_VERSION,
         AgentContractError,
         TrustedTaskContext,
-        build_agent_batch_audit,
-        build_agent_prompt,
-        decide_agent_dispatch,
+        build_prepared_task_descriptor,
         sha256_file as agent_sha256_file,
         validate_agent_task,
     )
@@ -60,6 +56,7 @@ except ImportError:  # pragma: no cover - direct script execution
         ProjectValidationError,
         ProjectWorkspace,
         WorkspaceError,
+        resolve_project_review_policy,
         sha256_file,
         sha256_json,
         write_json_atomic,
@@ -75,7 +72,6 @@ except ImportError:  # pragma: no cover - direct script execution
 
 SCENE_REVIEW_CONTRACT_VERSION = "whiteboard-scene-review-bundle-v1"
 SCENE_REVIEW_POLICIES = frozenset({"user_first", "agent_first"})
-HOST_SPAWN_PACKAGE_VERSION = "whiteboard-host-spawn-package-v1"
 SCENE_VISUAL_REVIEW_ROLE_CONTRACT = """# scene visualReview frozen role contract
 
 - 只读 task.json 列出的 current scene review bundle、timing/render bindings 与单幕视频。
@@ -155,12 +151,11 @@ def build_scene_review_bundle(
     *,
     force_deep: bool = False,
     include_bound_media: bool = False,
-    review_policy: str = "user_first",
+    review_policy: str | None = None,
 ) -> dict[str, Any]:
     """重算全部正式 scene 的 current bundle；不读取或写入人工批准。"""
 
-    if review_policy not in SCENE_REVIEW_POLICIES:
-        raise SceneReviewStaleError("review_policy 必须是 user_first 或 agent_first")
+    review_policy = resolve_project_review_policy(project, review_policy)
     _, manifest = load_render_manifest(project)
     try:
         cover_review = load_cover_review(project)
@@ -299,10 +294,10 @@ def build_scene_review_bundle(
     return result
 
 
-def _scene_review_spawn_package(
+def _prepare_scene_visual_review_task(
     *, workspace: Any, project: Project, bundle: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """冻结 current scene bundle 并准备一次宿主 visualReview spawn package。"""
+    """冻结 current scene bundle 的 visualReview task；不决定宿主派发方式。"""
 
     run_id = f"scene-vr-{uuid.uuid4().hex[:12]}"
     project.create_run_dir(run_id)
@@ -356,74 +351,27 @@ def _scene_review_spawn_package(
     }
     write_json_atomic(context.task_json, task_data)
     task = validate_agent_task(context.task_json, context, expected_current_bindings=current_bindings)
-    decision = decide_agent_dispatch(
-        task,
-        configured=workspace.config.for_role("visualReview"),
-        ready_tasks=1,
-        runtime_child_slots=1,
-        resource_budget=1,
-        runtime_role_capabilities=("readFiles", "viewImage", "writeCandidateJson"),
-        coordinator_capabilities={"readFiles", "writeCandidateJson"},
-    )
-    audit = build_agent_batch_audit(
-        stage="visualReview",
-        configured=workspace.config.for_role("visualReview"),
-        task_count=1,
-        decision=decision,
-    )
-    role_path = role_contract.resolve()
-    task_path = context.task_json.resolve()
-    package = None
-    if decision.dispatch_allowed:
-        suffix = re.sub(r"[^a-z0-9_]", "_", run_id.lower())
-        package = {
-            "contractVersion": HOST_SPAWN_PACKAGE_VERSION,
-            "preparedOnly": True,
-            "hostSpawnRequired": True,
-            "hostSpawnExecuted": False,
-            "taskId": task.data["taskId"],
-            "taskKind": task.data["taskKind"],
-            "taskJsonPath": str(task_path),
-            "taskSha256": task.task_sha256,
-            "roleContractPath": str(role_path),
-            "roleContractSha256": task.data["roleContractSha256"],
-            "allowedAttemptDir": str(context.task_dir.resolve()),
-            "resultJsonPath": str(context.result_json.resolve()),
-            "requiredCapabilities": list(task.data["requiredCapabilities"]),
-            "spawnAgentCall": {
-                "task_name": f"visual_review_{suffix}"[:64].rstrip("_"),
-                "fork_turns": "none",
-                "message": build_agent_prompt(
-                    task_json=task_path,
-                    role_contract=role_path,
-                    task_kind="visualReview",
-                    task_sha256=task.task_sha256,
-                    role_contract_sha256=str(task.data["roleContractSha256"]),
-                ),
-            },
-            "completionContract": {
-                "resultJsonPath": str(context.result_json.resolve()),
-                "returnFields": ["TASK_STATUS", "RESULT_JSON", "VALIDATOR_STATUS", "SUMMARY"],
-            },
-        }
-    audit.update(
-        {
-            "status": "ready_for_host_spawn" if package else audit["mode"],
-            "preparedOnly": True,
-            "hostSpawnExecuted": False,
-            "spawnPackage": package,
-            "sceneReviewIdentityHash": bundle["identityHash"],
-        }
-    )
+    audit = {
+        "stage": "visualReview",
+        "configuredAgentConcurrency": workspace.config.for_role("visualReview"),
+        "taskCount": 1,
+        "preparedTaskCount": 1,
+        "preparationMode": "artifact_only",
+        "status": "ready_for_coordinator_dispatch",
+        "preparedOnly": True,
+        "preparedTask": build_prepared_task_descriptor(task),
+        "sceneReviewIdentityHash": bundle["identityHash"],
+    }
     return audit
 
 
 def inspect_scene_review(
     project: Project,
     *,
-    review_policy: str = "user_first",
+    review_policy: str | None = None,
     workspace: Any | None = None,
 ) -> dict[str, Any]:
+    review_policy = resolve_project_review_policy(project, review_policy)
     bundle = build_scene_review_bundle(project, review_policy=review_policy)
     _, manifest = load_render_manifest(project)
     approval = manifest.get("sceneReviewApproval")
@@ -437,12 +385,12 @@ def inspect_scene_review(
         semantic_review: dict[str, Any] = {
             "status": "skipped_by_user",
             "findings": None,
-            "spawnPackage": None,
+            "preparedTask": None,
         }
     else:
         if workspace is None:
             raise SceneReviewStaleError("agent_first 需要可信 workspace 上下文")
-        semantic_review = _scene_review_spawn_package(
+        semantic_review = _prepare_scene_visual_review_task(
             workspace=workspace,
             project=project,
             bundle=bundle,
@@ -496,7 +444,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--review-policy",
         choices=sorted(SCENE_REVIEW_POLICIES),
-        default="user_first",
+        default=None,
         help="全部 current 单幕 bundle 完成后的视觉预审策略",
     )
     return parser

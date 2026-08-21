@@ -161,7 +161,7 @@ class Phase4RunnerContractTests(AnnotationBatchFixture):
             )
         self.assertEqual(code, run_phase.EXIT_HUMAN_GATE)
         summary = json.loads(output.getvalue())
-        self.assertEqual(summary["contractVersion"], "phase-runner-v1")
+        self.assertEqual(summary["contractVersion"], "phase-runner-v2")
         self.assertEqual(summary["status"], "WAITING_HUMAN_GATE")
         self.assertEqual(summary["nextGate"], "annotation_review_confirmation")
         self.assertFalse(summary["approvalWritten"])

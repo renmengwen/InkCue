@@ -214,6 +214,16 @@ class ContentRevisionPrepareTests(unittest.TestCase):
             self.assertFalse((draft_root / name).exists())
         self.assertFalse(prepared["formalPublished"])
         self.assertFalse(prepared["approvalWritten"])
+        self.assertEqual(prepared["contractVersion"], "whiteboard-draft-agent-prepare-v2")
+        self.assertEqual(prepared["attempt"], 2)
+        self.assertTrue(prepared["preparedTask"]["preparedOnly"])
+        self.assertEqual(
+            Path(prepared["preparedTask"]["allowedAttemptDir"]),
+            context.task_dir.resolve(),
+        )
+        serialized = json.dumps(prepared, ensure_ascii=False)
+        for forbidden in ("spawnAgentCall", "spawnPackage", "dispatchAllowed"):
+            self.assertNotIn(forbidden, serialized)
 
         mutated = dict(task.data)
         mutated["allowedOutputs"] = [
@@ -267,7 +277,7 @@ class ContentRevisionPrepareTests(unittest.TestCase):
             [path.name for path in task.input_files],
             ["content-input.json", "role-contract.md"],
         )
-        self.assertEqual(prepared["contractVersion"], "whiteboard-draft-agent-prepare-v1")
+        self.assertEqual(prepared["contractVersion"], "whiteboard-draft-agent-prepare-v2")
 
 
 class ContentReviewArtifactTests(unittest.TestCase):

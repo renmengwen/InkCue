@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from project_workspace import WorkspaceError, load_workspace_config
+from project_workspace import WorkspaceError, load_workspace_config, probe_workspace_access
 
 
 BASE_DEPS: dict[str, str] = {
@@ -195,7 +195,7 @@ def install(py: Path, packages: list[str], env: dict[str, str]) -> bool:
     return True
 
 
-def _parse_arguments(arguments: list[str]) -> tuple[bool, str | None]:
+def _parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="准备基础白板渲染环境；语音 provider 依赖仅在显式 feature 下安装。"
     )
@@ -205,28 +205,42 @@ def _parse_arguments(arguments: list[str]) -> tuple[bool, str | None]:
         choices=sorted(FEATURE_DEPS),
         help="可选能力；Edge TTS 需要显式 edge-tts，MiniMax 使用 Python 标准库",
     )
-    parsed = parser.parse_args(arguments)
-    return parsed.check, parsed.feature
+    parser.add_argument("--config", help="workspace.local.json 路径")
+    parser.add_argument(
+        "--check-workspace-access",
+        action="store_true",
+        help="只运行工作区 create/write/flush/read/delete 预检并输出结构化结果",
+    )
+    return parser.parse_args(arguments)
 
 
 def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
     try:
-        check_only, feature = _parse_arguments(arguments)
+        args = _parse_arguments(arguments)
     except SystemExit as exc:
         # argparse 已输出具体参数错误；作为可调用函数时仍返回统一退出码。
         if exc.code == 0:
             return 0
         return 2
     try:
-        py, pip_cache, runtime_tmp = ensure_venv(check_only)
+        if args.check_workspace_access:
+            workspace = load_workspace_config(args.config, verify_writable=False)
+            access = probe_workspace_access(workspace.root)
+            print(
+                "WORKSPACE_ACCESS="
+                + json.dumps(access.as_dict(), ensure_ascii=False, sort_keys=True)
+            )
+            return 0 if access.ok else 2
+
+        py, pip_cache, runtime_tmp = ensure_venv(args.check, args.config)
         # 即使复用既有环境，也要建立并显式使用固定缓存和临时目录。
         pip_cache.mkdir(parents=True, exist_ok=True)
         runtime_tmp.mkdir(parents=True, exist_ok=True)
         env = subprocess_environment(pip_cache, runtime_tmp)
         dependencies = dict(BASE_DEPS)
-        if feature is not None:
-            dependencies.update(FEATURE_DEPS[feature])
+        if args.feature is not None:
+            dependencies.update(FEATURE_DEPS[args.feature])
         availability = probe_dependencies(py, dependencies, env)
         missing: list[str] = []
         for import_name, pip_requirement in dependencies.items():
@@ -236,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[miss] {pip_requirement}")
                 missing.append(pip_requirement)
         if missing:
-            if check_only:
+            if args.check:
                 print(f"[err] 缺少 {len(missing)} 个依赖: {', '.join(missing)}", file=sys.stderr)
                 return 1
             if not install(py, missing, env):

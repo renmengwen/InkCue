@@ -1,4 +1,4 @@
-"""Agent task/result 合同与宿主协作调度判定。
+"""Agent task/result 合同与宿主中立的冻结任务描述。
 
 本模块不读取 workspace 配置、不派发真实 subagent，也不写正式项目文件。
 调用方必须把已经由权威 workspace loader 验证的 ``workspace_root`` 和
@@ -18,6 +18,7 @@ from typing import Any, Callable, Iterable, Literal, Mapping, Sequence
 TASK_CONTRACT_VERSION = "whiteboard-agent-task-v1"
 RESULT_CONTRACT_VERSION = "whiteboard-agent-result-v1"
 ROLE_CONTRACT_VERSION = "whiteboard-subagent-orchestration-v1"
+PREPARED_TASK_CONTRACT_VERSION = "whiteboard-prepared-agent-task-v1"
 
 TASK_KINDS = frozenset(
     {
@@ -663,196 +664,28 @@ def validate_agent_result(
     )
 
 
-DispatchMode = Literal["dispatch", "fallback", "blocked", "no_ready"]
-
-
-@dataclass(frozen=True)
-class AgentDispatchDecision:
-    dispatch_allowed: bool
-    effective_agent_concurrency: int
-    mode: DispatchMode
-    reason: str
-
-
-def _validate_capacity(value: int, field: str, *, allow_zero: bool) -> int:
-    minimum = 0 if allow_zero else 1
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise AgentContractError("capacity", f"{field} 必须至少为 {minimum}")
-    return value
-
-
-def decide_agent_dispatch(
+def build_prepared_task_descriptor(
     task: ValidatedAgentTask,
     *,
-    configured: int,
-    ready_tasks: int,
-    runtime_child_slots: int,
-    resource_budget: int,
-    runtime_role_capabilities: Iterable[str],
-    coordinator_capabilities: Iterable[str],
-) -> AgentDispatchDecision:
-    """计算 dispatch/fallback/BLOCKED；child slot 已是一次转换后的子槽数。"""
-
-    configured = _validate_capacity(configured, "configured", allow_zero=False)
-    ready_tasks = _validate_capacity(ready_tasks, "readyTasks", allow_zero=True)
-    runtime_child_slots = _validate_capacity(
-        runtime_child_slots, "runtimeChildSlots", allow_zero=True
-    )
-    resource_budget = _validate_capacity(
-        resource_budget, "resourceBudget", allow_zero=True
-    )
-    if ready_tasks == 0:
-        return AgentDispatchDecision(
-            False,
-            0,
-            "no_ready",
-            "没有 ready task",
-        )
-    required = set(task.data["requiredCapabilities"])
-    runtime_caps = set(runtime_role_capabilities)
-    coordinator_caps = set(coordinator_capabilities)
-    runtime_ready = required.issubset(runtime_caps)
-    effective = min(
-        configured, ready_tasks, runtime_child_slots, resource_budget
-    )
-    if runtime_ready and effective > 0:
-        return AgentDispatchDecision(
-            True,
-            effective,
-            "dispatch",
-            "宿主协作能力与并发预算可用",
-        )
-    if required.issubset(coordinator_caps):
-        if not runtime_ready:
-            reason = "runtime 缺少 role 能力，coordinator 串行 fallback"
-        else:
-            reason = "runtime 子槽或资源预算为 0，coordinator 串行 fallback"
-        return AgentDispatchDecision(
-            False,
-            0,
-            "fallback",
-            reason,
-        )
-    if "viewImage" in required and "viewImage" not in coordinator_caps:
-        reason = "视觉 role 缺少真实 viewImage 能力"
-    else:
-        reason = "coordinator 缺少 role fallback 能力"
-    return AgentDispatchDecision(
-        False,
-        0,
-        "blocked",
-        reason,
-    )
-
-
-AGENT_RUNTIME_STATUSES = frozenset(
-    {"dispatched", "running", "completed", "failed", "cancelled"}
-)
-_RUNTIME_ID_SEGMENT = r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}"
-_SAFE_RUNTIME_ID_RE = re.compile(
-    rf"^(?:{_RUNTIME_ID_SEGMENT}(?:/{_RUNTIME_ID_SEGMENT})*|"
-    rf"/root(?:/{_RUNTIME_ID_SEGMENT})*)$"
-)
-_SENSITIVE_RUNTIME_ID_SEGMENTS = frozenset(
-    {
-        "apikey",
-        "api-key",
-        "api_key",
-        "authorization",
-        "cookie",
-        "cookies",
-        "credential",
-        "credentials",
-        "secret",
-        "secrets",
-        "token",
-        "tokens",
-    }
-)
-
-
-def _require_runtime_id(value: Any, field: str) -> str:
-    if (
-        not isinstance(value, str)
-        or len(value) > 256
-        or _SAFE_RUNTIME_ID_RE.fullmatch(value) is None
-    ):
-        raise AgentContractError("audit", f"{field} 不是安全 runtime 标识")
-    segments = [segment.casefold() for segment in value.split("/") if segment]
-    if any(segment in _SENSITIVE_RUNTIME_ID_SEGMENTS for segment in segments):
-        raise AgentContractError("audit", f"{field} 包含敏感型 runtime 标识段")
-    return value
-
-
-def build_agent_batch_audit(
-    *,
-    stage: str,
-    configured: int,
-    task_count: int,
-    decision: AgentDispatchDecision,
-    peak_child_agents: int = 0,
-    task_agents: Sequence[Mapping[str, Any]] = (),
+    result_writer: Literal["child", "coordinator"] = "child",
 ) -> dict[str, Any]:
-    """构造不进入作品 identity 的非敏感 agent batch 审计。"""
+    """返回宿主中立的冻结 task 定位信息，不推断或编码派发方式。"""
 
-    if not isinstance(stage, str) or stage not in TASK_KINDS:
-        raise AgentContractError("audit", "stage 必须是 allowlisted agent role")
-    configured = _validate_capacity(configured, "configured", allow_zero=False)
-    task_count = _validate_capacity(task_count, "taskCount", allow_zero=True)
-    peak_child_agents = _validate_capacity(
-        peak_child_agents,
-        "peakChildAgents",
-        allow_zero=True,
-    )
-    if peak_child_agents > decision.effective_agent_concurrency:
-        raise AgentContractError("audit", "peakChildAgents 不能超过 effective")
-    if not decision.dispatch_allowed and peak_child_agents != 0:
-        raise AgentContractError("audit", "未 dispatch 时 peakChildAgents 必须为 0")
-    records: list[dict[str, str]] = []
-    seen_tasks: set[str] = set()
-    for index, raw in enumerate(task_agents):
-        record = _require_exact_keys(
-            raw,
-            required={"taskId", "agentId", "status"},
-            field=f"taskAgents[{index}]",
-        )
-        task_id = _require_safe_id(record["taskId"], f"taskAgents[{index}].taskId")
-        agent_id = _require_runtime_id(
-            record["agentId"],
-            f"taskAgents[{index}].agentId",
-        )
-        status = record["status"]
-        if not isinstance(status, str) or status not in AGENT_RUNTIME_STATUSES:
-            raise AgentContractError("audit", "task agent status 不在 allowlist")
-        if task_id in seen_tasks:
-            raise AgentContractError("audit", "同一 taskId 不能重复记录")
-        seen_tasks.add(task_id)
-        records.append({"taskId": task_id, "agentId": agent_id, "status": status})
-    if len(records) > task_count:
-        raise AgentContractError("audit", "taskAgents 数量不能超过 taskCount")
-    if records and not decision.dispatch_allowed:
-        raise AgentContractError("audit", "未 dispatch 时不能记录真实 agentId")
-
-    if decision.mode == "dispatch":
-        mode = "host_collaboration_dispatch"
-        adapter = "codex_collaboration"
-    elif decision.mode == "fallback":
-        mode = "coordinator_fallback"
-        adapter = "coordinator"
-    else:
-        mode = decision.mode
-        adapter = "none"
+    role_contract = (task.context.task_dir / "role-contract.md").resolve()
     return {
-        "stage": stage,
-        "configuredAgentConcurrency": configured,
-        "effectiveAgentConcurrency": decision.effective_agent_concurrency,
-        "dispatchAllowed": decision.dispatch_allowed,
-        "mode": mode,
-        "adapter": adapter,
-        "taskCount": task_count,
-        "peakChildAgents": peak_child_agents,
-        "taskAgents": records,
-        "reason": decision.reason,
+        "contractVersion": PREPARED_TASK_CONTRACT_VERSION,
+        "preparedOnly": True,
+        "taskId": task.data["taskId"],
+        "taskKind": task.data["taskKind"],
+        "taskJsonPath": str(task.context.task_json.resolve()),
+        "taskSha256": task.task_sha256,
+        "roleContractPath": str(role_contract),
+        "roleContractSha256": task.data["roleContractSha256"],
+        "allowedAttemptDir": str(task.context.task_dir.resolve()),
+        "resultJsonPath": str(task.context.result_json.resolve()),
+        "resultWriter": result_writer,
+        "allowedOutputs": list(task.data["allowedOutputs"]),
+        "requiredCapabilities": list(task.data["requiredCapabilities"]),
     }
 
 

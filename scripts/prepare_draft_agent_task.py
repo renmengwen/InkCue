@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""为 contentDrafting/storyboardPlanning 冻结可直接宿主派发的 draft attempt。
+"""为 contentDrafting/storyboardPlanning 冻结宿主中立的 draft attempt。
 
-本工具只准备 candidate attempt 和真实宿主所需的 spawn package；它不创建
+本工具只准备 candidate attempt 和 task descriptor；它不判断宿主能力、不创建
 child、不发布正式草案/分镜、不创建项目，也不写任何人工批准。
 """
 from __future__ import annotations
@@ -22,9 +22,7 @@ try:  # direct CLI execution
         ROLE_CONTRACT_VERSION,
         TASK_CONTRACT_VERSION,
         TrustedTaskContext,
-        build_agent_batch_audit,
-        build_agent_prompt,
-        decide_agent_dispatch,
+        build_prepared_task_descriptor,
         sha256_file,
         validate_agent_task,
     )
@@ -45,9 +43,7 @@ except ImportError:  # imported as scripts.prepare_draft_agent_task
         ROLE_CONTRACT_VERSION,
         TASK_CONTRACT_VERSION,
         TrustedTaskContext,
-        build_agent_batch_audit,
-        build_agent_prompt,
-        decide_agent_dispatch,
+        build_prepared_task_descriptor,
         sha256_file,
         validate_agent_task,
     )
@@ -65,8 +61,7 @@ except ImportError:  # imported as scripts.prepare_draft_agent_task
     from scripts.srt_timeline import SrtValidationError, group_scenes, parse_srt
 
 
-PREPARE_CONTRACT_VERSION = "whiteboard-draft-agent-prepare-v1"
-HOST_SPAWN_PACKAGE_VERSION = "whiteboard-host-spawn-package-v1"
+PREPARE_CONTRACT_VERSION = "whiteboard-draft-agent-prepare-v2"
 CONTENT_INPUT_CONTRACT_VERSION = "whiteboard-content-input-v1"
 CONTENT_REVISION_REQUEST_CONTRACT_VERSION = "whiteboard-content-revision-request-v1"
 HOST_DRAFT_CAPABILITIES = ("readFiles", "writeCandidateJson")
@@ -549,54 +544,7 @@ def prepare_draft_task(args: argparse.Namespace) -> dict[str, Any]:
     }
     write_json_atomic(context.task_json, task_data)
     task = validate_agent_task(context.task_json, context, expected_current_bindings=bindings)
-    decision = decide_agent_dispatch(
-        task,
-        configured=workspace.for_role(args.role),
-        ready_tasks=1,
-        runtime_child_slots=1,
-        resource_budget=1,
-        runtime_role_capabilities=HOST_DRAFT_CAPABILITIES,
-        coordinator_capabilities=HOST_DRAFT_CAPABILITIES,
-    )
-    audit = build_agent_batch_audit(
-        stage=args.role,
-        configured=workspace.for_role(args.role),
-        task_count=1,
-        decision=decision,
-    )
-    prompt = build_agent_prompt(
-        task_json=context.task_json.resolve(),
-        role_contract=role_contract.resolve(),
-        task_kind=args.role,
-        task_sha256=task.task_sha256,
-        role_contract_sha256=task_data["roleContractSha256"],
-    )
-    task_name = re.sub(r"[^a-z0-9_]", "_", f"{args.role}_{run_id}".lower())[:64].rstrip("_")
-    spawn_package = {
-        "contractVersion": HOST_SPAWN_PACKAGE_VERSION,
-        "preparedOnly": True,
-        "hostSpawnRequired": bool(decision.dispatch_allowed),
-        "hostSpawnExecuted": False,
-        "taskId": task_id,
-        "taskKind": args.role,
-        "taskJsonPath": str(context.task_json.resolve()),
-        "taskSha256": task.task_sha256,
-        "roleContractPath": str(role_contract.resolve()),
-        "roleContractSha256": task_data["roleContractSha256"],
-        "allowedAttemptDir": str(context.task_dir.resolve()),
-        "resultJsonPath": str(context.result_json.resolve()),
-        "allowedOutputs": list(task_data["allowedOutputs"]),
-        "requiredCapabilities": list(HOST_DRAFT_CAPABILITIES),
-        "spawnAgentCall": {
-            "task_name": task_name,
-            "fork_turns": "none",
-            "message": prompt,
-        } if decision.dispatch_allowed else None,
-        "completionContract": {
-            "resultJsonPath": str(context.result_json.resolve()),
-            "returnFields": ["TASK_STATUS", "RESULT_JSON", "VALIDATOR_STATUS", "SUMMARY"],
-        },
-    }
+    prepared_task = build_prepared_task_descriptor(task)
     return {
         "contractVersion": PREPARE_CONTRACT_VERSION,
         "ok": True,
@@ -608,8 +556,8 @@ def prepare_draft_task(args: argparse.Namespace) -> dict[str, Any]:
         "draftRoot": str(draft_root),
         "runId": run_id,
         "attempt": args.attempt,
-        "dispatchAudit": audit,
-        "spawnPackage": spawn_package,
+        "configuredAgentConcurrency": workspace.for_role(args.role),
+        "preparedTask": prepared_task,
     }
 
 

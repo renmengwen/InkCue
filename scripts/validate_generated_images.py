@@ -23,9 +23,7 @@ from agent_task_contract import (
     TrustedTaskContext,
     ValidatedAgentResult,
     ValidatedAgentTask,
-    build_agent_batch_audit,
-    build_agent_prompt,
-    decide_agent_dispatch,
+    build_prepared_task_descriptor,
     sha256_file as agent_sha256_file,
     validate_agent_result,
     validate_agent_task,
@@ -36,6 +34,7 @@ from project_workspace import (
     ProjectValidationError,
     ProjectWorkspace,
     WorkspaceError,
+    resolve_project_review_policy,
     sha256_file,
     write_json_atomic,
 )
@@ -51,7 +50,6 @@ VISUAL_REVIEW_ROLE_CONTRACT = """# visualReview frozen role contract
 - 若 task.inputs 包含封面，封面是独立 review 图片，允许文字；不得把封面文字当作普通
   scene 源图违规。封面对应的 `coverFrameRange` 仅豁免视觉语义规则，技术检查仍完整保留。
 """
-HOST_SPAWN_PACKAGE_VERSION = "whiteboard-host-spawn-package-v1"
 HOST_VISUAL_REVIEW_CAPABILITIES = (
     "readFiles",
     "viewImage",
@@ -212,12 +210,8 @@ def create_visual_review_task(
     workspace: Any,
     project: Any,
     manifest_path: Path,
-    coordinator_can_view: bool,
-    runtime_child_slots: int = 0,
-    coordinator_resource_budget: int = 1,
-    runtime_role_capabilities: Iterable[str] = (),
 ) -> tuple[ValidatedAgentTask, dict[str, Any]]:
-    """创建 global visualReview task，并给出宿主协作决策。"""
+    """创建 global visualReview task；宿主调度只由 coordinator 决定。"""
 
     run_id = f"vr-{uuid.uuid4().hex[:12]}"
     project.create_run_dir(run_id)
@@ -281,91 +275,19 @@ def create_visual_review_task(
         context,
         expected_current_bindings=current_bindings,
     )
-    coordinator_caps = {"readFiles", "writeCandidateJson"}
-    if coordinator_can_view:
-        coordinator_caps.add("viewImage")
-    decision = decide_agent_dispatch(
-        task,
-        configured=workspace.config.for_role("visualReview"),
-        ready_tasks=1,
-        runtime_child_slots=runtime_child_slots,
-        resource_budget=coordinator_resource_budget,
-        runtime_role_capabilities=tuple(runtime_role_capabilities),
-        coordinator_capabilities=coordinator_caps,
-    )
-    audit = build_agent_batch_audit(
-        stage="visualReview",
-        configured=workspace.config.for_role("visualReview"),
-        task_count=1,
-        decision=decision,
-    )
-    if decision.mode == "dispatch":
-        status = "pending_child_result"
-    elif decision.mode == "fallback":
-        status = "pending_coordinator_findings"
-    else:
-        status = "blocked"
-    audit.update(
-        {
-            "taskKind": "visualReview",
-            "status": status,
-            "taskFile": context.relative_posix(context.task_json),
-            "approvalWritten": False,
-        }
-    )
-    return task, audit
-
-
-def build_visual_review_spawn_package(
-    task: ValidatedAgentTask,
-    audit: Mapping[str, Any],
-) -> dict[str, Any] | None:
-    """把 frozen task 转成宿主可直接消费的 spawn_agent 参数；本函数不创建 child。"""
-
-    if not audit.get("dispatchAllowed"):
-        return None
-    role_contract = (task.context.task_dir / "role-contract.md").resolve()
-    task_json = task.context.task_json.resolve()
-    attempt_dir = task.context.task_dir.resolve()
-    result_json = task.context.result_json.resolve()
-    prompt = build_agent_prompt(
-        task_json=task_json,
-        role_contract=role_contract,
-        task_kind=str(task.data["taskKind"]),
-        task_sha256=task.task_sha256,
-        role_contract_sha256=str(task.data["roleContractSha256"]),
-    )
-    run_suffix = re.sub(r"[^a-z0-9_]", "_", task.context.run_id.lower())
-    task_name = f"visual_review_{run_suffix}"[:64].rstrip("_")
-    return {
-        "contractVersion": HOST_SPAWN_PACKAGE_VERSION,
+    audit = {
+        "stage": "visualReview",
+        "configuredAgentConcurrency": workspace.config.for_role("visualReview"),
+        "taskCount": 1,
+        "preparedTaskCount": 1,
+        "preparationMode": "artifact_only",
+        "taskKind": "visualReview",
+        "status": "ready_for_coordinator_dispatch",
+        "taskFile": context.relative_posix(context.task_json),
         "preparedOnly": True,
-        "hostSpawnRequired": True,
-        "hostSpawnExecuted": False,
-        "taskId": task.data["taskId"],
-        "taskKind": task.data["taskKind"],
-        "taskJsonPath": str(task_json),
-        "taskSha256": task.task_sha256,
-        "roleContractPath": str(role_contract),
-        "roleContractSha256": task.data["roleContractSha256"],
-        "allowedAttemptDir": str(attempt_dir),
-        "resultJsonPath": str(result_json),
-        "requiredCapabilities": list(task.data["requiredCapabilities"]),
-        "spawnAgentCall": {
-            "task_name": task_name,
-            "fork_turns": "none",
-            "message": prompt,
-        },
-        "completionContract": {
-            "resultJsonPath": str(result_json),
-            "returnFields": [
-                "TASK_STATUS",
-                "RESULT_JSON",
-                "VALIDATOR_STATUS",
-                "SUMMARY",
-            ],
-        },
+        "approvalWritten": False,
     }
+    return task, audit
 
 
 def prepare_visual_review_dispatch(
@@ -374,30 +296,16 @@ def prepare_visual_review_dispatch(
     project: Any,
     manifest_path: Path,
 ) -> tuple[ValidatedAgentTask, dict[str, Any]]:
-    """准备 visualReview attempt 与宿主派发包，但绝不伪造真实 spawn/agentId。"""
+    """准备 visualReview attempt；coordinator 直接选择 spawn/followup/fallback。"""
 
     task, audit = create_visual_review_task(
         workspace=workspace,
         project=project,
         manifest_path=manifest_path,
-        coordinator_can_view=True,
-        runtime_child_slots=1,
-        coordinator_resource_budget=1,
-        runtime_role_capabilities=(
-            HOST_VISUAL_REVIEW_CAPABILITIES
-        ),
     )
-    spawn_package = build_visual_review_spawn_package(task, audit)
     audit.update(
         {
-            "status": (
-                "ready_for_host_spawn"
-                if spawn_package is not None
-                else audit["status"]
-            ),
-            "preparedOnly": True,
-            "hostSpawnExecuted": False,
-            "spawnPackage": spawn_package,
+            "preparedTask": build_prepared_task_descriptor(task),
         }
     )
     return task, audit
@@ -514,14 +422,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 2
-    if review_policy is None:
-        # 未传策略时本次运行默认 user_first；历史兼容入口仍明确等价于
-        # agent_first，避免把旧 --prepare-visual-review 误判为冲突。
-        review_policy = "agent_first" if args.prepare_visual_review else "user_first"
+    if review_policy is None and args.prepare_visual_review:
+        # 历史兼容入口明确等价于 agent_first；音频项目仍会与 approve-full
+        # 冻结值核对，不能借此改写策略。
+        review_policy = "agent_first"
 
     try:
         workspace = ProjectWorkspace.from_config()
         project = workspace.load_project(args.project)
+        review_policy = resolve_project_review_policy(project, review_policy)
         configured_concurrency = workspace.config.for_stage("imageValidation")
         plan_scenes = project.plan["scenes"]
         if not plan_scenes:

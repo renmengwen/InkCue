@@ -305,6 +305,81 @@ def _validate_scene_input_shape(project: Project, inputs: list[Path]) -> None:
         raise ProjectValidationError("输入场景路径不得重复")
 
 
+def ordered_scene_inputs(project: Project) -> list[Path]:
+    """只按 current generation/timing plan 顺序解析正式 scene MP4。"""
+
+    return [
+        project.path(Path("scenes") / f"{Path(scene['outputFile']).stem}-whiteboard.mp4")
+        for scene in project.plan["scenes"]
+    ]
+
+
+def merge_project_scenes(
+    project: Project,
+    *,
+    inputs: list[Path] | None = None,
+    force_deep: bool = False,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """消费 current approved scene bundle 并发布 clean video；从不写人工批准。"""
+
+    scene_inputs = [
+        _project_owned_path(project, path) for path in (inputs or ordered_scene_inputs(project))
+    ]
+    output = project.path("output/final-video-only.mp4")
+    if output in scene_inputs:
+        raise ProjectValidationError("正式 clean video 输出不得覆盖输入场景")
+    _validate_scene_input_shape(project, scene_inputs)
+    approved_bundle = assert_current_scene_review_approval(
+        project,
+        inputs=scene_inputs,
+        force_deep=force_deep,
+    )
+    validated_media = approved_bundle.get("validatedSceneMedia")
+    if validated_media is not None and (
+        not isinstance(validated_media, list) or len(validated_media) != len(scene_inputs)
+    ):
+        raise SceneReviewStaleError("scene review Gate 未返回完整的逐幕媒体 binding")
+    expected_frame_count = project.timing_plan["scenes"][-1]["endFrameExclusive"]
+    merge_run_id = run_id or uuid.uuid4().hex
+    run_dir = project.create_run_dir(f"merge-{merge_run_id}")
+    candidate = run_dir / "final-video-only.candidate.mp4"
+    list_path = run_dir / "concat.txt"
+    completed = False
+    try:
+        media = _produce_candidate(
+            scene_inputs,
+            candidate,
+            list_path,
+            project=project,
+            expected_frame_count=expected_frame_count,
+        )
+        atomic_publish(candidate, output)
+        media = bind_validated_video(
+            output,
+            render_profile=project.render_profile,
+            expected_frame_count=expected_frame_count,
+            expected_audio_streams=0,
+            deep_receipt=media["validation"],
+        )
+        _update_delivery_manifest(project, media)
+        completed = True
+        return {
+            "output": str(output),
+            "sceneCount": len(scene_inputs),
+            "mediaSha256": media["sha256"],
+            "frameCount": expected_frame_count,
+            "approvalWritten": False,
+        }
+    finally:
+        if completed:
+            list_path.unlink(missing_ok=True)
+            try:
+                run_dir.rmdir()
+            except OSError:
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="合并静音场景为 final-video-only.mp4")
     parser.add_argument("--inputs", nargs="+", required=True, help="按 timing plan 顺序的场景 MP4")
@@ -332,19 +407,6 @@ def main(argv: list[str] | None = None) -> int:
             )
         if output in inputs:
             raise ProjectValidationError("正式 clean video 输出不得覆盖输入场景")
-        _validate_scene_input_shape(project, inputs)
-        approved_bundle = assert_current_scene_review_approval(
-            project,
-            inputs=inputs,
-            force_deep=args.force_deep,
-        )
-        validated_media = approved_bundle.get("validatedSceneMedia")
-        if validated_media is not None and (
-            not isinstance(validated_media, list) or len(validated_media) != len(inputs)
-        ):
-            raise SceneReviewStaleError("scene review Gate 未返回完整的逐幕媒体 binding")
-        expected_frame_count = project.timing_plan["scenes"][-1]["endFrameExclusive"]
-        run_dir = project.create_run_dir(f"merge-{uuid.uuid4().hex}")
     except (SceneReviewGateError, SceneReviewStaleError) as exc:
         print(f"[err] scene review Gate 拒绝合并: {exc}", file=sys.stderr)
         return 5
@@ -352,35 +414,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[err] 项目、输入或时序无效: {exc}", file=sys.stderr)
         return 2
 
-    candidate = run_dir / "final-video-only.candidate.mp4"
-    list_path = run_dir / "concat.txt"
     try:
-        media = _produce_candidate(
-            inputs,
-            candidate,
-            list_path,
-            project=project,
-            expected_frame_count=expected_frame_count,
-        )
-        atomic_publish(candidate, output)
-        media = bind_validated_video(
-            output,
-            render_profile=project.render_profile,
-            expected_frame_count=expected_frame_count,
-            expected_audio_streams=0,
-            deep_receipt=media["validation"],
-        )
-        _update_delivery_manifest(project, media)
-    except (OSError, ProjectValidationError, MediaValidationError, KeyError, TypeError) as exc:
+        merge_project_scenes(project, inputs=inputs, force_deep=args.force_deep)
+    except (SceneReviewGateError, SceneReviewStaleError) as exc:
+        print(f"[err] scene review Gate 拒绝合并: {exc}", file=sys.stderr)
+        return 5
+    except ProjectValidationError as exc:
+        print(f"[err] 项目、输入或时序无效: {exc}", file=sys.stderr)
+        return 2
+    except (OSError, MediaValidationError, KeyError, TypeError) as exc:
         print(f"[err] 合并或媒体验证失败: {exc}", file=sys.stderr)
-        print(f"FAILED_WORK_DIR={run_dir}", file=sys.stderr)
         return 4
-
-    list_path.unlink(missing_ok=True)
-    try:
-        run_dir.rmdir()
-    except OSError:
-        print(f"[warn] 本次合并临时目录未空，已保留: {run_dir}", file=sys.stderr)
     print(f"OUTPUT={output}")
     return 0
 

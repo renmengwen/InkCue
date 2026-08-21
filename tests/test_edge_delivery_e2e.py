@@ -30,6 +30,7 @@ import media_validation  # noqa: E402
 import prepare_source  # noqa: E402
 import project_workspace  # noqa: E402
 import generate_annotation_previews  # noqa: E402
+import generate_voiceover  # noqa: E402
 from generate_voiceover import main as voice_main  # noqa: E402
 from voiceover import FakeProviderAdapter, PermanentProviderError  # noqa: E402
 
@@ -62,6 +63,10 @@ class EdgeDeliveryE2ETests(unittest.TestCase):
     maxDiff = None
 
     def setUp(self) -> None:
+        self._provider_patcher = mock.patch.object(
+            generate_voiceover, "active_provider_id", return_value="edge-tts"
+        )
+        self._provider_patcher.start()
         self.assertTrue(RUNTIME_PY.is_file(), f"固定运行时不存在: {RUNTIME_PY}")
         TEST_ROOT.mkdir(parents=True, exist_ok=True)
         self.root = Path(tempfile.mkdtemp(prefix="run-", dir=TEST_ROOT)).resolve()
@@ -72,6 +77,7 @@ class EdgeDeliveryE2ETests(unittest.TestCase):
         self.generation_plan_sha_before_voice: str | None = None
 
     def tearDown(self) -> None:
+        self._provider_patcher.stop()
         if self.root.exists():
             self.root.relative_to(TEST_ROOT.resolve())
             shutil.rmtree(self.root, ignore_errors=True)
@@ -248,6 +254,8 @@ class EdgeDeliveryE2ETests(unittest.TestCase):
                     current_full_identity,
                     "--duration-decision",
                     "accept_actual",
+                    "--review-policy",
+                    "user_first",
                 ]
             ),
             0,

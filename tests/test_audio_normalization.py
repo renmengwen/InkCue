@@ -14,7 +14,7 @@ from unittest import mock
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = SKILL_ROOT / "scripts"
-TEST_RUNS = Path(r"D:\SRTWhiteboard\.test-runs")
+TEST_RUNS = SKILL_ROOT / ".test-runs"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 

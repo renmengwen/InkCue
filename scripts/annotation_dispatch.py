@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
 
-DISPATCH_MANIFEST_CONTRACT = "whiteboard-annotation-dispatch-v2"
+DISPATCH_MANIFEST_CONTRACT = "whiteboard-annotation-dispatch-v3"
 DISPATCH_PROTOCOL = "annotation-artifact-first-v1"
 DEFAULT_TAIL_GRACE_SECONDS = 30.0
 
@@ -202,7 +202,7 @@ def build_dispatch_manifest(
     candidate_root: Path,
     tasks: Iterable[Mapping[str, Any]],
     dispatch_units: Iterable[Mapping[str, Any]],
-    effective_concurrency: int,
+    configured_concurrency: int,
     audit: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a host-neutral structured manifest with ASCII control flags."""
@@ -220,7 +220,7 @@ def build_dispatch_manifest(
             "WRITE_APPROVAL_FILES": False,
             "STOP_AFTER_CANDIDATE_READY": True,
         },
-        "effectiveConcurrency": int(effective_concurrency),
+        "configuredConcurrency": int(configured_concurrency),
         "tasks": [dict(item) for item in tasks],
         "dispatchUnits": [dict(item) for item in dispatch_units],
         "audit": dict(audit or {}),

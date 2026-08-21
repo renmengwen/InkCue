@@ -85,6 +85,7 @@ AGENT_ROLE_FIELDS = {
     "annotationDrafting": "annotation_drafting",
 }
 SUBTITLE_PRESETS = frozenset({"medium", "fast", "veryfast"})
+REVIEW_POLICIES = frozenset({"user_first", "agent_first"})
 
 
 class WorkspaceError(ValueError):
@@ -93,6 +94,28 @@ class WorkspaceError(ValueError):
 
 class ProjectValidationError(ValueError):
     """项目元数据、路径或 generation plan 无效。"""
+
+
+@dataclass(frozen=True)
+class WorkspaceAccessProbe:
+    """一次真实 create/write/read/delete 工作区访问探针。"""
+
+    root: Path
+    ok: bool
+    code: str
+    stage: str
+    message: str
+    probe_file: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "code": self.code,
+            "stage": self.stage,
+            "workspaceRoot": str(self.root),
+            "message": self.message,
+            "probeFile": self.probe_file,
+        }
 
 
 def _require_concurrency_value(value: Any, *, label: str) -> int:
@@ -283,15 +306,85 @@ def _require_d_drive(path: Path) -> None:
         raise WorkspaceError(f"目标盘不可用: {drive_root}")
 
 
-def _verify_writable_directory(path: Path) -> None:
+def _workspace_probe_failure(path: Path, stage: str, exc: OSError) -> WorkspaceAccessProbe:
+    denied = isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {5, 32}
+    code = "workspace_write_denied" if denied else "workspace_unavailable"
+    hint = (
+        "当前进程不能写目标工作区。若 Codex UI 刚切换为完全访问，请在新回合先重新运行工作区预检。"
+        if denied
+        else "目标盘、目录或文件系统当前不可用，请检查盘符、磁盘状态和 Windows ACL。"
+    )
+    return WorkspaceAccessProbe(
+        root=path,
+        ok=False,
+        code=code,
+        stage=stage,
+        message=f"{hint} 原始错误: {type(exc).__name__}: {exc}",
+    )
+
+
+def probe_workspace_access(path: str | Path) -> WorkspaceAccessProbe:
+    """区分目录创建、写入、读回和清理失败，并且不依赖 shell 写文件。"""
+
+    root = _resolved(Path(path))
     try:
-        path.mkdir(parents=True, exist_ok=True)
-        probe = path / f".workspace-write-test-{uuid.uuid4().hex}"
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return _workspace_probe_failure(root, "create_directory", exc)
+
+    probe = root / f".workspace-write-test-{uuid.uuid4().hex}"
+    created = False
+    try:
         with probe.open("x", encoding="utf-8") as handle:
-            handle.write("ok")
+            created = True
+            handle.write("workspace-access-ok")
+            handle.flush()
+            os.fsync(handle.fileno())
+        if probe.read_text(encoding="utf-8") != "workspace-access-ok":
+            raise OSError("工作区探针读回内容不一致")
+    except OSError as exc:
+        failure = _workspace_probe_failure(root, "write_and_read", exc)
+        if created:
+            try:
+                probe.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return WorkspaceAccessProbe(
+            root=failure.root,
+            ok=failure.ok,
+            code=failure.code,
+            stage=failure.stage,
+            message=failure.message,
+            probe_file=str(probe),
+        )
+
+    try:
         probe.unlink()
     except OSError as exc:
-        raise WorkspaceError(f"工作区目录不可写: {path}: {exc}") from exc
+        return WorkspaceAccessProbe(
+            root=root,
+            ok=False,
+            code="workspace_probe_cleanup_failed",
+            stage="delete_probe",
+            message=(
+                "工作区可以创建和读取文件，但无法删除访问探针；请检查杀毒软件占用或 Windows ACL。"
+                f" 原始错误: {type(exc).__name__}: {exc}"
+            ),
+            probe_file=str(probe),
+        )
+    return WorkspaceAccessProbe(
+        root=root,
+        ok=True,
+        code="workspace_access_ok",
+        stage="complete",
+        message="工作区 create/write/flush/read/delete 预检通过。",
+    )
+
+
+def _verify_writable_directory(path: Path) -> None:
+    result = probe_workspace_access(path)
+    if not result.ok:
+        raise WorkspaceError(f"{result.code}: {result.message} workspaceRoot={path}")
 
 
 def _parse_execution_pool(
@@ -427,6 +520,39 @@ def load_workspace_config(
         agents=agents,
         video_encoding=video_encoding,
     )
+
+
+def resolve_project_review_policy(
+    project: Project,
+    requested: str | None = None,
+) -> str:
+    """读取完整旁白批准时冻结的策略，并拒绝后续阶段静默改写。"""
+
+    if requested is not None and requested not in REVIEW_POLICIES:
+        raise ProjectValidationError("review policy 必须是 user_first 或 agent_first")
+    if project.voiceover_mode == "disabled":
+        # 静音项目没有 approve-full Gate；保留其现有显式调用兼容入口。
+        return requested or "user_first"
+
+    manifest_path = project.path("manifests/voice-manifest.json")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ProjectValidationError(f"无法读取 current voice manifest: {exc}") from exc
+    approval = manifest.get("fullApproval") if isinstance(manifest, Mapping) else None
+    frozen = approval.get("reviewPolicy") if isinstance(approval, Mapping) else None
+    if not isinstance(approval, Mapping) or approval.get("approved") is not True:
+        raise ProjectValidationError("视觉阶段要求 current approve-full")
+    if frozen not in REVIEW_POLICIES:
+        raise ProjectValidationError(
+            "完整旁白批准尚未冻结 reviewPolicy；请对 current FULL_IDENTITY 重新执行 "
+            "approve-full --review-policy user_first|agent_first"
+        )
+    if requested is not None and requested != frozen:
+        raise ProjectValidationError(
+            f"请求的 reviewPolicy={requested} 与 approve-full 冻结值 {frozen} 不一致"
+        )
+    return str(frozen)
 
 
 def sanitize_project_name(name: str) -> str:

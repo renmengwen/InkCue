@@ -35,7 +35,11 @@ topic/text 的正式时钟由获批真实音频 timeline 接管。
    覆盖旁白内容、cue→scene、分镜策略和图片提示词；技术 PASS、打开文件或用户未反对
    都不是批准。
 5. 修改意见冻结为绑定 current identity 的 revision request，创建新 attempt；旧
-   candidate/review 保留为历史并 stale。只有同一冻结 attempt 的执行性缺漏才允许 followup。
+   candidate/review 保留为历史并 stale。新 attempt 是版本边界，不要求更换执行者：上一
+   `contentDrafting` child 仍存在、idle、上一结果 completed 且 role contract 兼容时，
+   coordinator 优先 followup 原 child，并只交付新 task/base/revision 的路径与 SHA。原 child
+   不可用、失败、role 改变、修订升级为全面独立重写或用户明确要求换执行者时才 spawn
+   新 child；同一冻结 attempt 的执行性缺漏也 followup 原 child。
 6. 确认后才运行 `prepare_source.py`，确定性复核 provisional SRT/plan 与已确认方案一致，
    再创建正式项目；出现实质差异必须回到本 Gate。
 

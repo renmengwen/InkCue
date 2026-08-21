@@ -118,6 +118,7 @@ class AnnotationBatchFixture(unittest.TestCase):
                         "fullApproval": {
                             "approved": True,
                             "identityHash": full_identity,
+                            "reviewPolicy": "user_first",
                         }
                     }
                 ),
@@ -198,7 +199,6 @@ class AnnotationBatchFixture(unittest.TestCase):
             images_confirmed=True,
             context=context,
             scene_ids=scene_ids,
-            coordinator_can_view=True,
         )
 
     def write_unvalidated_completed_result(self, drafting, annotation):

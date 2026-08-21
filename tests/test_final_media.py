@@ -65,6 +65,10 @@ def _canonical_wav_bytes(duration_ms: int = 100) -> bytes:
 
 class FinalMediaTests(unittest.TestCase):
     def setUp(self) -> None:
+        self._provider_patcher = mock.patch(
+            "generate_voiceover.active_provider_id", return_value="edge-tts"
+        )
+        self._provider_patcher.start()
         TEST_RUNS.mkdir(parents=True, exist_ok=True)
         self.root = (TEST_RUNS / f"b2-{uuid.uuid4().hex}").resolve()
         self.root.mkdir()
@@ -172,6 +176,7 @@ class FinalMediaTests(unittest.TestCase):
             self.scene_paths.append(output)
 
     def tearDown(self) -> None:
+        self._provider_patcher.stop()
         if hasattr(self, "root") and self.root.exists():
             self.assertEqual(self.root.parent, TEST_RUNS.resolve())
             shutil.rmtree(self.root)
@@ -688,6 +693,8 @@ class FinalMediaTests(unittest.TestCase):
                     str(self.root),
                     "--identity-hash",
                     full_identity,
+                    "--review-policy",
+                    "user_first",
                 ]
             ),
             0,

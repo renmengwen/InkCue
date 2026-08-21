@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import replace
 import json
 import sys
 import unittest
@@ -44,48 +43,35 @@ class AnnotationAgentOrchestrationTests(AnnotationBatchFixture):
             },
         )
 
-    def test_missing_runtime_capacity_uses_coordinator_fallback(self) -> None:
+    def test_prepare_is_artifact_only_and_host_neutral(self) -> None:
         project, _, _ = self.make_project()
         context = render_timing.build_formal_validation_context(project)
         tasks, audit = self.prepare(project, context)
         self.assertEqual(len(tasks), 3)
-        self.assertFalse(audit["dispatchAllowed"])
-        self.assertEqual(audit["effectiveAgentConcurrency"], 0)
-        self.assertEqual(audit["peakChildAgents"], 0)
-        self.assertEqual(audit["mode"], "coordinator_fallback")
+        self.assertEqual(audit["preparationMode"], "artifact_only")
+        self.assertEqual(audit["configuredAgentConcurrency"], 3)
+        for forbidden in (
+            "dispatchAllowed",
+            "effectiveAgentConcurrency",
+            "peakChildAgents",
+            "mode",
+            "adapter",
+        ):
+            self.assertNotIn(forbidden, audit)
 
-    def test_host_collaboration_prepares_bounded_dispatch(self) -> None:
+    def test_prepare_uses_configured_concurrency_without_runtime_capacity(self) -> None:
         project, _, _ = self.make_project()
         context = render_timing.build_formal_validation_context(project)
-        workspace = self.workspace()
-        configured = replace(
-            workspace,
-            agents=project_workspace.ExecutionAgentConcurrency(
-                default=3,
-                annotation_drafting=3,
-            ),
-        )
+        configured = self.workspace(agents=2)
         tasks, audit = validate_annotations.prepare_annotation_drafting_tasks(
             configured,
             project,
             images_confirmed=True,
             context=context,
-            coordinator_can_view=True,
-            runtime_child_slots=2,
-            coordinator_resource_budget=4,
-            runtime_role_capabilities=(
-                "readFiles",
-                "viewImage",
-                "writeCandidateJson",
-            ),
         )
         self.assertEqual(len(tasks), 3)
-        self.assertTrue(audit["dispatchAllowed"])
-        self.assertEqual(audit["configuredAgentConcurrency"], 3)
-        self.assertEqual(audit["effectiveAgentConcurrency"], 2)
-        self.assertEqual(audit["peakChildAgents"], 0)
-        self.assertEqual(audit["mode"], "host_collaboration_dispatch")
-        self.assertEqual(audit["adapter"], "codex_collaboration")
+        self.assertEqual(audit["configuredAgentConcurrency"], 2)
+        self.assertEqual(audit["preparationMode"], "artifact_only")
 
     def test_image_confirmation_is_an_explicit_precondition(self) -> None:
         project, _, _ = self.make_project()
@@ -98,7 +84,6 @@ class AnnotationAgentOrchestrationTests(AnnotationBatchFixture):
                 project,
                 images_confirmed=False,
                 context=context,
-                coordinator_can_view=True,
             )
 
     def test_frozen_role_contract_uses_visual_ink_clusters_and_flexible_element_counts(self) -> None:
@@ -169,7 +154,6 @@ class AnnotationAgentOrchestrationTests(AnnotationBatchFixture):
             images_confirmed=True,
             context=fresh_context,
             scene_ids=["scene-01"],
-            coordinator_can_view=True,
         )
         role_contract = fresh_tasks[0].task.role_contract_file
         role_contract.write_text(
@@ -252,7 +236,6 @@ class AnnotationAgentOrchestrationTests(AnnotationBatchFixture):
             images_confirmed=True,
             context=context,
             run_id="retry-run",
-            coordinator_can_view=True,
         )
         for drafting in (first[0], first[2]):
             validate_annotations.record_coordinator_annotation_candidate(
@@ -268,7 +251,6 @@ class AnnotationAgentOrchestrationTests(AnnotationBatchFixture):
             context=context,
             scene_ids=["scene-02"],
             run_id="retry-run",
-            coordinator_can_view=True,
             attempt_by_scene={"scene-02": 2},
             retry_status_by_scene={"scene-02": "failed"},
         )
@@ -297,7 +279,6 @@ class AnnotationAgentOrchestrationTests(AnnotationBatchFixture):
                 context=context,
                 scene_ids=["scene-01"],
                 run_id="retry-run",
-                coordinator_can_view=True,
                 attempt_by_scene={"scene-01": 2},
                 retry_status_by_scene={"scene-01": "completed"},
             )
@@ -355,7 +336,6 @@ class AnnotationAgentOrchestrationTests(AnnotationBatchFixture):
             context=context,
             scene_ids=["scene-02"],
             run_id=tasks[0].task.context.run_id,
-            coordinator_can_view=True,
             attempt_by_scene={"scene-02": 2},
             retry_status_by_scene={"scene-02": "failed"},
         )

@@ -42,7 +42,7 @@ topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经�
 - 五类持久化 identity 必须绑定 current 字节和证据：`SAMPLE_IDENTITY`、`FULL_IDENTITY`、`annotationReviewIdentitySha256`、`sceneReviewIdentityHash`、`FINAL_IDENTITY`。批准脚本仅批准刚检查的 identity。
 - `unknown_external_outcome`（provider 请求后 candidate/receipt 不完整且不能按同一幂等键查询）不得普通重跑或 `--retry-failed` 自动重发；必须单独取得用户承担新外部调用的授权。
 
-Phase 4 提供可选的本地 coordinator runner：`scripts/run_phase.py --project <project> --phase annotation-preview`。runner 只串联确定性校验、receipt 复用、candidate/preview/contact sheet 和摘要，遇到人工 Gate 必须停止并保持 `approvalWritten=false`；逐步 CLI 始终保留为调试和恢复路径。字段、Gate 停止与恢复合同见 [references/phase-4-runner.md](references/phase-4-runner.md)。
+本地 coordinator runner 支持 `annotation-preview` 与 `final-delivery`。前者串联 annotation 确定性校验、receipt、preview/contact sheet；后者只在 current scene bundle 已获批准后连续执行 merge/burn/可选 mux/final validation，并输出逐步耗时。两者遇到人工 Gate 都必须停止并保持 `approvalWritten=false`；逐步 CLI 始终保留为调试和恢复路径。字段、Gate 停止与恢复合同见 [references/phase-4-runner.md](references/phase-4-runner.md)。
 - preview 服务必须由 `serve_preview.py --ensure --project <root>` 启动/复用，并验证 `PREVIEW_READY=PASS`、项目 API、全部 ready/current scene 后交付完整 `PREVIEW_URL`；失败报告 `BLOCKED/FAIL` 真实原因。
 
 | Gate | 用户必须检查 | 通过后允许 |
@@ -60,9 +60,9 @@ Phase 4 提供可选的本地 coordinator runner：`scripts/run_phase.py --proje
 
 1. coordinator 是唯一用户接口和正式 writer；只有它能写正式 `scenes/*.png`、`audio/segments/*.wav`、manifest、timeline、SRT、identity、stale、checkpoint 与批准。
 2. child 只能写其冻结 attempt 内 candidate/log/result（`result.json` 通常由 coordinator 确定性生成），`formalWritesAllowed:false`、`approvalWritesAllowed:false`。
-3. 真实派发只能由 coordinator 调用宿主 `spawn_agent`/`followup`/等待；fake scheduler 只验证协议，不算 dispatch。宿主 slot、ready task、role capability 和 coordinator 预算不足时必须 fallback 或报告 BLOCKED。
-4. effective agent concurrency 取 configured、ready task、宿主 child slots、coordinator 预算最小值；保留 coordinator 槽位且只换算一次。`execution.agents` 与 worker concurrency 分离，不相乘。
-5. `contentDrafting`、`storyboardPlanning`、`visualReview` 使用新鲜短上下文单 task；`annotationDrafting` 一幕一 attempt，最多 3 个按 plan 连续 scene 组成 dispatch unit。child prompt 只含冻结 task/role 的绝对路径、SHA、允许 attempt 目录和固定返回格式。
+3. 只有 coordinator 能根据当前真实宿主状态调用 `spawn_agent`、向已存在 child 发送 `followup`、等待或决定 fallback；任何 Python 脚本都不得接收/推断 child slots、宿主 role capability 或 coordinator budget，不得生成 `spawnAgentCall`/`spawnRequest`，也不得替宿主决定 dispatch/fallback。
+4. coordinator 从实际可用 child slots 计算 effective agent concurrency：取 configured、ready task/unit 和当前可用 child slots 的最小值，始终保留 coordinator 槽位；`execution.agents` 与 worker concurrency 分离，不相乘。具备所需工具时优先真实派发；只有真实派发不可用时才允许 coordinator fallback，并报告宿主真实原因；双方缺能力时 `BLOCKED`。
+5. attempt 是持久化版本边界，不是执行者边界。首次 `contentDrafting`、`storyboardPlanning` 与独立 `visualReview` 使用短上下文 child；用户对 content 草案提出修订时仍创建新 attempt，但优先 `followup` 上一 attempt 的同 role 原 child（它仍存在、idle、上一结果 completed 且 role contract 兼容时），让它读取新的 task/base/revision SHA。原 child 不可用、失败、role 改变、修改升级为全面独立重写或用户明确要求换执行者时才 spawn 新 child。同一 attempt 的执行性补正也 followup 原 child。`annotationDrafting` 一幕一 attempt，最多 3 个连续 scene 组成 unit；child prompt 只含冻结 task/role 定位与 SHA。
 6. `imagePrompt`（content draft）到 formal generation plan 的 `prompt` 只允许 coordinator 确定性映射；child 不接收完整主对话、完整 SRT、provider 凭据、长日志或批准信息。详见 [references/prompt-writing.md](references/prompt-writing.md) 与 [references/subagent-orchestration.md](references/subagent-orchestration.md)。
 7. 每幕只表达一个核心视觉命题；可独立揭示的 2–3 个视觉簇之间保持真实纸面留白，不以道路/河流/山脉/箭头等贯穿结构连接，除非该结构本身不可分割。annotation 按连续墨迹簇划分，最多 3 个且不为凑数强拆。
 8. reveal 时间严格串行、不可重叠；空间 region 仅在真实遮挡/交界处适度重叠；`protectedRegions` 只能保护正确分区中不可避免的局部，不能掩盖错误分区。
@@ -72,6 +72,8 @@ Phase 4 提供可选的本地 coordinator runner：`scripts/run_phase.py --proje
 12. image validation 每张 PNG 同一打开周期只完整解码一次；voice deep validation、timeline、SRT、累计帧、identity、binding 和 approval 仍按合同串行/有界，证据缺失或 bytes 变化不得降级为 binding PASS。
 13. 正式成片永远烧录字幕：disabled 为 H.264、0 音频且使用 source SRT；Edge/MiniMax 为 H.264 + AAC 旁白且使用 current narration SRT。旁白模式缺少 current narration SRT/timeline/full approval/identity 必须失败，不能回退 source SRT。
 14. 任一输入、旁白文本/分段、scene mapping、imagePrompt、音频/timing/render binding、annotation/reveal、scene 集合/顺序、手部素材 `handSha256`、字幕 preset/字体/SRT 或 clean/final SHA 变化，按 [references/recovery-and-identity.md](references/recovery-and-identity.md) 使受影响 identity 和批准 stale；历史 stale 证据不得作为 current 输入。
+15. 每次进入工作区前先用 `prepare_env.py --check-workspace-access` 完成真实 create/write/flush/read/delete 预检。宿主 `CreateProcess rejected by policy` 与 Windows 文件写入拒绝必须分开报告；UI 刚切换权限时在新回合重跑预检，不用复杂 shell 写删命令试探。
+16. 旁白项目的 `approve-full` 必须显式带 `--review-policy user_first|agent_first` 并写入 `fullApproval.reviewPolicy`；后续线稿、annotation preview 和 scene review 自动继承且拒绝冲突值。不得在用户未选择时静默采用默认策略。
 
 ## current、stale 与恢复摘要
 
@@ -126,6 +128,7 @@ coordinator 必须运行 `serve_preview.py --ensure --project <项目根目录>`
 
 ```powershell
 # 环境与输入准备
+<ENV_PY> scripts/prepare_env.py --check-workspace-access
 <ENV_PY> scripts/prepare_env.py
 <ENV_PY> scripts/prepare_draft_agent_task.py contentDrafting --content-input <input.json> --draft-root <draft-root>
 <ENV_PY> scripts/validate_content_draft.py --stdin
@@ -144,10 +147,10 @@ coordinator 必须运行 `serve_preview.py --ensure --project <项目根目录>`
 <ENV_PY> scripts/generate_voiceover.py full --project <项目根目录>
 <ENV_PY> scripts/generate_voiceover.py status --project <项目根目录>
 <ENV_PY> scripts/validate_voiceover.py --project <项目根目录> [--force-deep]
-<ENV_PY> scripts/generate_voiceover.py approve-full --project <项目根目录> --identity-hash <FULL_IDENTITY> [--duration-decision accept_actual]
+<ENV_PY> scripts/generate_voiceover.py approve-full --project <项目根目录> --identity-hash <FULL_IDENTITY> --review-policy <user_first|agent_first> [--duration-decision accept_actual]
 
 # annotation、preview、scene bundle
-<ENV_PY> scripts/validate_annotations.py prepare --project <项目根目录> --images-confirmed --runtime-child-slots <n> --coordinator-resource-budget <n> --coordinator-can-view
+<ENV_PY> scripts/validate_annotations.py prepare --project <项目根目录> --images-confirmed
 <ENV_PY> scripts/validate_annotations.py validate --project <项目根目录> --candidate-root <candidate-root>
 <ENV_PY> scripts/serve_preview.py --ensure --project <项目根目录>
 <ENV_PY> scripts/generate_annotation_previews.py --project <项目根目录> --all --review-policy user_first
@@ -161,10 +164,11 @@ coordinator 必须运行 `serve_preview.py --ensure --project <项目根目录>`
 <ENV_PY> scripts/burn_subtitles.py --project <项目根目录>
 <ENV_PY> scripts/mux_voiceover.py --project <项目根目录>
 <ENV_PY> scripts/validate_final_media.py --project <项目根目录>
+<ENV_PY> scripts/run_phase.py --project <项目根目录> --phase final-delivery
 <ENV_PY> scripts/approve_final_media.py --project <项目根目录> --identity-hash <FINAL_IDENTITY>
 ```
 
-`prepare_*`/`agent_first` 仅冻结 attempt 或输出宿主 spawn package；`hostSpawnExecuted:false`、`preparedOnly:true` 或 `formalPublished:false` 绝不等于派发/批准 PASS。正式 scene 由 `sceneRender` 有界并行生成、按 plan 顺序发布；`merge_scenes.py` 在任何写入前硬校验 current approved scene bundle。
+`prepare_*`/`agent_first` 只冻结 attempt、task descriptor 或有序 unit；这些 artifact 不包含宿主调用参数，也不等于真实派发、candidate 完成或人工批准。coordinator 必须直接使用宿主协作工具并记录真实 agent/task 映射。正式 scene 由 `sceneRender` 有界并行生成、按 plan 顺序发布；`merge_scenes.py` 在任何写入前硬校验 current approved scene bundle。
 
 ## 退出码
 

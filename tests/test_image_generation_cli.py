@@ -732,9 +732,14 @@ class ImageGenerationCliTests(unittest.TestCase):
         summary = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0, summary)
         review = summary["visualReview"]
-        self.assertEqual(review["mode"], "host_collaboration_dispatch", review)
-        self.assertTrue(review["dispatchAllowed"])
+        self.assertEqual(review["preparationMode"], "artifact_only", review)
+        self.assertEqual(review["status"], "ready_for_coordinator_dispatch")
+        self.assertTrue(review["preparedOnly"])
         self.assertFalse(review["approvalWritten"])
+        self.assertEqual(
+            review["preparedTask"]["contractVersion"],
+            "whiteboard-prepared-agent-task-v1",
+        )
         task_path = self.root / Path(review["taskFile"])
         task = json.loads(task_path.read_text(encoding="utf-8"))
         self.assertEqual(task["taskKind"], "visualReview")
@@ -744,7 +749,7 @@ class ImageGenerationCliTests(unittest.TestCase):
         self.assertNotIn("test-secret", serialized)
         self.assertNotRegex(serialized, r"(?i)[a-z]:[\\/]")
 
-    def test_visual_review_fallback_findings_are_result_validated_and_not_approval(self) -> None:
+    def test_visual_review_coordinator_findings_are_result_validated_and_not_approval(self) -> None:
         _, scene = self._write_valid_scene()
         project = project_workspace.load_project(self.root)
         workspace = SimpleNamespace(
@@ -753,13 +758,12 @@ class ImageGenerationCliTests(unittest.TestCase):
                 for_role=lambda _role: 1,
             )
         )
-        task, decision = validate_generated_images.create_visual_review_task(
+        task, preparation = validate_generated_images.create_visual_review_task(
             workspace=workspace,
             project=project,
             manifest_path=self.root / "manifests" / "generation-manifest.json",
-            coordinator_can_view=True,
         )
-        self.assertEqual(decision["mode"], "coordinator_fallback")
+        self.assertEqual(preparation["preparationMode"], "artifact_only")
         result = validate_generated_images.record_visual_review_fallback(
             task,
             scene_order=["scene-01"],
@@ -779,7 +783,7 @@ class ImageGenerationCliTests(unittest.TestCase):
         )
         self.assertFalse(findings_document["approvalWritten"])
 
-    def test_visual_review_uses_host_dispatch(self) -> None:
+    def test_visual_review_prepare_does_not_encode_host_dispatch(self) -> None:
         self._write_valid_scene()
         project = project_workspace.load_project(self.root)
         workspace = SimpleNamespace(
@@ -792,20 +796,13 @@ class ImageGenerationCliTests(unittest.TestCase):
             workspace=workspace,
             project=project,
             manifest_path=self.root / "manifests" / "generation-manifest.json",
-            coordinator_can_view=True,
-            runtime_child_slots=2,
-            coordinator_resource_budget=2,
-            runtime_role_capabilities=(
-                "readFiles",
-                "viewImage",
-                "writeCandidateJson",
-            ),
         )
         self.assertEqual(task.data["taskKind"], "visualReview")
-        self.assertTrue(audit["dispatchAllowed"])
-        self.assertEqual(audit["effectiveAgentConcurrency"], 1)
-        self.assertEqual(audit["mode"], "host_collaboration_dispatch")
-        self.assertEqual(audit["status"], "pending_child_result")
+        self.assertEqual(audit["preparationMode"], "artifact_only")
+        self.assertEqual(audit["status"], "ready_for_coordinator_dispatch")
+        self.assertNotIn("dispatchAllowed", audit)
+        self.assertNotIn("effectiveAgentConcurrency", audit)
+        self.assertNotIn("mode", audit)
 
     def test_crash_boundaries_recover_without_unsafe_provider_retry(self) -> None:
         import generate_images

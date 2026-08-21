@@ -55,32 +55,22 @@ class AnnotationPrepareCLITests(AnnotationBatchFixture):
             workspace,
             "cli-nine",
             "--images-confirmed",
-            "--runtime-child-slots",
-            "3",
-            "--coordinator-resource-budget",
-            "3",
-            "--runtime-role-capability",
-            "readFiles",
-            "--runtime-role-capability",
-            "viewImage",
-            "--runtime-role-capability",
-            "writeCandidateJson",
         )
         self.assertEqual(exit_code, 0)
         self.assertEqual(summary["status"], "PASS")
-        self.assertEqual(summary["contractVersion"], "whiteboard-annotation-prepare-v2")
+        self.assertEqual(summary["contractVersion"], "whiteboard-annotation-prepare-v3")
         self.assertEqual(summary["runId"], "cli-nine")
         self.assertEqual(summary["taskCount"], 9)
         self.assertEqual(summary["dispatchUnitCount"], 3)
-        self.assertEqual(summary["effectiveAgentConcurrency"], 3)
-        self.assertTrue(summary["dispatchAudit"]["dispatchAllowed"])
-        self.assertEqual(summary["dispatchPlan"]["maxParallel"], 3)
+        self.assertEqual(summary["configuredAgentConcurrency"], 3)
+        self.assertEqual(summary["preparationAudit"]["preparationMode"], "artifact_only")
+        self.assertTrue(summary["dispatchPlan"]["coordinatorDispatchRequired"])
+        self.assertEqual(summary["dispatchPlan"]["configuredMaxParallel"], 3)
         self.assertEqual(
             summary["dispatchPlan"]["granularity"],
             "contiguous-bundle-v1",
         )
         self.assertEqual(summary["dispatchPlan"]["maxTasksPerDispatchUnit"], 3)
-        self.assertFalse(summary["dispatchPlan"]["hostSpawnPerformed"])
         self.assertEqual(
             [unit["sceneIds"] for unit in summary["dispatchUnits"]],
             [
@@ -91,10 +81,9 @@ class AnnotationPrepareCLITests(AnnotationBatchFixture):
         )
         for unit in summary["dispatchUnits"]:
             self.assertEqual(unit["taskCount"], 3)
-            self.assertEqual(unit["spawnRequest"]["forkTurns"], "none")
-            self.assertIn("TASK_BUNDLE_VERSION=whiteboard-agent-task-bundle-v1", unit["spawnRequest"]["prompt"])
-            self.assertIn("TASK_1_JSON_PATH=", unit["spawnRequest"]["prompt"])
-            self.assertIn("TASK_3_RESULT_JSON=", unit["spawnRequest"]["prompt"])
+            self.assertEqual(len(unit["preparedTasks"]), 3)
+            self.assertTrue(all(item["preparedOnly"] for item in unit["preparedTasks"]))
+            self.assertTrue(all(item["resultWriter"] == "coordinator" for item in unit["preparedTasks"]))
         self.assertEqual(
             [item["sceneId"] for item in summary["orderedTasks"]],
             [f"scene-{index:02d}" for index in range(1, 10)],
@@ -110,6 +99,8 @@ class AnnotationPrepareCLITests(AnnotationBatchFixture):
             )
             self.assertFalse(item["formalWritesAllowed"])
             self.assertFalse(item["approvalWritesAllowed"])
+        for forbidden in ("spawnRequest", "effectiveAgentConcurrency", "dispatchAllowed"):
+            self.assertNotIn(forbidden, json.dumps(summary, ensure_ascii=False))
         serialized = json.dumps(summary, ensure_ascii=False)
         for secret_marker in ("Authorization:", '"apiKey"', "sk-test-secret"):
             self.assertNotIn(secret_marker, serialized)
@@ -198,7 +189,7 @@ class AnnotationPrepareCLITests(AnnotationBatchFixture):
         self.assertEqual(summary["error"]["code"], "stale_binding")
         self.assertFalse((project.root / ".work" / "stale-binding").exists())
 
-    def test_missing_host_capacity_keeps_bundle_but_omits_spawn_request(self) -> None:
+    def test_prepare_is_host_neutral_and_rejects_old_capacity_flags(self) -> None:
         project, _, _ = self.make_project(count=3)
         workspace = self.workspace(annotation_validation=3, agents=3)
         exit_code, summary = self.run_prepare(
@@ -212,7 +203,18 @@ class AnnotationPrepareCLITests(AnnotationBatchFixture):
         self.assertEqual(summary["dispatchPlan"]["granularity"], "contiguous-bundle-v1")
         self.assertEqual(summary["dispatchPlan"]["maxTasksPerDispatchUnit"], 3)
         self.assertEqual([unit["taskCount"] for unit in summary["dispatchUnits"]], [3])
-        self.assertTrue(all(unit["spawnRequest"] is None for unit in summary["dispatchUnits"]))
+        self.assertTrue(all(len(unit["preparedTasks"]) == 3 for unit in summary["dispatchUnits"]))
+
+        legacy_exit, legacy_summary = self.run_prepare(
+            project,
+            workspace,
+            "legacy-capacity-flags",
+            "--images-confirmed",
+            "--runtime-child-slots",
+            "3",
+        )
+        self.assertEqual(legacy_exit, 2)
+        self.assertEqual(legacy_summary["error"]["code"], "invalid_arguments")
 
 
 if __name__ == "__main__":

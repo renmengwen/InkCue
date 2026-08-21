@@ -21,17 +21,17 @@ rewritePolicy = preserve | polish | generate
 
 `topic + preserve`、`topic + polish`、`text + generate` 以及非 SRT + `disabled` 均须拒绝。topic/text 首版不使用估算阅读时长作为最终权威时钟；target 只用于内容预算与 provisional SRT，获批的真实音频 provider timeline 才接管正式时钟。
 
-首版不接入通用文本模型 provider。旁白稿、cue、scene 和画面建议由宿主真实派发的 `contentDrafting` child 生成 candidate，再由 coordinator 校验并确定性生成 Markdown 审阅 artifact；`prepare_draft_agent_task.py` 只冻结 attempt 和 host spawn package，`content_source.py` 与 `prepare_source.py` 只做确定性规范化、校验、排时、hash、持久化和派生文件。上述脚本都不发起文本模型请求、不读取外部凭据、不自行改写或批准草案，也不创建正式项目。
+首版不接入通用文本模型 provider。旁白稿、cue、scene 和画面建议由宿主真实派发的 `contentDrafting` child 生成 candidate，再由 coordinator 校验并确定性生成 Markdown 审阅 artifact；`prepare_draft_agent_task.py` 只冻结 attempt 和宿主中立 task descriptor，`content_source.py` 与 `prepare_source.py` 只做确定性规范化、校验、排时、hash、持久化和派生文件。上述脚本都不判断宿主能力、不生成宿主调用参数、不发起文本模型请求、不读取外部凭据、不自行改写或批准草案，也不创建正式项目。
 
 ## 阶段 0 内容与制作方案联合关卡
 
 topic/text 的权威顺序是：
 
 1. 接收原始主题或正文，并冻结 `rewritePolicy` 与 `targetDurationSeconds`；`voiceoverMode` 始终从 skill 根目录 `config/voice-providers.local.json` 的 `activeProvider` 派生。用户无需提供或选择 Edge TTS/MiniMax，编排层不得询问“旁白方式”。派生结果只可规范化为 `edge-tts` 或 `minimax`，并写入冻结的 content input/review，供用户知情查看。只有用户明确要求静音时，才走传统 SRT 的 `disabled` 显式入口。
-2. coordinator 运行 `prepare_draft_agent_task.py contentDrafting` 冻结 attempt；`spawnPackage.spawnAgentCall` 非空时立即调用宿主，由新鲜 child 生成完整 `whiteboard-content-draft-v1` candidate；为空时由 coordinator fallback。两条路径使用同一 task/result 合同。
+2. coordinator 运行 `prepare_draft_agent_task.py contentDrafting` 冻结 attempt 和 `preparedTask`，再直接根据当前宿主状态调用 `spawn_agent` 或 `followup`；脚本不参与 dispatch/fallback 决策。首次草案默认使用短上下文 child；真实派发不可用时才由具备相同能力的 coordinator fallback。所有路径使用同一 task/result 合同。
 3. coordinator 重验 result、SHA 与 candidate 合同后，从 `candidate.content-draft.json` 确定性生成不可变 Markdown 审阅 artifact。主窗口只发送文件链接、完整 identity、cue/scene 计数和短摘要，不把长正文、逐幕提示词或整份 Markdown 读回、转述或粘贴到聊天。
 4. **停止并等待用户明确确认 current `contentDraftIdentitySha256`，完成“内容与制作方案联合确认”。** 这一次确认同时覆盖内容草案与模式/语义分镜策略；未回复、此前笼统授权、技术校验通过或“用户没有反对”都不是批准。
-5. 用户要求实质修改时，把意见冻结为 revision request，绑定 current base identity；创建新 attempt 并 spawn 新鲜 `contentDrafting` child。新 candidate 重新校验并生成新 identity、新 Markdown；旧版保留但判为 stale。followup 只用于同一冻结 attempt 的执行性补正。
+5. 用户要求实质修改时，把意见冻结为 revision request，绑定 current base identity并创建新 attempt。attempt 是版本边界，不是执行者边界：上一 attempt 的 `contentDrafting` child 仍存在、idle、上一结果 completed 且 role contract 兼容时，优先 followup 原 child读取新 task/base/revision；原 child 不可用、失败、role 改变、修订升级为全面独立重写或用户明确要求换执行者时才 spawn 新 child。新 candidate 重新校验并生成新 identity、新 Markdown；旧版保留但判为 stale。
 6. 只有 current identity 获明确确认后才允许运行 `prepare_source.py`。准备包生成后，确定性复核 provisional 总时长、cue、scene、generation plan 与已确认方案一致，并说明它不是最终真实语音时钟。一致时直接创建正式项目，不再询问相同策略；出现实质差异时必须回到步骤 3 生成新审阅 artifact 并重新联合确认。
 
 脚本不提供“自动批准”参数，也不能从 JSON 或 Markdown 字段推断用户已经同意。是否允许调用 `prepare_source.py` 是代理在聊天层必须执行的人工关卡；技术验证不能冒充用户确认。联合确认前仍处于 draft scope，不存在正式 project；审阅文件只能位于 workspace 的 `drafts/<draft-id>/reviews/`，不得提前写入 `projects/<项目名>`。联合确认后的确定性准备、严格 round-trip 与一致性校验不新增第二次策略确认。
@@ -81,7 +81,7 @@ review 文件名必须使用完整 identity 的前 12 位；正文至少展示�
 }
 ```
 
-revision request 固定 `schemaVersion: 1`，只保存用户本轮真实要求，不复制上一版全文；`globalInstructions`、`cueChanges`、`sceneChanges` 至少一项非空，单独填写 `mustPreserve` 不构成修改。`baseContentDraftIdentitySha256` 必须等于派发时的 current candidate identity，否则以 stale 拒绝。实质修改一律创建新 attempt 和新鲜 child，上一版 candidate/review 不覆盖、不删除，并在新版本成为 current 时判为 stale。缺失 `result.json`、result schema 错误、漏写已冻结输出等同一任务的执行性问题才允许 followup 原 child；任何文案、cue、scene、提示词或用户要求变化都必须冻结新 revision request 并创建新 attempt。
+revision request 固定 `schemaVersion: 1`，只保存用户本轮真实要求，不复制上一版全文；`globalInstructions`、`cueChanges`、`sceneChanges` 至少一项非空，单独填写 `mustPreserve` 不构成修改。`baseContentDraftIdentitySha256` 必须等于派发时的 current candidate identity，否则以 stale 拒绝。实质修改一律创建新 attempt，上一版 candidate/review 不覆盖、不删除，并在新版本成为 current 时判为 stale；但新 attempt 不自动创建新 child。上一执行者满足复用条件时优先 followup，且仍必须从新的冻结 task/base/revision 与 SHA 重新建立 current 事实，不能只依靠对话记忆。任何文案、cue、scene、提示词或用户要求变化都必须冻结新 revision request 并创建新 attempt。
 
 ### 分幕与视觉拓扑合同
 
@@ -106,7 +106,7 @@ revision request 固定 `schemaVersion: 1`，只保存用户本轮真实要求�
   --base-content-draft <上一版-candidate.content-draft.json>
 ```
 
-成功 stdout 是 `whiteboard-draft-agent-prepare-v1`，包含 `dispatchAudit`、`spawnPackage`、`formalPublished:false` 与 `approvalWritten:false`。spawn package 包含冻结 task/role 的绝对路径和 SHA、唯一 attempt 根、result 路径、allowed outputs 与最小 `spawnAgentCall`；`hostSpawnExecuted:false` 表示只准备、未派发。coordinator 收到后应立即调用宿主，不得重新阅读 Python 源码研究如何建 task，也不得把 prepare 当作 candidate 完成或用户批准。
+成功 stdout 是 `whiteboard-draft-agent-prepare-v2`，包含 `configuredAgentConcurrency`、宿主中立 `preparedTask`、`formalPublished:false` 与 `approvalWritten:false`。descriptor 只列冻结 task/role 的绝对路径和 SHA、唯一 attempt 根、result 路径、allowed outputs 与 required capabilities，不包含 `spawnAgentCall`、child slots、fallback 或 agentId。coordinator 收到后直接使用宿主协作工具；prepare 既不代表真实派发，也不代表 candidate 完成或用户批准。
 
 ### 人工确认前的只读草案校验
 

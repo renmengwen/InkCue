@@ -140,6 +140,10 @@ def _validate_audio_approval(project: Project) -> tuple[str, str]:
         raise RenderTimingError(f"正式音频渲染要求 current approve-full: {exc}") from exc
     if current.get("fullApproved") is not True:
         raise RenderTimingError("正式音频渲染要求 current approve-full")
+    if current.get("reviewPolicy") not in {"user_first", "agent_first"}:
+        raise RenderTimingError(
+            "正式音频渲染要求 approve-full 已显式冻结 reviewPolicy"
+        )
     audio_sha = current.get("audioSha256")
     approval_identity = current.get("fullIdentityHash")
     if not _is_sha256(audio_sha) or not _is_sha256(approval_identity):

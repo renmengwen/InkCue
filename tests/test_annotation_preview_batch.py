@@ -135,6 +135,7 @@ class AnnotationPreviewBatchTests(AnnotationBatchFixture):
             "fullApproved": True,
             "audioSha256": audio_sha,
             "fullIdentityHash": full_identity,
+            "reviewPolicy": "user_first",
         }
         with mock.patch.object(
             generate_voiceover, "validate_current_voiceover", return_value=current
@@ -415,7 +416,7 @@ class AnnotationPreviewBatchTests(AnnotationBatchFixture):
             summary["semanticReview"]["status"], "skipped_by_user"
         )
         self.assertFalse(summary["semanticReview"]["preparedOnly"])
-        self.assertIsNone(summary["semanticReview"]["spawnPackage"])
+        self.assertIsNone(summary["semanticReview"]["preparedTask"])
         self.assertTrue(summary["userConfirmationRequired"])
         self.assertEqual(summary["nextHumanGate"], "annotation_review_confirmation")
         self.assertTrue(
@@ -445,17 +446,18 @@ class AnnotationPreviewBatchTests(AnnotationBatchFixture):
         self.assertEqual(semantic["stage"], "visualReview")
         self.assertEqual(semantic["taskKind"], "visualReview")
         self.assertEqual(semantic["scope"], "annotation_preview_bundle")
-        self.assertEqual(semantic["status"], "ready_for_host_spawn")
+        self.assertEqual(semantic["status"], "ready_for_coordinator_dispatch")
         self.assertTrue(semantic["preparedOnly"])
-        self.assertFalse(semantic["hostSpawnExecuted"])
+        self.assertEqual(semantic["preparationMode"], "artifact_only")
         self.assertTrue(semantic["findingsAreAdvisory"])
         self.assertFalse(semantic["approvalWritten"])
 
-        package = semantic["spawnPackage"]
+        package = semantic["preparedTask"]
         self.assertEqual(
-            package["contractVersion"], "whiteboard-host-spawn-package-v1"
+            package["contractVersion"], "whiteboard-prepared-agent-task-v1"
         )
         self.assertEqual(package["taskKind"], "visualReview")
+        self.assertTrue(package["preparedOnly"])
         task_path = Path(package["taskJsonPath"])
         self.assertTrue(task_path.is_absolute())
         task = json.loads(task_path.read_text(encoding="utf-8"))
@@ -470,6 +472,7 @@ class AnnotationPreviewBatchTests(AnnotationBatchFixture):
         )
         self.assertNotIn("reviewPolicy", task)
         self.assertNotIn("agent_first", json.dumps(task, ensure_ascii=False))
+        self.assertNotIn("spawnAgentCall", json.dumps(semantic, ensure_ascii=False))
         self.assertFalse((project.root / annotation_review.APPROVAL_FILE).exists())
 
     def test_cli_exposes_annotation_review_policy(self) -> None:

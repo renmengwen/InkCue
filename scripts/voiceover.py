@@ -34,6 +34,7 @@ VOICE_MANIFEST_SCHEMA_VERSION = 1
 SEGMENTATION_CONTRACT_VERSION = "speech-unit-v1"
 DEFAULT_PROVIDER_CONTRACT_VERSION = "edge-tts-python-7.2.8-v1"
 SUPPORTED_AUDIO_PROVIDERS = {"edge-tts", "minimax"}
+REVIEW_POLICIES = frozenset({"user_first", "agent_first"})
 DEFAULT_OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3"
 DEFAULT_SEGMENTATION = {
     "contractVersion": SEGMENTATION_CONTRACT_VERSION,
@@ -864,6 +865,7 @@ def create_voice_manifest(
             "approved": False,
             "identityHash": None,
             "durationDecision": None,
+            "reviewPolicy": None,
             "approvedAt": None,
         },
         "createdAt": now,
@@ -975,6 +977,11 @@ def validate_voice_manifest(
     if full_approval["approved"]:
         full_identity = full_approval.get("identityHash")
         _require_sha256(full_identity, label="full approval identity")
+        review_policy = full_approval.get("reviewPolicy")
+        if review_policy is not None and review_policy not in REVIEW_POLICIES:
+            raise VoiceoverValidationError(
+                "已批准的 fullApproval.reviewPolicy 必须是 user_first 或 agent_first"
+            )
         if manifest.get("fullIdentityHash") is not None and full_identity != manifest.get("fullIdentityHash"):
             raise VoiceoverValidationError("full approval identity 与 current full identity 不一致")
 

@@ -19,6 +19,23 @@ runner 会在同一进程内复用 project/config/formal validation context（�
 
 runner 不接受自动批准参数，不读取聊天记录推断批准。技术 PASS、candidate、receipt、agent findings 或用户未反对，都不能视为批准；人工回复必须明确指向摘要给出的 artifact 和 identity。摘要中的 `approvalWritten` 在每个人工 Gate 都必须为 `false`。
 
+## final-delivery
+
+```powershell
+& $envPy scripts\run_phase.py --project <项目根目录> --phase final-delivery
+```
+
+该入口只消费 current、已批准的 scene bundle，按 generation plan 固定顺序连续执行
+`merge → burnSubtitles →（旁白模式）muxVoiceover → validateFinalMedia`。它不调用
+图片/TTS provider，不要求模型在步骤间重新决策，也不写 `finalApproval`。摘要额外包含：
+
+- `timingsMs.preflight/merge/burnSubtitles/muxVoiceover/validateFinalMedia/total`；
+- `lastCompletedStep`、可复制的同 phase 恢复命令；
+- current `FINAL_IDENTITY`、`output/final.mp4` 与 `nextGate=final_media_review`。
+
+任一步失败即停止后续步骤，保留正式 current 文件及失败工作目录供诊断；成功后状态投影为
+`WAITING_HUMAN_GATE`、退出码 4，必须等待用户完整看片，旁白模式还须完整听音。
+
 ## 逐步调试与恢复
 
 runner 随时可以退回逐步 CLI，产物和 current binding 不变：
@@ -42,4 +59,3 @@ runner 中断或失败后不要从头重做：保留已 current 的 receipt，�
 - provider `unknown_external_outcome` 不得普通重跑或自动重发；必须等待用户单独授权新的外部调用。
 - 旧批准不能跨 identity、manifest、timeline、SRT 或 receipt 变化复用。
 - runner 不是黑盒或唯一恢复路径；所有阶段仍可使用独立 CLI 检查、修复和重试。
-

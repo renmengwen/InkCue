@@ -114,6 +114,18 @@ Copy-Item config\voice-providers.example.json config\voice-providers.local.json
 
 真实 API Key 只能保存在被 `.gitignore` 排除的 `*.local.json` 中。
 
+先单独验证当前回合是否真的能写目标工作区：
+
+```powershell
+python scripts\prepare_env.py --check-workspace-access
+```
+
+成功会输出 `WORKSPACE_ACCESS={..."code":"workspace_access_ok"...}`，并已真实完成
+create/write/flush/read/delete。`workspace_write_denied` 表示当前进程或 Windows ACL
+拒绝目标路径；若 UI 刚切换为完全访问，必须在新回合重新运行本预检。
+`CreateProcess rejected by policy` 属于命令启动前的宿主策略拦截，不是 Python
+文件写入失败；不要把两者都报告成“目录不可写”。
+
 ### 3. 准备运行环境
 
 ```powershell
@@ -168,22 +180,23 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 & $envPy scripts\generate_voiceover.py full --project <项目根目录>
 & $envPy scripts\validate_voiceover.py --project <项目根目录>
 & $envPy scripts\generate_voiceover.py approve-full --project <项目根目录> `
-  --identity-hash <刚完整试听旁白所对应的-FULL_IDENTITY>
+  --identity-hash <刚完整试听旁白所对应的-FULL_IDENTITY> `
+  --review-policy user_first
 # 仅当真实时长偏差超过 10% 且用户明确接受时，approve-full 再附加：
 #   --duration-decision accept_actual
 
 # 图片
 & $envPy scripts\generate_images.py --project <项目根目录>
-& $envPy scripts\validate_generated_images.py --project <项目根目录> `
-  --review-policy user_first
+# 旁白项目默认读取 approve-full 冻结值；显式参数只能与冻结值一致
+& $envPy scripts\validate_generated_images.py --project <项目根目录>
 # 技术 PASS 后自动生成 identity 绑定的 reviews/line-art-review-*.md；
 # 主窗口只交付文件链接、identity 和异常摘要，不逐图嵌入聊天
 # 改为 agent_first 时，技术验证后只准备 global visualReview 宿主 spawn package
 
 # 标注预览
 & $envPy scripts\serve_preview.py --ensure --project <项目根目录>
-& $envPy scripts\generate_annotation_previews.py --project <项目根目录> --all `
-  --review-policy user_first
+# 旁白项目继承 approve-full 冻结的 review policy
+& $envPy scripts\generate_annotation_previews.py --project <项目根目录> --all
 # agent_first 只在 preview bundle 完成后增加一次预审；annotationDrafting 仍须查看原图
 # 仅在用户一次确认 current 标注、区域预览、protectedRegions 与 reveal 时序后：
 & $envPy scripts\approve_annotation_review.py --project <项目根目录> `
@@ -191,8 +204,8 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 
 # 场景渲染与联合审阅
 & $envPy scripts\render_stream_whiteboard.py --project <项目根目录> --all
-& $envPy scripts\scene_review.py --project <项目根目录> `
-  --review-policy user_first
+# 旁白项目继承 approve-full 冻结的 review policy
+& $envPy scripts\scene_review.py --project <项目根目录>
 # agent_first 只准备一次全量 bundle 预审，每幕仅抽少量关键帧
 # 仅在用户确认全部 current scene 的有序 bundle 后：
 & $envPy scripts\approve_scene_review.py --project <项目根目录> `
@@ -206,6 +219,8 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 # 仅 Edge TTS / MiniMax：
 & $envPy scripts\mux_voiceover.py --project <项目根目录>
 & $envPy scripts\validate_final_media.py --project <项目根目录>
+# 推荐：scene bundle 已批准后，用一个确定性 runner 连续完成上述全部技术步骤：
+& $envPy scripts\run_phase.py --project <项目根目录> --phase final-delivery
 # 仅在用户完整观看 current final（旁白模式还须完整听音）并明确确认后：
 & $envPy scripts\approve_final_media.py --project <项目根目录> `
   --identity-hash <刚完整看片听音的-FINAL_IDENTITY>
@@ -213,7 +228,7 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 
 `merge_scenes.py` 会在写 concat 列表或 candidate 之前硬校验 current scene review approval；批准缺失、stale、scene 集合或输入顺序不匹配时返回退出码 5。批准通过后，`merge_scenes.py → burn_subtitles.py →（旁白模式）mux_voiceover.py → validate_final_media.py` 是连续技术链路，clean master 不增加人工关卡。技术验证完成后仍必须停在最终成片人工确认；CLI 不读取或推断聊天批准。
 
-上述三个阶段都支持 `--review-policy user_first|agent_first`。线稿验证成功后自动生成 `reviews/line-art-review-<identity>.md` 与 current technical manifest，主窗口只交付文件链接、identity 和异常摘要。`user_first` 在必要技术校验后记录 `semanticReview.status=skipped_by_user` 并直接交给用户；`agent_first` 只准备宿主可消费的 spawn package，由 child 通过 findings/result 文件交接完整意见，不自动批准。两种策略都保留对应人工确认关卡。
+上述三个阶段都支持 `--review-policy user_first|agent_first`。旁白项目必须在 `approve-full` 时显式选择并冻结，后续不传参时自动继承；显式传入冲突值会 fail-closed，不能静默改回 `user_first`。旧项目若已有批准但缺少该字段，应对 current `FULL_IDENTITY` 重新执行一次带 `--review-policy` 的 `approve-full`。线稿验证成功后自动生成 `reviews/line-art-review-<identity>.md` 与 current technical manifest，主窗口只交付文件链接、identity 和异常摘要。`user_first` 在必要技术校验后记录 `semanticReview.status=skipped_by_user` 并直接交给用户；`agent_first` 只准备宿主可消费的 spawn package，由 child 通过 findings/result 文件交接完整意见，不自动批准。两种策略都保留对应人工确认关卡。
 
 Edge TTS / MiniMax 的样音、完整旁白和真实时长流程见 [语音合同](references/voiceover.md)。人工批准、annotation candidate 和恢复流程的完整命令见 [SKILL.md](SKILL.md)。
 
@@ -223,9 +238,10 @@ Edge TTS / MiniMax 的样音、完整旁白和真实时长流程见 [语音合�
 
 ```powershell
 & $envPy scripts\run_phase.py --project <项目根目录> --phase annotation-preview
+& $envPy scripts\run_phase.py --project <项目根目录> --phase final-delivery
 ```
 
-runner 完成 annotation technical validation、current receipt 复用、candidate/区域预览、contact sheet 和 review manifest 后，必须停在 annotation 联合人工确认，并输出 artifact、identity、status、`approvalWritten=false` 和下一步需要的明确用户回复。技术 PASS、candidate、receipt 或 agent findings 都不等于用户批准。
+`annotation-preview` 完成 annotation technical validation、current receipt 复用、candidate/区域预览、contact sheet 和 review manifest 后，必须停在 annotation 联合人工确认。`final-delivery` 在 current scene bundle 已批准后，同一进程连续执行 merge → burn →（旁白模式）mux → final validation，输出每步 `timingsMs` 和总墙钟时间，然后停在最终看片/听音 Gate。两者都输出 artifact、identity、status、`approvalWritten=false` 和下一步需要的明确用户回复；技术 PASS、candidate、receipt 或 agent findings 都不等于用户批准。
 
 runner 中断后可直接恢复，也可退回逐步 CLI；保留 current binding 的步骤可以复用 receipt，binding 变化则重新 deep validation 并 fail closed：
 

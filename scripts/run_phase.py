@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 try:
-    from .phase_adapters import PhaseAdapterError, run_annotation_preview
+    from .phase_adapters import PhaseAdapterError, run_annotation_preview, run_final_delivery
     from .project_workspace import (
         Project,
         ProjectValidationError,
@@ -26,7 +26,7 @@ try:
         load_workspace_config,
     )
 except ImportError:  # pragma: no cover - direct script execution
-    from phase_adapters import PhaseAdapterError, run_annotation_preview  # type: ignore
+    from phase_adapters import PhaseAdapterError, run_annotation_preview, run_final_delivery  # type: ignore
     from project_workspace import (  # type: ignore
         Project,
         ProjectValidationError,
@@ -37,9 +37,10 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-RUNNER_CONTRACT = "phase-runner-v1"
+RUNNER_CONTRACT = "phase-runner-v2"
 PHASE_REGISTRY: dict[str, Callable[..., Mapping[str, Any]]] = {
     "annotation-preview": run_annotation_preview,
+    "final-delivery": run_final_delivery,
 }
 
 # Stable process-level contract consumed by automation and the recovery docs.
@@ -170,7 +171,11 @@ def _projected_summary(
         ]
     result["recovery"] = {
         "resumeCommand": " ".join(resume),
-        "lastCompletedStep": "annotation_review_technical" if result.get("currentIdentity") else None,
+        "lastCompletedStep": (
+            raw.get("lastCompletedStep")
+            if phase == "final-delivery"
+            else "annotation_review_technical" if result.get("currentIdentity") else None
+        ),
     }
     return result
 
@@ -183,7 +188,8 @@ def run_phase(
     run_id: str | None = None,
     formal_context_receipt: str | Path | None = None,
     formal_context_run_id: str | None = None,
-    review_policy: str = "user_first",
+    review_policy: str | None = None,
+    force_deep: bool = False,
 ) -> tuple[dict[str, Any], int]:
     """Execute one registered phase and return ``(summary, exit_code)``."""
 
@@ -206,13 +212,23 @@ def run_phase(
         workspace: WorkspaceConfig = load_workspace_config(config_path)
         project: Project = load_project(project_path)
         adapter = PHASE_REGISTRY[phase]
-        raw = adapter(
-            workspace,
-            project,
-            run_id=requested_run_id,
-            formal_context_receipt=formal_context_receipt,
-            review_policy=review_policy,
-        )
+        if phase == "final-delivery":
+            if formal_context_receipt is not None or formal_context_run_id is not None:
+                raise ValueError("final-delivery 不接受 formal context receipt")
+            raw = adapter(
+                workspace,
+                project,
+                run_id=requested_run_id,
+                force_deep=force_deep,
+            )
+        else:
+            raw = adapter(
+                workspace,
+                project,
+                run_id=requested_run_id,
+                formal_context_receipt=formal_context_receipt,
+                review_policy=review_policy,
+            )
         summary = _projected_summary(
             phase,
             raw,
@@ -250,7 +266,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-id")
     parser.add_argument("--formal-context-receipt", type=Path)
     parser.add_argument("--formal-context-run-id")
-    parser.add_argument("--review-policy", choices=("user_first", "agent_first"), default="user_first")
+    parser.add_argument("--review-policy", choices=("user_first", "agent_first"), default=None)
+    parser.add_argument("--force-deep", action="store_true", help="忽略可复用技术 receipt 并重新深验")
     return parser
 
 
@@ -265,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
             formal_context_receipt=args.formal_context_receipt,
             formal_context_run_id=args.formal_context_run_id,
             review_policy=args.review_policy,
+            force_deep=args.force_deep,
         )
     except (KeyboardInterrupt, BrokenPipeError):
         # An interrupted run is intentionally not retried or marked approved.
