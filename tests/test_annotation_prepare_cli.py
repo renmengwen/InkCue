@@ -82,6 +82,12 @@ class AnnotationPrepareCLITests(AnnotationBatchFixture):
         for unit in summary["dispatchUnits"]:
             self.assertEqual(unit["taskCount"], 3)
             self.assertEqual(len(unit["preparedTasks"]), 3)
+            self.assertEqual(len(unit["candidateLintCommands"]), 3)
+            self.assertTrue(unit["lintBeforeNextTask"])
+            self.assertEqual(
+                unit["payloadTooLargeRecovery"],
+                "new-short-context-json-only",
+            )
             self.assertTrue(all(item["preparedOnly"] for item in unit["preparedTasks"]))
             self.assertTrue(all(item["resultWriter"] == "coordinator" for item in unit["preparedTasks"]))
         self.assertEqual(
@@ -95,8 +101,10 @@ class AnnotationPrepareCLITests(AnnotationBatchFixture):
             self.assertNotIn("spawnRequest", item)
             self.assertLess(
                 len(Path(item["roleContractPath"]).read_text(encoding="utf-8").splitlines()),
-                30,
+                80,
             )
+            self.assertTrue(item["candidateLint"]["requiredBeforeNextTask"])
+            self.assertFalse(item["candidateLint"]["writesPerformed"])
             self.assertFalse(item["formalWritesAllowed"])
             self.assertFalse(item["approvalWritesAllowed"])
         for forbidden in ("spawnRequest", "effectiveAgentConcurrency", "dispatchAllowed"):
@@ -106,6 +114,15 @@ class AnnotationPrepareCLITests(AnnotationBatchFixture):
             self.assertNotIn(secret_marker, serialized)
         self.assertFalse(any(project.scenes_dir.glob("*.annotation.json")))
         self.assertFalse((project.root / "manifests" / "annotation-review-approval.json").exists())
+
+        dispatch_manifest = json.loads(
+            Path(summary["dispatchManifestPath"]).read_text(encoding="utf-8")
+        )
+        self.assertTrue(dispatch_manifest["flags"]["LINT_CANDIDATE_BEFORE_NEXT_TASK"])
+        self.assertTrue(dispatch_manifest["flags"]["REPAIR_SCHEMA_JSON_ONLY"])
+        self.assertTrue(
+            dispatch_manifest["flags"]["RESTART_SHORT_CONTEXT_AFTER_PAYLOAD_TOO_LARGE"]
+        )
 
         context = render_timing.build_formal_validation_context(project)
         tasks = validate_annotations.load_annotation_tasks_from_candidate_root(
@@ -137,6 +154,44 @@ class AnnotationPrepareCLITests(AnnotationBatchFixture):
         self.assertEqual(validate_exit, 0)
         self.assertEqual(validate_summary["status"], "PASS")
         self.assertEqual(validate_summary["publishedOrder"], [f"scene-{i:02d}" for i in range(1, 10)])
+
+    def test_candidate_lint_rejects_element_level_protected_regions_without_writes(self) -> None:
+        project, _, _ = self.make_project(count=1)
+        workspace = self.trusted_workspace()
+        exit_code, summary = self.run_prepare(
+            project,
+            workspace,
+            "lint-one",
+            "--images-confirmed",
+        )
+        self.assertEqual(exit_code, 0)
+        candidate = Path(summary["orderedTasks"][0]["candidateAnnotationPath"])
+        candidate.write_text(
+            json.dumps(
+                {
+                    "contractVersion": "whiteboard-annotation-visual-elements-v1",
+                    "elements": [
+                        {
+                            "sequence": 1,
+                            "region": {"x": 10, "y": 20, "width": 200, "height": 180},
+                            "protectedRegions": [],
+                            "reveal": {"startMs": 0, "durationMs": 200},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            lint_code = validate_annotations.main(
+                ["lint", "--candidate", str(candidate)]
+            )
+        lint = json.loads(stdout.getvalue())
+        self.assertEqual(lint_code, 2)
+        self.assertEqual(lint["status"], "FAIL")
+        self.assertIn("未知字段", lint["error"])
+        self.assertFalse(any(project.scenes_dir.glob("*.annotation.json")))
 
     def test_prepare_refuses_missing_human_confirmation_without_writes(self) -> None:
         project, _, _ = self.make_project()

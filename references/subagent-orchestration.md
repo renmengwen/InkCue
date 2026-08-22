@@ -117,6 +117,10 @@ attempt 是 artifact 版本边界，不是 agent 生命周期边界。首次独�
 
 `contentDrafting`、`storyboardPlanning` 和 global `visualReview` 使用一 task一 child。`annotationDrafting` 保持一幕一 task/attempt/candidate/result（child 只写 candidate，result 由 coordinator 生成），但把按 plan 连续的最多 3 个 task 组成一个 dispatch unit，由同一 child 顺序执行。多个 ready unit 必须先填满 effective 并发再等待，不能串行伪装成并发。
 
+annotation unit 内不是“生成完三幕再统一校验”：child 每写完一个 `candidate.annotation.json` 就返回该 task 的 `candidate_ready`，coordinator 立即执行 descriptor 中的 `candidateLint.command`。只有 lint `PASS` 才允许该 child 继续 unit 内下一 task；lint `FAIL` 时只补正当前 candidate，避免统一 schema 错误扩散到整批。dispatch manifest 的 `LINT_CANDIDATE_BEFORE_NEXT_TASK` 是硬约束。
+
+一个 annotation child 只服务一个 dispatch unit，图片上下文不得跨 unit 累积。同一 attempt 的执行性补正仍优先 followup 原 child，但只传冻结定位、candidate SHA 与精简错误，不重新附带原图或长日志。`413`、`Payload Too Large` 或 context length exceeded 表示原 child 对本次补正已不可用：禁止原样重试，改用新短上下文 child 做 JSON-only 补正；只有错误确实涉及 region/视觉簇时，才让新 child 单独加载当前一幕图片。换 child 不创建新 attempt，也不改变正式写入和批准边界。
+
 prepare 摘要只记录 configured concurrency、task/unit 数和冻结 descriptor；effective/peak、mode、真实原因和 task/agent 映射只能由 coordinator 在真实派发或 fallback 后记录。fake scheduler 和 prepared artifact 都不算真实 dispatch。
 
 agent pool 与 worker pool 独立，不做乘法。agent task 不得内部再启动 provider、FFmpeg、深验或其他 worker batch。
@@ -142,6 +146,8 @@ retry 只针对 `failed | cancelled | stale` 创建新 attempt。current complet
 Phase 4 只能在线稿已获用户明确确认后开始。coordinator 先构建一次只读 `FormalValidationContext`，一次 batch 只深验一次 timing/voice/review 全局 evidence。
 
 每个 ready scene 建立独立 `annotationDrafting` task。child 只负责 `elements` 视觉判断；sceneId、canvas、duration、frame range、timing/render/timeline binding 与 timingSource 由 coordinator 从 current evidence 确定性注入。
+
+每个 task descriptor 必须携带只读 `candidateLint` 命令。该 lint 仅检查 UTF-8 JSON、顶层合同、element/region/reveal 字段、`reveal.protectedRegions` 嵌套和基础几何/时序 schema，不写 result、materialized candidate、正式 annotation、manifest 或批准。全量发布前仍必须执行绑定 current project/timing 的完整 validator；早期 lint 不能替代完整验证。
 
 候选可有界并行校验，但正式 annotation 必须按 generation plan 顺序逐幕原子发布。任一必需 scene 失败、缺失或 stale 时 batch 为 `FAIL`；已有发布则记录 `partialSuccess:true`，不得启动全量预览或写批准。全部 scene current 且 validator PASS 后，才启动项目预览与区域预览并进入聊天人工确认。
 

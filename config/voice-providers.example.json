@@ -27,6 +27,8 @@
       "outputFormat": "audio-32khz-128kbitrate-mono-mp3",
       "requestTimeoutSeconds": 60,
       "queueIntervalMs": 1800,
+      "requestsPerMinute": 20,
+      "rateLimitBackoffMs": 35000,
       "maxRetries": 2,
       "model": "speech-2.8-hd",
       "stream": false,

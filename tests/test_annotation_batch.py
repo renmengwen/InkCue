@@ -238,6 +238,7 @@ class AnnotationBatchTests(AnnotationBatchFixture):
             "fullApproved": True,
             "audioSha256": audio_sha,
             "fullIdentityHash": full_identity,
+            "reviewPolicy": "user_first",
         }
         with mock.patch.object(
             generate_voiceover, "validate_current_voiceover", return_value=current

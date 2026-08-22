@@ -75,6 +75,18 @@ def load_voice_provider_config(*, provider_id: str | None = None, root: Path | N
         retries = config.get("maxRetries", 2)
         if isinstance(retries, bool) or not isinstance(retries, int) or not 1 <= retries <= 10:
             raise VoiceProviderConfigError("MiniMax maxRetries 必须位于 1–10")
+        rpm = config.get("requestsPerMinute", 20)
+        if isinstance(rpm, bool) or not isinstance(rpm, int) or not 1 <= rpm <= 600:
+            raise VoiceProviderConfigError("MiniMax requestsPerMinute 必须位于 1–600")
+        backoff_ms = config.get("rateLimitBackoffMs", 35000)
+        if (
+            isinstance(backoff_ms, bool)
+            or not isinstance(backoff_ms, int)
+            or not 1000 <= backoff_ms <= 300000
+        ):
+            raise VoiceProviderConfigError("MiniMax rateLimitBackoffMs 必须位于 1000–300000")
+        config["requestsPerMinute"] = rpm
+        config["rateLimitBackoffMs"] = backoff_ms
     return config
 
 

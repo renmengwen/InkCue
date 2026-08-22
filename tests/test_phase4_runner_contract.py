@@ -150,7 +150,7 @@ class Phase4RunnerContractTests(AnnotationBatchFixture):
         )
         self.assertFalse(adapter["approvalWritten"])
 
-    def test_runner_cli_emits_waiting_gate_json_and_exit_code_four(self):
+    def test_runner_cli_emits_waiting_gate_json_and_process_success(self):
         project = self._current_project()
         output = StringIO()
         with mock.patch.object(run_phase, "load_workspace_config", return_value=self._workspace()), mock.patch.object(
@@ -160,9 +160,12 @@ class Phase4RunnerContractTests(AnnotationBatchFixture):
                 ["--project", str(project.root), "--phase", "annotation-preview"]
             )
         self.assertEqual(code, run_phase.EXIT_HUMAN_GATE)
+        self.assertEqual(code, 0)
         summary = json.loads(output.getvalue())
-        self.assertEqual(summary["contractVersion"], "phase-runner-v2")
+        self.assertEqual(summary["contractVersion"], "phase-runner-v3")
         self.assertEqual(summary["status"], "WAITING_HUMAN_GATE")
+        self.assertEqual(summary["technicalStatus"], "PASS")
+        self.assertEqual(summary["processOutcome"], "completed_waiting_for_user")
         self.assertEqual(summary["nextGate"], "annotation_review_confirmation")
         self.assertFalse(summary["approvalWritten"])
         self.assertTrue(summary["userConfirmationRequired"])

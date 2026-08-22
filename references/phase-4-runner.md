@@ -34,7 +34,7 @@ runner 不接受自动批准参数，不读取聊天记录推断批准。技术 
 - current `FINAL_IDENTITY`、`output/final.mp4` 与 `nextGate=final_media_review`。
 
 任一步失败即停止后续步骤，保留正式 current 文件及失败工作目录供诊断；成功后状态投影为
-`WAITING_HUMAN_GATE`、退出码 4，必须等待用户完整看片，旁白模式还须完整听音。
+`WAITING_HUMAN_GATE`，进程退出码为 0，必须等待用户完整看片，旁白模式还须完整听音。退出码 0 只表示本次技术链成功完成，不表示人工批准；权威 Gate 字段为 `status=WAITING_HUMAN_GATE`、`technicalStatus=PASS`、`processOutcome=completed_waiting_for_user`、`approvalWritten=false`、`userConfirmationRequired=true` 与 `nextGate`。这样 PowerShell/桌面命令包装层不会把预期人工 Gate 显示成技术失败，同时独立批准脚本和 current identity 校验仍保持 fail-closed。
 
 ## 逐步调试与恢复
 
@@ -55,6 +55,7 @@ runner 中断或失败后不要从头重做：保留已 current 的 receipt，�
 ## Gate 与恢复语义
 
 - runner 在 annotation 联合确认处停止，输出 artifact、identity、状态和需要用户明确回复的内容；不会写 approval。
+- 自动化不得仅凭进程退出码 0 继续需要批准的下游；必须同时读取结构化 `status` 与 `approvalWritten`。`WAITING_HUMAN_GATE` 只能等待用户或执行只读检查，不能自动调用批准脚本。
 - 确定性失败只重做受影响阶段；已验证且 binding current 的阶段不得重复执行。
 - provider `unknown_external_outcome` 不得普通重跑或自动重发；必须等待用户单独授权新的外部调用。
 - 旧批准不能跨 identity、manifest、timeline、SRT 或 receipt 变化复用。

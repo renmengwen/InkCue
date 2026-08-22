@@ -105,6 +105,7 @@ except ImportError:  # pragma: no cover - direct script execution
 
 ANNOTATION_BATCH_CONTRACT = "whiteboard-annotation-batch-v1"
 ANNOTATION_PREPARE_CONTRACT = "whiteboard-annotation-prepare-v3"
+ANNOTATION_LINT_CONTRACT = "whiteboard-annotation-candidate-lint-v1"
 ANNOTATION_DISPATCH_BUNDLE_CONTRACT = "whiteboard-agent-task-unit-v1"
 ANNOTATION_MAX_TASKS_PER_DISPATCH_UNIT = 3
 _ATTEMPT_RE = re.compile(r"^attempt-([0-9]{4})$")
@@ -811,6 +812,17 @@ def build_annotation_prepare_summary(
                 ),
                 "formalWritesAllowed": False,
                 "approvalWritesAllowed": False,
+                "candidateLint": {
+                    "command": [
+                        sys.executable,
+                        str(Path(__file__).resolve()),
+                        "lint",
+                        "--candidate",
+                        str(drafting.candidate_path.resolve(strict=False)),
+                    ],
+                    "writesPerformed": False,
+                    "requiredBeforeNextTask": True,
+                },
             }
         )
 
@@ -837,6 +849,18 @@ def build_annotation_prepare_summary(
                     for drafting in unit_tasks
                 ],
                 "resultWriter": "coordinator",
+                "candidateLintCommands": [
+                    [
+                        sys.executable,
+                        str(Path(__file__).resolve()),
+                        "lint",
+                        "--candidate",
+                        str(drafting.candidate_path.resolve(strict=False)),
+                    ]
+                    for drafting in unit_tasks
+                ],
+                "lintBeforeNextTask": True,
+                "payloadTooLargeRecovery": "new-short-context-json-only",
                 "preparedTasks": [
                     build_prepared_task_descriptor(
                         drafting.task,
@@ -929,6 +953,39 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--config")
     parser.add_argument("--allow-v1-disabled-compat", action="store_true")
     return parser
+
+
+def _lint_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="只读校验单个 annotation visual-elements candidate"
+    )
+    parser.add_argument("--candidate", required=True, type=Path)
+    return parser
+
+
+def _lint_main(argv: Sequence[str]) -> int:
+    args = _lint_parser().parse_args(argv)
+    try:
+        elements = _load_visual_elements_candidate(args.candidate)
+        summary = {
+            "contractVersion": ANNOTATION_LINT_CONTRACT,
+            "status": "PASS",
+            "candidate": str(args.candidate.resolve(strict=True)),
+            "elementCount": len(elements),
+            "writesPerformed": False,
+        }
+        code = 0
+    except Exception as exc:
+        summary = {
+            "contractVersion": ANNOTATION_LINT_CONTRACT,
+            "status": "FAIL",
+            "candidate": str(args.candidate.resolve(strict=False)),
+            "error": str(exc),
+            "writesPerformed": False,
+        }
+        code = 2
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    return code
 
 
 def _prepare_failure(exc: Exception) -> AnnotationPrepareCLIError:
@@ -1025,6 +1082,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     if raw and raw[0] == "prepare":
         return _prepare_main(raw[1:])
+    if raw and raw[0] == "lint":
+        return _lint_main(raw[1:])
     if raw and raw[0] == "validate":
         raw = raw[1:]
     return _validate_main(raw)
@@ -1036,6 +1095,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "ANNOTATION_BATCH_CONTRACT",
+    "ANNOTATION_LINT_CONTRACT",
     "ANNOTATION_PREPARE_CONTRACT",
     "AnnotationBatchError",
     "AnnotationDraftingTask",

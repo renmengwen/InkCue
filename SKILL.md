@@ -43,6 +43,7 @@ topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经�
 - `unknown_external_outcome`（provider 请求后 candidate/receipt 不完整且不能按同一幂等键查询）不得普通重跑或 `--retry-failed` 自动重发；必须单独取得用户承担新外部调用的授权。
 
 本地 coordinator runner 支持 `annotation-preview` 与 `final-delivery`。前者串联 annotation 确定性校验、receipt、preview/contact sheet；后者只在 current scene bundle 已获批准后连续执行 merge/burn/可选 mux/final validation，并输出逐步耗时。两者遇到人工 Gate 都必须停止并保持 `approvalWritten=false`；逐步 CLI 始终保留为调试和恢复路径。字段、Gate 停止与恢复合同见 [references/phase-4-runner.md](references/phase-4-runner.md)。
+- runner 技术链完成并停在人工 Gate 时进程退出码为 0，结构化状态必须为 `WAITING_HUMAN_GATE` 且 `approvalWritten=false`。退出码 0 只避免 PowerShell/桌面包装层误报技术失败，不表示批准；任何自动化都必须读取 JSON 状态，不能据退出码越过 Gate。
 - preview 服务必须由 `serve_preview.py --ensure --project <root>` 启动/复用，并验证 `PREVIEW_READY=PASS`、项目 API、全部 ready/current scene 后交付完整 `PREVIEW_URL`；失败报告 `BLOCKED/FAIL` 真实原因。
 
 | Gate | 用户必须检查 | 通过后允许 |

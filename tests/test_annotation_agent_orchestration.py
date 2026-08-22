@@ -110,6 +110,9 @@ class AnnotationAgentOrchestrationTests(AnnotationBatchFixture):
             "它不能替代正确分区",
             "sequence` 从 1 连续递增",
             "元素使用本幕局部毫秒时钟且彼此串行",
+            "elements[i].reveal.protectedRegions",
+            "candidateLint.command",
+            "payload too large",
             "每个 `result.json` 使用 `whiteboard-agent-result-v1`（由 coordinator 生成）",
         ):
             self.assertIn(required_rule, contract)

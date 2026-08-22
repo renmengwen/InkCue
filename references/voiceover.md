@@ -40,6 +40,8 @@ MiniMax T2A V2：
 
 MiniMax adapter 仅使用 Python 标准库，不需要安装额外 provider 包。可重试范围与 Edge 相同：DNS/连接、timeout、429、502、503、504；401/403、参数/音色错误、协议或媒体格式错误不自动重试，也不会自动切换 Edge。
 
+MiniMax 额外使用 provider 级共享节流器：`requestsPerMinute`（默认 20）与 `queueIntervalMs` 共同生效，实际请求间隔取两者中更保守的值。该节流器在全部 `voiceGeneration` worker 间共享并加锁，不能让每个线程各自计算间隔。HTTP 429、`Retry-After`，以及 HTTP 200 响应体中的 `rate limit exceeded(RPM)` 都属于明确的可重试限流；收到后全部新请求至少延迟 `rateLimitBackoffMs`（默认 35000ms），只在当前 segment 的有界 attempt 内重试。401/403、非法 voice/参数和协议错误仍是永久失败。
+
 Edge TTS 不需要 API Key 或 Base URL，但不是离线模型。它依赖外网和微软语音服务，可能受服务规则、可用性、限流、音色和返回格式变化影响。不得把“无 Key”写成“无需网络”，也不得在失败后自动改 voice/rate、切换 provider 或降级到其他 TTS。
 
 Skill 不调用、不导入、不读取 Yingshu 的 API、数据库、模型配置或 `node_modules`，也不接触任何外部凭据。当前不支持多角色、SSML、克隆音色、背景音乐、浏览器试听 UI 或自动 voice 推荐。
@@ -57,6 +59,8 @@ python scripts/prepare_env.py
 ```
 
 `config/voice-providers.example.json` 是无秘密的首版 provider 合同示例，记录 package/contract、voice、language、规范化 rate/pitch/volume、输出格式及请求策略字段。它不是凭据文件，也不允许加入 key、Cookie、Token 或临时 URL。
+
+MiniMax 请求策略字段为 `queueIntervalMs`、`requestsPerMinute`、`rateLimitBackoffMs` 与 `maxRetries`。`requestsPerMinute` 必须位于 1–600，`rateLimitBackoffMs` 必须位于 1000–300000；缺失时分别采用 20 RPM 与 35000ms。降低 `voiceGeneration` 只能减少在途请求和本地资源占用，不能替代共享 RPM 节流。
 
 当前样音 CLI 的 provider 永远读取 `config/voice-providers.local.json` 的 `activeProvider`，不提供 `--provider` 覆盖入口；activeProvider 必须与项目已经冻结的 `voiceoverMode` 一致。CLI 仍支持 `--voice` 与整数百分点 `--rate`，MiniMax 未指定 voice/rate 时从 local provider 配置读取。`--rate 0` 规范化为 `+0%`，`10` 为 `+10%`，`-10` 为 `-10%`。持久化 identity 使用规范化字符串，不依赖调用点猜单位。全局示例配置不能自动覆盖项目中已经生成或批准的 `planning/voice-plan.json`。
 

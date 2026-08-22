@@ -243,6 +243,8 @@ Edge TTS / MiniMax 的样音、完整旁白和真实时长流程见 [语音合�
 
 `annotation-preview` 完成 annotation technical validation、current receipt 复用、candidate/区域预览、contact sheet 和 review manifest 后，必须停在 annotation 联合人工确认。`final-delivery` 在 current scene bundle 已批准后，同一进程连续执行 merge → burn →（旁白模式）mux → final validation，输出每步 `timingsMs` 和总墙钟时间，然后停在最终看片/听音 Gate。两者都输出 artifact、identity、status、`approvalWritten=false` 和下一步需要的明确用户回复；技术 PASS、candidate、receipt 或 agent findings 都不等于用户批准。
 
+runner 到达预期人工 Gate 时输出 `status=WAITING_HUMAN_GATE`、`technicalStatus=PASS`、`processOutcome=completed_waiting_for_user`，并以进程退出码 0 结束，避免通用 PowerShell/桌面包装层显示为技术失败。自动化仍必须读取 JSON，看到 `approvalWritten=false` 时停止；退出码 0 绝不授权调用批准脚本或继续需要批准的下游。
+
 runner 中断后可直接恢复，也可退回逐步 CLI；保留 current binding 的步骤可以复用 receipt，binding 变化则重新 deep validation 并 fail closed：
 
 ```powershell

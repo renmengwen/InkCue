@@ -202,11 +202,18 @@ def build_dispatch_manifest(
     candidate_root: Path,
     tasks: Iterable[Mapping[str, Any]],
     dispatch_units: Iterable[Mapping[str, Any]],
-    configured_concurrency: int,
+    configured_concurrency: int | None = None,
+    effective_concurrency: int | None = None,
     audit: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a host-neutral structured manifest with ASCII control flags."""
 
+    if configured_concurrency is None:
+        if effective_concurrency is None:
+            raise TypeError("configured_concurrency is required")
+        configured_concurrency = effective_concurrency
+    elif effective_concurrency is not None and effective_concurrency != configured_concurrency:
+        raise ValueError("effective_concurrency compatibility value must match configured_concurrency")
     return {
         "contractVersion": DISPATCH_MANIFEST_CONTRACT,
         "runId": run_id,
@@ -219,6 +226,9 @@ def build_dispatch_manifest(
             "WRITE_FORMAL_FILES": False,
             "WRITE_APPROVAL_FILES": False,
             "STOP_AFTER_CANDIDATE_READY": True,
+            "LINT_CANDIDATE_BEFORE_NEXT_TASK": True,
+            "REPAIR_SCHEMA_JSON_ONLY": True,
+            "RESTART_SHORT_CONTEXT_AFTER_PAYLOAD_TOO_LARGE": True,
         },
         "configuredConcurrency": int(configured_concurrency),
         "tasks": [dict(item) for item in tasks],

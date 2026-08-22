@@ -282,6 +282,8 @@ def _adapter_from_plan(plan: Mapping[str, Any]) -> ProviderAdapter:
             endpoint=str(options.get("endpoint", config.get("endpoint", "https://api.minimaxi.com/v1/t2a_v2"))),
             max_attempts=int(config.get("maxRetries", 2)) + 1,
             queue_interval_seconds=float(config.get("queueIntervalMs", 500)) / 1000.0,
+            requests_per_minute=int(config.get("requestsPerMinute", 20)),
+            rate_limit_backoff_seconds=float(config.get("rateLimitBackoffMs", 35000)) / 1000.0,
         )
     raise VoiceoverStateError(f"不支持的旁白 provider: {provider_id}")
 
@@ -1638,7 +1640,7 @@ def main(
         print(f"[stale] {exc}", file=sys.stderr)
         return 5
     except RetryableProviderError as exc:
-        print(f"[edge] {exc}", file=sys.stderr)
+        print(f"[provider] {exc}", file=sys.stderr)
         return 3
     except CancelledError as exc:
         print(f"[cancelled] {exc}", file=sys.stderr)

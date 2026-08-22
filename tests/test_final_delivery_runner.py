@@ -175,8 +175,11 @@ class FinalDeliveryRunnerTests(unittest.TestCase):
             )
 
         self.assertEqual(code, run_phase.EXIT_HUMAN_GATE)
+        self.assertEqual(code, 0)
         self.assertEqual(summary["status"], "WAITING_HUMAN_GATE")
-        self.assertEqual(summary["contractVersion"], "phase-runner-v2")
+        self.assertEqual(summary["contractVersion"], "phase-runner-v3")
+        self.assertEqual(summary["technicalStatus"], "PASS")
+        self.assertEqual(summary["processOutcome"], "completed_waiting_for_user")
         self.assertEqual(summary["recovery"]["lastCompletedStep"], "validateFinalMedia")
         self.assertFalse(summary["approvalWritten"])
 

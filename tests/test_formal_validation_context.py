@@ -32,6 +32,7 @@ class FormalValidationContextTests(AnnotationBatchFixture):
                 "fullApproved": True,
                 "audioSha256": audio_sha,
                 "fullIdentityHash": full_identity,
+                "reviewPolicy": "user_first",
             }
         patcher = (
             mock.patch.object(

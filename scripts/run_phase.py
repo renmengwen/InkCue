@@ -37,7 +37,7 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-RUNNER_CONTRACT = "phase-runner-v2"
+RUNNER_CONTRACT = "phase-runner-v3"
 PHASE_REGISTRY: dict[str, Callable[..., Mapping[str, Any]]] = {
     "annotation-preview": run_annotation_preview,
     "final-delivery": run_final_delivery,
@@ -46,7 +46,11 @@ PHASE_REGISTRY: dict[str, Callable[..., Mapping[str, Any]]] = {
 # Stable process-level contract consumed by automation and the recovery docs.
 EXIT_OK = 0
 EXIT_INVALID_OR_TECHNICAL = 2
-EXIT_HUMAN_GATE = 4
+# Reaching a human gate means all requested technical work completed.  Keep a
+# named alias for callers, but return process success so generic PowerShell and
+# desktop command wrappers do not mislabel the run as a technical failure.
+# The structured status and approvalWritten=false remain the gate authority.
+EXIT_HUMAN_GATE = EXIT_OK
 EXIT_STALE_BINDING = 5
 EXIT_UNKNOWN_EXTERNAL_OUTCOME = 6
 
@@ -89,6 +93,8 @@ def _base_summary(
         "contractVersion": RUNNER_CONTRACT,
         "phase": phase,
         "status": "FAIL",
+        "technicalStatus": "FAIL",
+        "processOutcome": "technical_failure",
         "projectId": project_id,
         "runId": run_id,
         "taskCount": 0,
@@ -147,6 +153,15 @@ def _projected_summary(
     result.setdefault("deepValidationSkipReason", raw.get("deepValidationBasis"))
     if result.get("status") == "PASS" and result.get("nextGate"):
         result["status"] = "WAITING_HUMAN_GATE"
+    if result.get("status") == "WAITING_HUMAN_GATE":
+        result["technicalStatus"] = "PASS"
+        result["processOutcome"] = "completed_waiting_for_user"
+    elif result.get("status") == "PASS":
+        result["technicalStatus"] = "PASS"
+        result["processOutcome"] = "completed"
+    else:
+        result["technicalStatus"] = "FAIL"
+        result["processOutcome"] = "technical_failure"
     if result.get("status") == "FAIL" and result.get("failureCount", 0) == 0:
         result["failureCount"] = len(result["failures"])
     # Keep a copyable recovery command; no implicit approval or retry flag is
