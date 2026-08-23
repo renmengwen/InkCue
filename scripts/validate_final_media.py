@@ -15,7 +15,17 @@ from audio_normalization import AudioNormalizationError, validate_canonical_wav
 from cover_review import CoverReviewError, load_cover_review
 from generate_voiceover import ApprovalGateError, VoiceoverStateError, validate_current_voiceover
 from media_validation import MediaValidationError, validate_video
-from mux_voiceover import EDGE_MUX_CONTRACT_VERSION, validate_edge_mux_media
+from mux_voiceover import (
+    EDGE_MUX_CONTRACT_VERSION,
+    FINAL_AUDIO_MIX_CONTRACT_VERSION,
+    validate_edge_mux_media,
+)
+from background_music import (
+    BGM_MIX_CONTRACT_VERSION,
+    BGM_ASSET_FILE,
+    BackgroundMusicError,
+    load_background_music_plan,
+)
 from project_workspace import (
     ExecutionConcurrency,
     Project,
@@ -277,6 +287,7 @@ def _assert_edge_audio(
     final_media: Mapping[str, Any],
     identity_inputs: Mapping[str, Any],
     final_record: Mapping[str, Any],
+    mux_contract_version: str,
 ) -> None:
     audio_streams = final_media["streams"]["audio"]
     if len(audio_streams) != 1:
@@ -364,10 +375,37 @@ def _assert_edge_audio(
             "sampleRate": 24000,
             "channels": 1,
         },
-        "muxContractVersion": EDGE_MUX_CONTRACT_VERSION,
+        "muxContractVersion": mux_contract_version,
     }
     if dict(edge) != expected_edge:
         raise FinalMediaStaleError("final.edgeDelivery 与 current Edge 输入不一致")
+
+
+def _assert_background_music(
+    project: Project,
+    final_record: Mapping[str, Any],
+    background_music: Mapping[str, Any],
+) -> None:
+    if not background_music["enabled"]:
+        if final_record.get("backgroundMusic") is not None:
+            raise FinalMediaStaleError("BGM 已关闭，但 final 仍绑定 backgroundMusic")
+        return
+    record = _require_mapping(final_record.get("backgroundMusic"), "final.backgroundMusic")
+    expected = {
+        "projectField": "project.json#backgroundMusic.enabled",
+        "assetFile": BGM_ASSET_FILE,
+        "assetSha256": background_music["assetSha256"],
+        "title": background_music["title"],
+        "artist": background_music["artist"],
+        "license": background_music["license"],
+        "gainDb": background_music["gainDb"],
+        "fadeInMs": background_music["fadeInMs"],
+        "fadeOutMs": background_music["fadeOutMs"],
+        "loop": background_music["loop"],
+        "mixContractVersion": BGM_MIX_CONTRACT_VERSION,
+    }
+    if dict(record) != expected:
+        raise FinalMediaStaleError("final.backgroundMusic 与 current BGM plan 不一致")
 
 
 def inspect_project_final_media(
@@ -378,6 +416,12 @@ def inspect_project_final_media(
 ) -> dict[str, Any]:
     """只读检查 current final 及全部身份；不写技术验证或人工批准。"""
     project = load_project(project_root)
+    background_music = load_background_music_plan(project)
+    mux_version = (
+        FINAL_AUDIO_MIX_CONTRACT_VERSION
+        if background_music["enabled"]
+        else EDGE_MUX_CONTRACT_VERSION
+    )
     manifest_path, manifest = _load_manifest(project)
     _assert_current_timing(project, manifest.get("timingPlan"))
     _assert_cover(project, manifest.get("cover"))
@@ -424,6 +468,7 @@ def inspect_project_final_media(
                 canonical_duration_ms=canonical_duration,
                 deep_receipt=receipt,
                 force_deep=force_deep,
+                mux_contract_version=mux_version,
             )
         return _validate_output(
             project, relative_file="output/final.mp4",
@@ -469,11 +514,8 @@ def inspect_project_final_media(
     style = _require_mapping(subtitles.get("style"), "subtitles.style")
     font = _require_mapping(style.get("font"), "subtitles.style.font")
     identity_inputs = _require_mapping(final.get("identityInputs"), "final.identityInputs")
-    mux_version = (
-        DISABLED_MUX_CONTRACT_VERSION
-        if project.voiceover_mode == "disabled"
-        else EDGE_MUX_CONTRACT_VERSION
-    )
+    if project.voiceover_mode == "disabled":
+        mux_version = DISABLED_MUX_CONTRACT_VERSION
     audio_sha = "" if project.voiceover_mode == "disabled" else str(identity_inputs.get("audioSha256") or "")
     expected_inputs, expected_identity = compute_final_identity(
         voiceover_mode=project.voiceover_mode,
@@ -490,8 +532,15 @@ def inspect_project_final_media(
     )
     if dict(identity_inputs) != expected_inputs or final.get("finalIdentitySha256") != expected_identity:
         raise FinalMediaStaleError("final identity 与 current 输入不一致")
+    _assert_background_music(project, final, background_music)
     if project.voiceover_mode in {"edge-tts", "minimax"}:
-        _assert_edge_audio(project, final_media, identity_inputs, final)
+        _assert_edge_audio(
+            project,
+            final_media,
+            identity_inputs,
+            final,
+            mux_version,
+        )
 
     return {
         "project": project,
@@ -597,7 +646,11 @@ def main(
     except ProjectValidationError as exc:
         print(f"ERROR={exc}", file=sys.stderr)
         return 2
-    except (FinalMediaStaleError, SubtitleDeliveryError) as exc:
+    except (
+        FinalMediaStaleError,
+        SubtitleDeliveryError,
+        BackgroundMusicError,
+    ) as exc:
         print(f"ERROR={exc}", file=sys.stderr)
         return 5
     except (MediaValidationError, OSError, RuntimeError, KeyError, TypeError) as exc:

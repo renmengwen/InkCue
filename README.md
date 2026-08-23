@@ -165,10 +165,13 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 
 # 创建项目
 & $envPy scripts\create_project.py --name <项目名> `
-  --srt <字幕.srt> --plan <分镜.json> --voiceover-mode disabled
+  --srt <字幕.srt> --plan <分镜.json> --voiceover-mode disabled `
+  --background-music disabled
 
 # 不传 --voiceover-mode 时，新项目读取 config/voice-providers.local.json 的 activeProvider；
 # 如果需要明确创建静音项目，请显式传 --voiceover-mode disabled。
+# 阶段 0 还需让用户选择 --background-music enabled|disabled；enabled 使用内置 CC0
+# 轻音乐，以固定 -15 dB 在最终旁白封装阶段混入，不增加独立人工 Gate。
 
 # Edge：生成样音；完整试听并明确确认后，才批准刚试听的 current identity
 & $envPy scripts\generate_voiceover.py sample --project <项目根目录> `

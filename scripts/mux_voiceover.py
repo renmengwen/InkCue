@@ -33,6 +33,13 @@ try:
     )
     from .voiceover import VoiceoverValidationError
     from .cover_frame import attach_cover_manifest, attach_cover_review_manifest, cover_record
+    from .background_music import (
+        BGM_MIX_CONTRACT_VERSION,
+        BGM_ASSET_FILE,
+        BGM_ASSET_PATH,
+        BackgroundMusicError,
+        load_background_music_plan,
+    )
 except ImportError:  # pragma: no cover - direct script execution
     from audio_normalization import AudioNormalizationError, validate_canonical_wav
     from generate_voiceover import ApprovalGateError, VoiceoverStateError, validate_current_voiceover
@@ -54,9 +61,17 @@ except ImportError:  # pragma: no cover - direct script execution
     )
     from voiceover import VoiceoverValidationError
     from cover_frame import attach_cover_manifest, attach_cover_review_manifest, cover_record
+    from background_music import (
+        BGM_MIX_CONTRACT_VERSION,
+        BGM_ASSET_FILE,
+        BGM_ASSET_PATH,
+        BackgroundMusicError,
+        load_background_music_plan,
+    )
 
 
 EDGE_MUX_CONTRACT_VERSION = "edge-aac-mux-v1"
+FINAL_AUDIO_MIX_CONTRACT_VERSION = "final-audio-mix-v1"
 AAC_CODEC = "aac"
 AAC_BITRATE = "192k"
 AAC_SAMPLE_RATE = 24000
@@ -261,8 +276,9 @@ def validate_edge_mux_media(
     canonical_duration_ms: int,
     deep_receipt: Mapping[str, Any] | None = None,
     force_deep: bool = False,
+    mux_contract_version: str = EDGE_MUX_CONTRACT_VERSION,
 ) -> dict[str, Any]:
-    """验证 Edge final；容器时长允许由 AAC 决定，但视频帧合同保持严格。"""
+    """验证含最终音轨的 final；视频帧合同保持严格。"""
     probe = validate_video(
         path,
         render_profile=project.render_profile,
@@ -275,7 +291,7 @@ def validate_edge_mux_media(
     videos = streams["video"]
     audios = streams["audio"]
     if len(videos) != 1 or len(audios) != 1 or streams["subtitle"] or streams["other"]:
-        raise MediaValidationError("Edge final 必须恰好包含 1 路视频、1 路音频且无额外流")
+        raise MediaValidationError("含音轨 final 必须恰好包含 1 路视频、1 路音频且无额外流")
     video = videos[0]
     audio = audios[0]
     profile = project.render_profile
@@ -289,24 +305,24 @@ def validate_edge_mux_media(
         or actual_fps != expected_fps
         or video["frameCount"] != expected_frame_count
     ):
-        raise MediaValidationError("Edge final 视频不满足 H.264/画布/像素格式/fps/帧数合同")
+        raise MediaValidationError("final 视频不满足 H.264/画布/像素格式/fps/帧数合同")
     if audio["codec"] != AAC_CODEC or audio["sampleRate"] != AAC_SAMPLE_RATE or audio["channels"] != AAC_CHANNELS:
-        raise MediaValidationError("Edge final 音频必须为 AAC、24000Hz、mono")
+        raise MediaValidationError("final 音频必须为 AAC、24000Hz、mono")
     frame_ms = Decimal(1000) / expected_fps
     tolerance = max(frame_ms, Decimal(80))
     video_duration = _frame_duration_ms(project, expected_frame_count)
     if abs(video_duration - Decimal(canonical_duration_ms)) > tolerance:
         raise MediaValidationError("视频帧时长与 canonical timeline 相差超过 max(1帧,80ms)")
     if abs(Decimal(probe["durationMs"]) - Decimal(canonical_duration_ms)) > tolerance:
-        raise MediaValidationError("Edge final 容器时长与 canonical timeline 相差超过容差")
+        raise MediaValidationError("final 容器时长与权威时长相差超过容差")
     if abs(Decimal(audio["durationMs"]) - Decimal(canonical_duration_ms)) > tolerance:
-        raise MediaValidationError("Edge final AAC 时长与 canonical timeline 相差超过容差")
+        raise MediaValidationError("final AAC 时长与权威时长相差超过容差")
     if Decimal(audio["durationMs"]) + Decimal(1) < Decimal(canonical_duration_ms):
-        raise MediaValidationError("Edge final AAC 尾部被截断")
+        raise MediaValidationError("final AAC 尾部被截断")
     result = dict(probe)
     result["validation"] = {
         **probe["validation"],
-        "edgeMuxContractVersion": EDGE_MUX_CONTRACT_VERSION,
+        "edgeMuxContractVersion": mux_contract_version,
         "validated": True,
         "expectedFrameCount": expected_frame_count,
         "canonicalDurationMs": canonical_duration_ms,
@@ -338,6 +354,7 @@ def mux_project(
     project = load_project(project_root)
     if project.voiceover_mode not in {"edge-tts", "minimax"}:
         raise MuxStaleError("mux_voiceover.py 只允许带音频的旁白项目")
+    background_music = load_background_music_plan(project)
     manifest_path, manifest = _load_delivery(project)
     timeline_sha, timeline = _assert_current_timing(project, manifest)
     current_voice, canonical, full_approval = _assert_current_voice(project, timeline_sha)
@@ -393,6 +410,12 @@ def mux_project(
     ):
         raise MuxStaleError("audio timeline 未绑定 current canonical WAV")
 
+    mux_contract_version = (
+        FINAL_AUDIO_MIX_CONTRACT_VERSION
+        if background_music["enabled"]
+        else EDGE_MUX_CONTRACT_VERSION
+    )
+
     run_dir = project.path(f".work/mux-{run_id or uuid.uuid4().hex}")
     if run_dir.exists():
         raise MediaValidationError(f"本次 mux 工作目录已存在: {run_dir}")
@@ -401,33 +424,37 @@ def mux_project(
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
         raise MediaValidationError("缺少必需的可执行文件: ffmpeg")
-    argv = [
-        ffmpeg,
-        "-y",
-        "-loglevel",
-        "error",
-        "-i",
-        str(captioned_path.resolve()),
-        "-i",
-        str(project.path("audio/narration.wav").resolve()),
-        "-map",
-        "0:v:0",
-        "-map",
-        "1:a:0",
-        "-c:v",
-        "copy",
-        "-c:a",
-        AAC_CODEC,
-        "-b:a",
-        AAC_BITRATE,
-        "-ar",
-        str(AAC_SAMPLE_RATE),
-        "-ac",
-        str(AAC_CHANNELS),
-        "-movflags",
-        "+faststart",
-        str(candidate),
-    ]
+    argv = [ffmpeg, "-y", "-loglevel", "error", "-i", str(captioned_path.resolve())]
+    argv.extend(["-i", str(project.path("audio/narration.wav").resolve())])
+    if background_music["enabled"]:
+        argv.extend(["-stream_loop", "-1", "-i", str(BGM_ASSET_PATH)])
+        duration_seconds = canonical.durationMs / 1000
+        fade_in_seconds = background_music["fadeInMs"] / 1000
+        fade_out_seconds = background_music["fadeOutMs"] / 1000
+        fade_out_start = max(0.0, duration_seconds - fade_out_seconds)
+        bgm_chain = (
+            "[2:a:0]aresample=24000,"
+            "aformat=sample_fmts=fltp:sample_rates=24000:channel_layouts=mono,"
+            f"volume={background_music['gainDb']:g}dB,"
+            f"atrim=0:{duration_seconds:.3f},asetpts=N/SR/TB,"
+            f"afade=t=in:st=0:d={fade_in_seconds:.3f},"
+            f"afade=t=out:st={fade_out_start:.3f}:d={fade_out_seconds:.3f}[bgm]"
+        )
+        filter_graph = (
+            "[1:a:0]aresample=24000,"
+            "aformat=sample_fmts=fltp:sample_rates=24000:channel_layouts=mono[voice];"
+            + bgm_chain
+            + ";[voice][bgm]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
+            "alimiter=limit=0.95:level=disabled[aout]"
+        )
+        argv.extend(["-filter_complex", filter_graph, "-map", "0:v:0", "-map", "[aout]"])
+    else:
+        argv.extend(["-map", "0:v:0", "-map", "1:a:0"])
+    argv.extend([
+        "-c:v", "copy", "-c:a", AAC_CODEC, "-b:a", AAC_BITRATE,
+        "-ar", str(AAC_SAMPLE_RATE), "-ac", str(AAC_CHANNELS),
+        "-movflags", "+faststart", str(candidate),
+    ])
     published = False
     completed = False
     try:
@@ -437,6 +464,7 @@ def mux_project(
             candidate,
             expected_frame_count=expected_frames,
             canonical_duration_ms=canonical.durationMs,
+            mux_contract_version=mux_contract_version,
         )
         final_path = project.path("output/final.mp4")
         atomic_publish(candidate, final_path)
@@ -446,6 +474,7 @@ def mux_project(
             expected_frame_count=expected_frames,
             canonical_duration_ms=canonical.durationMs,
             deep_receipt=final_media["validation"],
+            mux_contract_version=mux_contract_version,
         )
         published = True
 
@@ -461,11 +490,11 @@ def mux_project(
             font_sha256=str(font.get("sha256") or ""),
             render_profile_sha256=project.timing_plan["renderProfileSha256"],
             timing_plan_sha256=_timing_plan_sha(project),
-            mux_contract_version=EDGE_MUX_CONTRACT_VERSION,
+            mux_contract_version=mux_contract_version,
             final_media_sha256=final_media["sha256"],
         )
         voice_manifest = _read_json(project.path("manifests/voice-manifest.json"), "voice manifest")
-        manifest["final"] = {
+        final_record: dict[str, Any] = {
             **_media_record("output/final.mp4", final_media),
             "identityInputs": inputs,
             "finalIdentitySha256": final_identity,
@@ -502,9 +531,24 @@ def mux_project(
                     "sampleRate": AAC_SAMPLE_RATE,
                     "channels": AAC_CHANNELS,
                 },
-                "muxContractVersion": EDGE_MUX_CONTRACT_VERSION,
+                "muxContractVersion": mux_contract_version,
             },
         }
+        if background_music["enabled"]:
+            final_record["backgroundMusic"] = {
+                "projectField": "project.json#backgroundMusic.enabled",
+                "assetFile": BGM_ASSET_FILE,
+                "assetSha256": background_music["assetSha256"],
+                "title": background_music["title"],
+                "artist": background_music["artist"],
+                "license": background_music["license"],
+                "gainDb": background_music["gainDb"],
+                "fadeInMs": background_music["fadeInMs"],
+                "fadeOutMs": background_music["fadeOutMs"],
+                "loop": background_music["loop"],
+                "mixContractVersion": BGM_MIX_CONTRACT_VERSION,
+            }
+        manifest["final"] = final_record
         # A new technical final invalidates any old human approval.  Mux never approves.
         manifest["finalApproval"] = None
         write_json_atomic(manifest_path, manifest)
@@ -522,7 +566,7 @@ def mux_project(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="封装 current、已批准的 Edge TTS 旁白")
+    parser = argparse.ArgumentParser(description="合成 current 旁白/BGM 最终音轨")
     parser.add_argument("--project", required=True, help="项目根目录")
     parser.add_argument("--force-deep", action="store_true", help="忽略旧 receipt 并重新深验上游")
     return parser
@@ -535,7 +579,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ProjectValidationError as exc:
         print(f"ERROR={exc}", file=sys.stderr)
         return 2
-    except (MuxStaleError, ApprovalGateError, SubtitleDeliveryError) as exc:
+    except (
+        MuxStaleError,
+        ApprovalGateError,
+        SubtitleDeliveryError,
+        BackgroundMusicError,
+    ) as exc:
         print(f"ERROR={exc}", file=sys.stderr)
         return 5
     except (AudioNormalizationError, MediaValidationError, OSError, RuntimeError, KeyError, TypeError, VoiceoverStateError, VoiceoverValidationError) as exc:

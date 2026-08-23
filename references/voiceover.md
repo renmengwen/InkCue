@@ -44,7 +44,7 @@ MiniMax 额外使用 provider 级共享节流器：`requestsPerMinute`（默认 
 
 Edge TTS 不需要 API Key 或 Base URL，但不是离线模型。它依赖外网和微软语音服务，可能受服务规则、可用性、限流、音色和返回格式变化影响。不得把“无 Key”写成“无需网络”，也不得在失败后自动改 voice/rate、切换 provider 或降级到其他 TTS。
 
-Skill 不调用、不导入、不读取 Yingshu 的 API、数据库、模型配置或 `node_modules`，也不接触任何外部凭据。当前不支持多角色、SSML、克隆音色、背景音乐、浏览器试听 UI 或自动 voice 推荐。
+Skill 不调用、不导入、不读取 Yingshu 的 API、数据库、模型配置或 `node_modules`，也不接触任何外部凭据。当前不支持多角色、SSML、克隆音色、浏览器试听 UI 或自动 voice 推荐。BGM 只支持一个内置 CC0 固定预设：Yoiyami 的《First Light Particles》，`-15 dB`、1.2 秒淡入、1.8 秒淡出、短于成片时循环；用户只在阶段 0 选择加入或不加入，不增加独立试听或批准 Gate。
 
 ## 环境与配置
 
@@ -284,6 +284,8 @@ Edge annotation 必须绑定 current audio SHA、timeline SHA、timing plan SHA�
 
 mux 允许 Edge 或 MiniMax 模式，要求 current full approval、captioned video、WAV、timeline、字幕和 delivery identity 全部有效。它以 `-c:v copy` 保持已经烧录字幕的视频，以 `AAC 192k / 24000Hz / mono` 编码旁白，原子发布 `output/final.mp4`，输出 `FINAL_IDENTITY`。
 
+若 `project.json.backgroundMusic.enabled=true`，同一个 mux 命令额外读取 skill 内置 CC0 曲目，按固定 `-15 dB` 混入旁白，应用 1.2 秒淡入和 1.8 秒淡出，并在曲目短于成片时循环。最终仍只有一路 AAC；delivery manifest 的 `final.backgroundMusic` 记录曲名、作者、许可证、资产 SHA 与混音参数。若字段为 `false` 或旧项目缺少该字段，保持原有纯旁白封装。BGM 不新增人工 Gate，最终完整看片听音批准同时验收其听感。
+
 完整旁白批准和技术验证都不等于最终人工批准。用户必须完整看片听音，确认最终真实画面上的字幕、画面、音频和尾部均无截断后，才允许执行：
 
 ```powershell
@@ -309,7 +311,7 @@ final identity 覆盖 clean video、audio、timeline、权威字幕、样式、�
 | narration WAV 改变 | full 批准、timeline、annotation 和全部下游 | 图片 |
 | timeline/timing plan 改变 | narration SRT、annotation 时序、场景视频、captioned/final、最终批准 | 图片 generation plan/manifest；音频按 identity 调查 |
 | render profile 或 mode 改变 | timing、annotation、所有视频与最终批准 | 图片和音频可保留但需重新绑定/复核 |
-| captioned video、AAC 参数或 final SHA 改变 | final、最终批准 | 上游 current 产物 |
+| captioned video、AAC 参数、BGM 开关/内置资产/固定混音参数或 final SHA 改变 | final、最终批准 | 上游 current 产物 |
 
 stale 文件可作为历史证据保留，但不得作为 current 输入进入下一阶段。不因下游 stale 删除上游仍有效的语音段。
 

@@ -19,13 +19,13 @@ description: 将主题、正文或 SRT 制作成暖米黄纸张底、按叙事�
 
 `topic + preserve/polish`、`text + generate` 非法。非 SRT 必须有 15–600 秒 `targetDurationSeconds`；缺失时可建议 60 秒，但要与其他缺失配置一次性展示并等待确认。`voiceoverMode` 不属于用户选择项：除非用户明确要求静音，否则必须读取 skill 根目录 `config/voice-providers.local.json` 的 `activeProvider`，规范化为 `edge-tts` 或 `minimax` 后自动冻结。不得询问用户在 Edge TTS 与 MiniMax 之间选择，也不得从项目目录、旧项目 manifest、命令行 provider 参数或对话回复读取旁白 provider。
 
-topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经只读校验后，coordinator 生成审阅 artifact。内容、target、rewritePolicy、由 activeProvider 派生的 voiceoverMode、cue→scene、分镜和图片提示词必须通过一次“内容与制作方案联合确认”同时冻结；确认前不得运行 `prepare_source.py`、创建正式项目或写批准。review 中可以展示“当前已采用：MiniMax/Edge TTS”供用户知情查看，但不把 provider 变成待选择问题。传统 SRT 走严格解析并冻结 `storyboardPlanning` attempt，仍需分镜 Gate。详见 [references/phase-0-content.md](references/phase-0-content.md)、[references/content-input.md](references/content-input.md)。
+topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经只读校验后，coordinator 生成审阅 artifact。内容、target、rewritePolicy、由 activeProvider 派生的 voiceoverMode、cue→scene、分镜、图片提示词和是否加入 BGM，必须通过一次“内容与制作方案联合确认”同时冻结；确认前不得运行 `prepare_source.py`、创建正式项目或写批准。review 中可以展示“当前已采用：MiniMax/Edge TTS”供用户知情查看，但不把 provider 变成待选择问题。BGM 是用户选择项，只询问“加入/不加入”，加入时固定使用内置 CC0 轻音乐和 `-15 dB` 预设，不增加独立 Gate。传统 SRT 走严格解析并冻结 `storyboardPlanning` attempt，仍需分镜 Gate。详见 [references/phase-0-content.md](references/phase-0-content.md)、[references/content-input.md](references/content-input.md)。
 
 权威时钟：`disabled` 使用 `source/source.srt` 原始全局时间轴；Edge/MiniMax 使用获批 provider 生成的真实 audio timeline 与 `audio/narration.srt`。`targetDurationSeconds` 只作内容预算和 provisional SRT，不是成片时钟。
 
 ## 七个工作阶段与交付链
 
-1. **阶段 0：内容与制作方案联合确认**。冻结输入、旁白稿、cue、scene、target、rewritePolicy、voiceoverMode 和 generation plan；topic/text 由 `contentDrafting` 候选开始，确认前 fail-closed。
+1. **阶段 0：内容与制作方案联合确认**。冻结输入、旁白稿、cue、scene、target、rewritePolicy、voiceoverMode、generation plan 和 `backgroundMusic.enabled`；topic/text 由 `contentDrafting` 候选开始，确认前 fail-closed。
 2. **阶段 1：严格 SRT 与分镜确认**。传统 SRT 严格解析、时长约束和 `storyboardPlanning` candidate/result 交接；用户确认后才可建项。
 3. **阶段 3：样音与 voice/rate 确认**。Edge/MiniMax 生成 sample，用户明确试听批准并绑定 current `SAMPLE_IDENTITY`；未批准完整旁白以退出码 5 拒绝。
 4. **阶段 4：完整旁白、真实时长与 review policy 确认**。生成/验证 current WAV、timeline、narration SRT；用户完整试听并确认偏差，超过 10% 还须 `accept_actual`。同时冻结线稿 review policy。
@@ -48,7 +48,7 @@ topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经�
 
 | Gate | 用户必须检查 | 通过后允许 |
 |---|---|---|
-| 内容与制作方案 | 完整旁白稿、cue/scene、分镜、图片提示词、target 与配音策略 | 确定性派生 source、建项 |
+| 内容与制作方案 | 完整旁白稿、cue/scene、分镜、图片提示词、target、配音策略与是否加入 BGM | 确定性派生 source、建项 |
 | 传统 SRT 分镜 | 严格 SRT 解析结果与分镜 candidate | 建项 |
 | 样音 | current sample 的 voice/rate | 生成完整旁白 |
 | 完整旁白 | current WAV 全程、真实时长差值、narration SRT | 使用 canonical audio timeline |
@@ -71,7 +71,7 @@ topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经�
 10. provider worker 只能写 candidate/去敏 receipt；coordinator 按 `prepared → requesting → candidate_ready → publishing → validated` 串行 checkpoint、重验、原子发布和清理。
 11. `sceneRender` 是当前正式单幕候选的有界并行能力；worker 数只读 workspace `execution.concurrency.sceneRender`（缺失继承 pool default，最终默认 1，范围 1–16），候选完成顺序不得改变 generation plan 顺序或正式 manifest。
 12. image validation 每张 PNG 同一打开周期只完整解码一次；voice deep validation、timeline、SRT、累计帧、identity、binding 和 approval 仍按合同串行/有界，证据缺失或 bytes 变化不得降级为 binding PASS。
-13. 正式成片永远烧录字幕：disabled 为 H.264、0 音频且使用 source SRT；Edge/MiniMax 为 H.264 + AAC 旁白且使用 current narration SRT。旁白模式缺少 current narration SRT/timeline/full approval/identity 必须失败，不能回退 source SRT。
+13. 正式成片永远烧录字幕：disabled 为 H.264、0 音频且使用 source SRT；Edge/MiniMax 为 H.264 + AAC 旁白且使用 current narration SRT。旁白项目 `backgroundMusic.enabled=true` 时，最终封装在同一路 AAC 中按固定 `-15 dB` 混入内置 CC0 BGM；关闭或旧项目缺字段时保持原旁白封装。旁白模式缺少 current narration SRT/timeline/full approval/identity 必须失败，不能回退 source SRT。
 14. 任一输入、旁白文本/分段、scene mapping、imagePrompt、音频/timing/render binding、annotation/reveal、scene 集合/顺序、手部素材 `handSha256`、字幕 preset/字体/SRT 或 clean/final SHA 变化，按 [references/recovery-and-identity.md](references/recovery-and-identity.md) 使受影响 identity 和批准 stale；历史 stale 证据不得作为 current 输入。
 15. 每次进入工作区前先用 `prepare_env.py --check-workspace-access` 完成真实 create/write/flush/read/delete 预检。宿主 `CreateProcess rejected by policy` 与 Windows 文件写入拒绝必须分开报告；UI 刚切换权限时在新回合重跑预检，不用复杂 shell 写删命令试探。
 16. 旁白项目的 `approve-full` 必须显式带 `--review-policy user_first|agent_first` 并写入 `fullApproval.reviewPolicy`；后续线稿、annotation preview 和 scene review 自动继承且拒绝冲突值。不得在用户未选择时静默采用默认策略。
@@ -135,7 +135,7 @@ coordinator 必须运行 `serve_preview.py --ensure --project <项目根目录>`
 <ENV_PY> scripts/validate_content_draft.py --stdin
 <ENV_PY> scripts/prepare_draft_agent_task.py storyboardPlanning --draft-root <draft-root> --source-srt <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 35
 <ENV_PY> scripts/parse_srt.py <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 35
-<ENV_PY> scripts/create_project.py --name <项目名> --srt <source.srt> --plan <generation-plan.json> --source-input <input.json> --source-manifest <manifest.json>
+<ENV_PY> scripts/create_project.py --name <项目名> --srt <source.srt> --plan <generation-plan.json> --source-input <input.json> --source-manifest <manifest.json> --background-music <enabled|disabled>
 <ENV_PY> scripts/create_project.py --resume <项目根目录> --srt <原始字幕.srt>
 <ENV_PY> scripts/upgrade_project.py --project <项目根目录> --to-schema 2
 

@@ -371,6 +371,34 @@ class ProjectWorkspaceTests(unittest.TestCase):
         self.assertEqual(result, 0)
         project = self.workspace().load_project(self.workspace_root / "projects" / "配置默认旁白项目")
         self.assertEqual(project.voiceover_mode, "minimax")
+        self.assertFalse(project.background_music_enabled)
+
+    def test_create_project_cli_records_enabled_background_music_choice(self) -> None:
+        with (
+            mock.patch.object(create_project.ProjectWorkspace, "from_config", return_value=self.workspace()),
+            mock.patch.object(create_project, "active_provider_id", return_value="edge-tts"),
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
+        ):
+            result = create_project.main([
+                "--name", "启用背景音乐项目",
+                "--srt", str(self.source_srt),
+                "--background-music", "enabled",
+            ])
+        self.assertEqual(result, 0)
+        project = self.workspace().load_project(self.workspace_root / "projects" / "启用背景音乐项目")
+        self.assertTrue(project.background_music_enabled)
+        metadata = json.loads(project.path("project.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["backgroundMusic"], {"enabled": True})
+
+    def test_background_music_rejects_silent_project(self) -> None:
+        with self.assertRaisesRegex(ProjectValidationError, "只允许用于旁白项目"):
+            self.workspace().create_project(
+                "静音背景音乐非法项目",
+                self.source_srt,
+                voiceover_mode="disabled",
+                background_music_enabled=True,
+            )
 
     def test_create_project_cli_can_explicitly_keep_silent_mode(self) -> None:
         with (

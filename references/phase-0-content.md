@@ -23,16 +23,18 @@ topic/text 的正式时钟由获批真实音频 timeline 接管。
 
 ## 2. 阶段流程与唯一人工 Gate
 
-1. coordinator 冻结输入模式、rewritePolicy 和 target；旁白 provider 不询问用户，始终
+1. coordinator 冻结输入模式、rewritePolicy、target 和用户的 BGM 选择；旁白 provider 不询问用户，始终
    读取 skill 根目录 `config/voice-providers.local.json` 的 `activeProvider`，规范化后自动
    冻结为 `voiceoverMode=edge-tts` 或 `voiceoverMode=minimax`。review 只展示当前已采用的
-   provider；只有用户明确要求静音时，传统 SRT 才允许显式使用 `disabled`。
+   provider；只有用户明确要求静音时，传统 SRT 才允许显式使用 `disabled`。BGM 只询问
+   “加入/不加入”，不让用户配置曲目或混音参数；加入时固定使用内置 CC0 曲目、`-15 dB`、
+   1.2 秒淡入、1.8 秒淡出和必要循环。
 2. 在允许真实派发时，由 `contentDrafting` child（或同合同 fallback）生成
    `whiteboard-content-draft-v1` candidate。child 不调用 provider、不写正式项目。
 3. coordinator 校验 candidate，确定性渲染 review Markdown，只交付链接、identity、
    cue/scene 计数和短摘要，不把长正文回灌主上下文。
 4. **停止等待用户明确确认 current `contentDraftIdentitySha256`。** 此次确认同时
-   覆盖旁白内容、cue→scene、分镜策略和图片提示词；技术 PASS、打开文件或用户未反对
+   覆盖旁白内容、cue→scene、分镜策略、图片提示词和是否加入 BGM；技术 PASS、打开文件或用户未反对
    都不是批准。
 5. 修改意见冻结为绑定 current identity 的 revision request，创建新 attempt；旧
    candidate/review 保留为历史并 stale。新 attempt 是版本边界，不要求更换执行者：上一

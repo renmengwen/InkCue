@@ -253,6 +253,11 @@ class Project:
         return self.metadata["voiceoverMode"]
 
     @property
+    def background_music_enabled(self) -> bool:
+        value = self.metadata.get("backgroundMusic")
+        return bool(value.get("enabled")) if isinstance(value, dict) else False
+
+    @property
     def render_profile(self) -> dict[str, Any]:
         if self.schema_version == 1:
             return dict(FIXED_RENDER_PROFILE)
@@ -1049,6 +1054,19 @@ def validate_project_metadata_data(root: Path, metadata: Any) -> dict[str, Any]:
             raise ProjectValidationError("project.json voiceoverMode 只允许 disabled、edge-tts 或 minimax")
         if metadata.get("renderProfile") != FIXED_RENDER_PROFILE:
             raise ProjectValidationError("project.json renderProfile 必须严格为 whiteboard-render-v2")
+        background_music = metadata.get("backgroundMusic")
+        if background_music is not None and (
+            not isinstance(background_music, dict)
+            or set(background_music) != {"enabled"}
+            or not isinstance(background_music.get("enabled"), bool)
+        ):
+            raise ProjectValidationError("project.json backgroundMusic 必须严格为 {enabled: boolean}")
+        if (
+            isinstance(background_music, dict)
+            and background_music.get("enabled") is True
+            and metadata.get("voiceoverMode") not in AUDIO_VOICEOVER_MODES
+        ):
+            raise ProjectValidationError("当前 BGM 功能只允许用于旁白项目")
     content_source = metadata.get("contentSource")
     if content_source is not None:
         if schema_version != 2 or metadata.get("voiceoverMode") not in AUDIO_VOICEOVER_MODES:
@@ -1279,12 +1297,17 @@ class ProjectWorkspace:
         *,
         confirmed_plan: Mapping[str, Any] | None = None,
         voiceover_mode: str = "disabled",
+        background_music_enabled: bool = False,
         source_input: str | Path | None = None,
         source_manifest: str | Path | None = None,
         source_plan: str | Path | None = None,
     ) -> Project:
         if voiceover_mode not in VOICEOVER_MODES:
             raise ProjectValidationError("voiceoverMode 只允许 disabled、edge-tts 或 minimax")
+        if not isinstance(background_music_enabled, bool):
+            raise ProjectValidationError("backgroundMusic.enabled 必须是布尔值")
+        if background_music_enabled and voiceover_mode not in AUDIO_VOICEOVER_MODES:
+            raise ProjectValidationError("当前 BGM 功能只允许用于旁白项目")
         project_name = sanitize_project_name(name)
         source_path = _resolved(Path(source_srt))
         if not source_path.is_file():
@@ -1326,6 +1349,7 @@ class ProjectWorkspace:
             "projectName": project_name,
             "createdAt": datetime.now().astimezone().isoformat(timespec="seconds"),
             "voiceoverMode": voiceover_mode,
+            "backgroundMusic": {"enabled": background_music_enabled},
             "renderProfile": dict(FIXED_RENDER_PROFILE),
             "source": {"file": "source/source.srt", "sha256": source_hash},
             "paths": dict(PROJECT_PATHS_V2),

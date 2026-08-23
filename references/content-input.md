@@ -27,7 +27,7 @@ rewritePolicy = preserve | polish | generate
 
 topic/text 的权威顺序是：
 
-1. 接收原始主题或正文，并冻结 `rewritePolicy` 与 `targetDurationSeconds`；`voiceoverMode` 始终从 skill 根目录 `config/voice-providers.local.json` 的 `activeProvider` 派生。用户无需提供或选择 Edge TTS/MiniMax，编排层不得询问“旁白方式”。派生结果只可规范化为 `edge-tts` 或 `minimax`，并写入冻结的 content input/review，供用户知情查看。只有用户明确要求静音时，才走传统 SRT 的 `disabled` 显式入口。
+1. 接收原始主题或正文，并冻结 `rewritePolicy`、`targetDurationSeconds` 与用户的 BGM 加入/不加入选择；`voiceoverMode` 始终从 skill 根目录 `config/voice-providers.local.json` 的 `activeProvider` 派生。用户无需提供或选择 Edge TTS/MiniMax，编排层不得询问“旁白方式”。派生结果只可规范化为 `edge-tts` 或 `minimax`，并写入冻结的 content input/review，供用户知情查看。只有用户明确要求静音时，才走传统 SRT 的 `disabled` 显式入口。BGM 不进入 content draft schema；coordinator 在联合确认消息中展示选择，并在建项时唯一写入 `project.json.backgroundMusic.enabled`。
 2. coordinator 运行 `prepare_draft_agent_task.py contentDrafting` 冻结 attempt 和 `preparedTask`，再直接根据当前宿主状态调用 `spawn_agent` 或 `followup`；脚本不参与 dispatch/fallback 决策。首次草案默认使用短上下文 child；真实派发不可用时才由具备相同能力的 coordinator fallback。所有路径使用同一 task/result 合同。
 3. coordinator 重验 result、SHA 与 candidate 合同后，从 `candidate.content-draft.json` 确定性生成不可变 Markdown 审阅 artifact。主窗口只发送文件链接、完整 identity、cue/scene 计数和短摘要，不把长正文、逐幕提示词或整份 Markdown 读回、转述或粘贴到聊天。
 4. **停止并等待用户明确确认 current `contentDraftIdentitySha256`，完成“内容与制作方案联合确认”。** 这一次确认同时覆盖内容草案与模式/语义分镜策略；未回复、此前笼统授权、技术校验通过或“用户没有反对”都不是批准。
@@ -260,6 +260,7 @@ topic/text 准备包创建正式项目时使用：
 <ENV_PY> scripts/create_project.py --name <项目名> `
   --srt <draft-dir\source.srt> `
   --plan <draft-dir\generation-plan.json> `
+  --background-music <enabled|disabled> `
   --source-input <draft-dir\input.json> `
   --source-manifest <draft-dir\manifest.json>
 ```
@@ -284,7 +285,7 @@ source/source.srt
   --srt <字幕.srt> --plan <已确认策略.json>
 ```
 
-旧 v1/v2 项目没有 `contentSource` 时继续按传统 SRT 项目读取，不静默改写或强制升级。新建项目的旁白 provider 唯一读取 `config/voice-providers.local.json` 的 `activeProvider`；topic/text 的 content input 缺少 `voiceoverMode` 时由该配置自动补入，调用方传入不一致值则拒绝。需要静音时才显式使用 `--voiceover-mode disabled`。Disabled/Edge/MiniMax 的字幕权威来源、样音、人工批准、渲染和最终交付合同保持不变。
+旧 v1/v2 项目没有 `contentSource` 时继续按传统 SRT 项目读取，不静默改写或强制升级。新建项目的旁白 provider 唯一读取 `config/voice-providers.local.json` 的 `activeProvider`；topic/text 的 content input 缺少 `voiceoverMode` 时由该配置自动补入，调用方传入不一致值则拒绝。需要静音时才显式使用 `--voiceover-mode disabled`。新项目把阶段 0 已确认的 BGM 选择写为 `project.json.backgroundMusic.enabled`；旧项目缺少该字段时等价于 `false`。Disabled/Edge/MiniMax 的字幕权威来源、样音、人工批准、渲染和最终交付合同保持不变。
 
 ## stale、恢复与失败语义
 

@@ -32,6 +32,7 @@ import burn_subtitles  # noqa: E402
 import validate_final_media  # noqa: E402
 import approve_final_media  # noqa: E402
 import mux_voiceover  # noqa: E402
+import background_music  # noqa: E402
 from generate_voiceover import main as voice_main  # noqa: E402
 from voiceover import FakeProviderAdapter  # noqa: E402
 
@@ -761,10 +762,56 @@ class FinalMediaTests(unittest.TestCase):
         self.assertEqual(manifest["final"]["finalIdentitySha256"], identity)
         self.assertEqual(manifest["final"]["edgeDelivery"]["aac"]["bitrate"], "192k")
         self.assertEqual(manifest["final"]["edgeDelivery"]["muxContractVersion"], "edge-aac-mux-v1")
+        self.assertNotIn("backgroundMusic", manifest["final"])
         self.assertIsNone(manifest["finalApproval"])
         result = validate_final_media.validate_project_final_media(self.root)
         self.assertEqual(result["finalIdentitySha256"], identity)
         self.assertFalse(result["finalApprovalWritten"])
+
+    def test_edge_mux_adds_fixed_minus15db_background_music_when_enabled(self) -> None:
+        metadata_path = self.root / "project.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["backgroundMusic"] = {"enabled": True}
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+
+        manifest, identity = self._write_edge_delivery()
+        bgm = manifest["final"]["backgroundMusic"]
+        self.assertEqual(bgm["gainDb"], -15.0)
+        self.assertEqual(bgm["assetSha256"], background_music.BGM_ASSET_SHA256)
+        self.assertEqual(bgm["license"], "CC0-1.0")
+        self.assertEqual(bgm["projectField"], "project.json#backgroundMusic.enabled")
+        self.assertEqual(
+            manifest["final"]["edgeDelivery"]["muxContractVersion"],
+            mux_voiceover.FINAL_AUDIO_MIX_CONTRACT_VERSION,
+        )
+        probe = media_validation.probe_media(self.root / "output" / "final.mp4")
+        self.assertEqual(len(probe["streams"]["audio"]), 1)
+        result = validate_final_media.validate_project_final_media(self.root)
+        self.assertEqual(result["finalIdentitySha256"], identity)
+
+    def test_edge_mux_command_uses_fixed_minus15db_background_music_filter(self) -> None:
+        metadata_path = self.root / "project.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["backgroundMusic"] = {"enabled": True}
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+        self._prepare_approved_edge()
+        self.assertEqual(self._merge(), 0)
+        burn_subtitles.burn_project(self.root, run_id=f"subtitle-{uuid.uuid4().hex}")
+        original = mux_voiceover.subprocess.run
+        calls: list[list[str]] = []
+
+        def recorded(argv, **kwargs):
+            calls.append(list(argv))
+            return original(argv, **kwargs)
+
+        with mock.patch.object(mux_voiceover.subprocess, "run", side_effect=recorded):
+            mux_voiceover.mux_project(self.root, run_id=f"mux-{uuid.uuid4().hex}")
+        mux_argv = next(argv for argv in calls if "-filter_complex" in argv)
+        filter_graph = mux_argv[mux_argv.index("-filter_complex") + 1]
+        self.assertIn("volume=-15dB", filter_graph)
+        self.assertIn("amix=inputs=2", filter_graph)
+        self.assertIn("-stream_loop", mux_argv)
+        self.assertNotIn("-short" + "est", mux_argv)
 
     def test_edge_mux_uses_argv_shell_false_and_never_shortens(self) -> None:
         self._prepare_approved_edge()
