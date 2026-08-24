@@ -16,15 +16,35 @@ candidate created
 → technical validator PASS
 → current binding rechecked
 → coordinator atomic publish
-→ user explicitly approves current identity
+→ 指定审阅主体完成真实审阅并明确接受 current identity
+→ coordinator 调用既有批准脚本写入 approval
 ```
 
-`PASS` 只表示实际执行的技术合同通过；`待确认` 表示 current 已准备但人工 Gate 未过；
+`PASS` 只表示实际执行的技术合同通过；`待确认` 表示 current 已准备但当前 Gate 尚未获得指定审阅决定；
 `FAIL` 表示合同、路径、SHA、binding 或 validator 失败；`BLOCKED` 表示缺能力或外部条件；
-`SKIP` 表示真实步骤未执行。child、worker、技术 manifest 和“用户没有反对”均不得写批准。
+`SKIP` 表示真实步骤未执行。child、worker、技术 manifest、agent findings、“用户没有反对”或“AI 没有报错”均不得直接推出或写入批准。
 
 coordinator 是唯一正式写者：只有它能发布 current 并写 manifest、timeline、SRT、identity、
 stale、checkpoint 与 approval。candidate/旧 attempt 失败时保留诊断证据，但不得覆盖旧 current。
+
+### 1.1 Gate 决策模式
+
+`project.json.agentApprovalEnabled` 缺失或为 `false` 时保持现有人工批准；为 `true` 时，阶段 0
+之后的常规 Gate 由 coordinator 代理审阅和决策。该字段只切换审阅主体，不跳过任何技术
+validator、current/identity/stale 复核、真实图像/音频/视频审阅或既有批准脚本，也不新增
+identity、manifest、状态机、恢复协议或 CLI。批准主体不进入作品 identity；项目的已冻结开关和
+阶段摘要即是决策模式证据。
+
+- 人工模式：coordinator 交付 current artifact/identity，等待用户完成所需真实审阅并明确确认。
+- AI 代理模式：coordinator 必须证明实际完成了本 Gate 要求的完整听音、查看图像或观看视频，对
+  current identity 作出独立明确决定；具备所需媒体能力的 child 可完成冻结 scope 内的真实检查，但
+  child 始终 `approvalWritesAllowed:false`，coordinator 仍须重验其 scope、result、current binding 和具体 findings 后
+  自行决策并调用原批准脚本。`completed`、无 findings、技术 PASS 或关键帧/contact sheet 都不能单独成为批准。
+- AI 决定驳回时，只使受影响阶段及下游 stale，按既有 attempt/恢复语义返工并重审，不因普通返工
+  等待用户。若修复必须实质改变阶段 0 已冻结的内容、target、cue/scene、图片提示词、BGM 选择
+  或其他用户意图，必须回到阶段 0 取得用户新的明确确认。
+- 审阅宿主缺少实际查图、完整听音或完整观看视频的能力时必须 `BLOCKED`，不得降级为 metadata、
+  SHA、ffprobe、完整解码、固定测试、关键帧或 contact sheet 后冒充真实审阅。
 
 ## 2. Identity 组成与 current binding
 
@@ -34,7 +54,7 @@ identity 是规范化业务输入与合同版本的 SHA-256，不包含创建时
 - contract/schema version、输入和派生文件 SHA-256、bytes；
 - 产物格式、解码/技术 validator 结果和项目/scene 顺序；
 - 当前 source、timing、render profile、provider synthesis/image binding；
-- 所需人工批准是否绑定同一个 current identity。
+- 所需 Gate 批准是否绑定同一个 current identity。
 
 任何字节、规范化输入、合同版本、provider 参数、字幕/时间轴、render profile 或批准绑定
 变化都不能沿用旧 identity。调度并发变化若不在作品内容合同中，只记运行审计，不改变 identity。
@@ -81,6 +101,14 @@ publishing → validated`；明确失败使用 `failed`，用户取消使用 `ca
 - coordinator 必须在新的外部请求前取得用户明确授权，并记录承担重复费用/重复结果的决定；
 - 仅在用户授权且新 attempt 输入/identity 重新冻结后，才可发起新的 provider 请求。
 
+`agentApprovalEnabled=true` 不扩张外部授权。冻结计划内的正常有界请求、合同允许的瞬态重试和
+普通受影响阶段返工可继续执行；下列事项仍必须停止并取得用户的针对性明确授权：
+
+- `unknown_external_outcome` 之后发起可能重复计费或重复结果的新请求；
+- 冻结计划外的额外付费调用、新 provider/新外部服务、新凭据或未授权账号；
+- 版权层修改/移除、素材许可变更或其他需要权利人授权的行为；
+- 实质改变阶段 0 已冻结用户意图。
+
 `--retry-failed` 只能选择 manifest 明确登记为 `failed`、`cancelled` 或 stale 且允许重试的
 unit；不得把缺失/损坏状态升级成 failed 来绕过 fail-closed。
 
@@ -92,7 +120,7 @@ unit；不得把缺失/损坏状态升级成 failed 来绕过 fail-closed。
 
 沿用现有失败码含义：`0` 技术成功；`1` 批处理有失败/取消；`2` 参数/schema/输入无效；
 `3` 外部网络/服务或限流重试耗尽；`4` FFmpeg/媒体验证失败；`5` stale、identity 不匹配
-或缺少人工批准。具体 CLI 可以扩展摘要，但不能弱化这些 fail-closed 边界。
+或缺少 current Gate 批准。具体 CLI 可以扩展摘要，但不能弱化这些 fail-closed 边界。
 
 ## 7. 阶段引用
 

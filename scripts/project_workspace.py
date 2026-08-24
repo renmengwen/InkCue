@@ -258,6 +258,12 @@ class Project:
         return bool(value.get("enabled")) if isinstance(value, dict) else False
 
     @property
+    def agent_approval_enabled(self) -> bool:
+        if self.schema_version == 1:
+            return False
+        return self.metadata.get("agentApprovalEnabled", False)
+
+    @property
     def render_profile(self) -> dict[str, Any]:
         if self.schema_version == 1:
             return dict(FIXED_RENDER_PROFILE)
@@ -535,6 +541,12 @@ def resolve_project_review_policy(
 
     if requested is not None and requested not in REVIEW_POLICIES:
         raise ProjectValidationError("review policy 必须是 user_first 或 agent_first")
+    if project.agent_approval_enabled:
+        if requested == "user_first":
+            raise ProjectValidationError(
+                "agentApprovalEnabled=true 与 reviewPolicy=user_first 冲突"
+            )
+        requested = "agent_first"
     if project.voiceover_mode == "disabled":
         # 静音项目没有 approve-full Gate；保留其现有显式调用兼容入口。
         return requested or "user_first"
@@ -1018,6 +1030,10 @@ def validate_project_metadata_data(root: Path, metadata: Any) -> dict[str, Any]:
     if not isinstance(metadata, dict) or metadata.get("schemaVersion") not in SUPPORTED_PROJECT_SCHEMA_VERSIONS:
         raise ProjectValidationError("project.json schemaVersion 必须为 1 或 2")
     schema_version = metadata["schemaVersion"]
+    if "agentApprovalEnabled" in metadata and not isinstance(
+        metadata["agentApprovalEnabled"], bool
+    ):
+        raise ProjectValidationError("project.json agentApprovalEnabled 必须是布尔值")
     _validate_uuid4(metadata.get("projectId"))
     project_name = metadata.get("projectName")
     if not isinstance(project_name, str) or sanitize_project_name(project_name) != project_name:
@@ -1226,6 +1242,7 @@ def upgrade_project(
         {
             "schemaVersion": 2,
             "voiceoverMode": voiceover_mode,
+            "agentApprovalEnabled": False,
             "renderProfile": dict(FIXED_RENDER_PROFILE),
             "paths": dict(PROJECT_PATHS_V2),
         }
@@ -1298,6 +1315,7 @@ class ProjectWorkspace:
         confirmed_plan: Mapping[str, Any] | None = None,
         voiceover_mode: str = "disabled",
         background_music_enabled: bool = False,
+        agent_approval_enabled: bool = False,
         source_input: str | Path | None = None,
         source_manifest: str | Path | None = None,
         source_plan: str | Path | None = None,
@@ -1306,6 +1324,8 @@ class ProjectWorkspace:
             raise ProjectValidationError("voiceoverMode 只允许 disabled、edge-tts 或 minimax")
         if not isinstance(background_music_enabled, bool):
             raise ProjectValidationError("backgroundMusic.enabled 必须是布尔值")
+        if not isinstance(agent_approval_enabled, bool):
+            raise ProjectValidationError("agentApprovalEnabled 必须是布尔值")
         if background_music_enabled and voiceover_mode not in AUDIO_VOICEOVER_MODES:
             raise ProjectValidationError("当前 BGM 功能只允许用于旁白项目")
         project_name = sanitize_project_name(name)
@@ -1350,6 +1370,7 @@ class ProjectWorkspace:
             "createdAt": datetime.now().astimezone().isoformat(timespec="seconds"),
             "voiceoverMode": voiceover_mode,
             "backgroundMusic": {"enabled": background_music_enabled},
+            "agentApprovalEnabled": agent_approval_enabled,
             "renderProfile": dict(FIXED_RENDER_PROFILE),
             "source": {"file": "source/source.srt", "sha256": source_hash},
             "paths": dict(PROJECT_PATHS_V2),

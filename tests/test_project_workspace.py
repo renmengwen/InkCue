@@ -134,6 +134,7 @@ class ProjectWorkspaceTests(unittest.TestCase):
         metadata["schemaVersion"] = 1
         metadata["paths"] = dict(PROJECT_PATHS_V1)
         metadata.pop("voiceoverMode", None)
+        metadata.pop("agentApprovalEnabled", None)
         metadata.pop("renderProfile", None)
         metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
         timing_path = project.path("planning/timing-plan.json")
@@ -353,6 +354,7 @@ class ProjectWorkspaceTests(unittest.TestCase):
         self.assertIn("disabled", help_text)
         self.assertIn("--source-input", help_text)
         self.assertIn("--source-manifest", help_text)
+        self.assertIn("--agent-approval", help_text)
         upgrade_help = upgrade_project_cli._parser().format_help()
         self.assertIn("--to-schema", upgrade_help)
         self.assertIn("--voiceover-mode", upgrade_help)
@@ -372,6 +374,8 @@ class ProjectWorkspaceTests(unittest.TestCase):
         project = self.workspace().load_project(self.workspace_root / "projects" / "配置默认旁白项目")
         self.assertEqual(project.voiceover_mode, "minimax")
         self.assertFalse(project.background_music_enabled)
+        self.assertFalse(project.agent_approval_enabled)
+        self.assertIs(project.metadata["agentApprovalEnabled"], False)
 
     def test_create_project_cli_records_enabled_background_music_choice(self) -> None:
         with (
@@ -390,6 +394,99 @@ class ProjectWorkspaceTests(unittest.TestCase):
         self.assertTrue(project.background_music_enabled)
         metadata = json.loads(project.path("project.json").read_text(encoding="utf-8"))
         self.assertEqual(metadata["backgroundMusic"], {"enabled": True})
+
+    def test_create_project_cli_records_enabled_agent_approval_choice(self) -> None:
+        output = io.StringIO()
+        with (
+            mock.patch.object(create_project.ProjectWorkspace, "from_config", return_value=self.workspace()),
+            mock.patch.object(create_project, "active_provider_id", return_value="edge-tts"),
+            redirect_stdout(output),
+            redirect_stderr(io.StringIO()),
+        ):
+            result = create_project.main([
+                "--name", "启用代理批准项目",
+                "--srt", str(self.source_srt),
+                "--agent-approval", "enabled",
+            ])
+        self.assertEqual(result, 0)
+        project = self.workspace().load_project(self.workspace_root / "projects" / "启用代理批准项目")
+        self.assertTrue(project.agent_approval_enabled)
+        self.assertIs(project.metadata["agentApprovalEnabled"], True)
+        self.assertIn("AGENT_APPROVAL=enabled", output.getvalue())
+
+    def test_create_project_cli_resume_rejects_any_explicit_agent_approval_choice(self) -> None:
+        project = self.workspace().create_project(
+            "续接冻结代理批准项目",
+            self.source_srt,
+            agent_approval_enabled=True,
+        )
+        metadata_path = project.path("project.json")
+        before = metadata_path.read_bytes()
+
+        for choice in ("enabled", "disabled"):
+            stderr = io.StringIO()
+            with (
+                self.subTest(choice=choice),
+                mock.patch.object(
+                    create_project.ProjectWorkspace,
+                    "from_config",
+                    return_value=self.workspace(),
+                ),
+                redirect_stdout(io.StringIO()),
+                redirect_stderr(stderr),
+            ):
+                result = create_project.main([
+                    "--resume", str(project.root),
+                    "--srt", str(self.source_srt),
+                    "--agent-approval", choice,
+                ])
+            self.assertEqual(result, 2)
+            self.assertIn("--agent-approval 仅用于创建新项目", stderr.getvalue())
+            self.assertEqual(metadata_path.read_bytes(), before)
+
+        loaded = self.workspace().load_project(project.root)
+        self.assertTrue(loaded.agent_approval_enabled)
+        self.assertIs(loaded.metadata["agentApprovalEnabled"], True)
+
+    def test_agent_approval_rejects_non_boolean_api_and_persisted_values(self) -> None:
+        with self.assertRaisesRegex(ProjectValidationError, "agentApprovalEnabled"):
+            self.workspace().create_project(
+                "非法代理批准参数",
+                self.source_srt,
+                agent_approval_enabled=1,  # type: ignore[arg-type]
+            )
+
+        project = self.new_project("非法代理批准元数据")
+        metadata_path = project.path("project.json")
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["agentApprovalEnabled"] = "enabled"
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+        with self.assertRaisesRegex(ProjectValidationError, "agentApprovalEnabled"):
+            self.workspace().load_project(project.root)
+
+    def test_silent_project_agent_approval_derives_agent_first_and_rejects_user_first(self) -> None:
+        manual = self.new_project("人工策略项目")
+        self.assertEqual(workspace_module.resolve_project_review_policy(manual), "user_first")
+        self.assertEqual(
+            workspace_module.resolve_project_review_policy(manual, "agent_first"),
+            "agent_first",
+        )
+
+        automatic = self.workspace().create_project(
+            "代理策略项目",
+            self.source_srt,
+            agent_approval_enabled=True,
+        )
+        self.assertEqual(
+            workspace_module.resolve_project_review_policy(automatic),
+            "agent_first",
+        )
+        self.assertEqual(
+            workspace_module.resolve_project_review_policy(automatic, "agent_first"),
+            "agent_first",
+        )
+        with self.assertRaisesRegex(ProjectValidationError, "冲突"):
+            workspace_module.resolve_project_review_policy(automatic, "user_first")
 
     def test_background_music_rejects_silent_project(self) -> None:
         with self.assertRaisesRegex(ProjectValidationError, "只允许用于旁白项目"):
@@ -484,6 +581,8 @@ class ProjectWorkspaceTests(unittest.TestCase):
         self.assertEqual(project.metadata["projectName"], "示例-项目")
         self.assertEqual(project.metadata["source"]["sha256"], sha256_file(self.source_srt))
         self.assertEqual(project.metadata["schemaVersion"], 2)
+        self.assertIs(project.metadata["agentApprovalEnabled"], False)
+        self.assertFalse(project.agent_approval_enabled)
         self.assertEqual(project.voiceover_mode, "disabled")
         self.assertEqual(project.render_profile, FIXED_RENDER_PROFILE)
         self.assertTrue(project.timing_plan_persisted)
@@ -665,9 +764,14 @@ class ProjectWorkspaceTests(unittest.TestCase):
     def test_legacy_v2_without_content_source_is_not_rewritten_on_load(self) -> None:
         project = self.new_project("传统 v2 不改写")
         metadata_path = project.path("project.json")
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata.pop("agentApprovalEnabled")
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
         before = metadata_path.read_bytes()
         loaded = self.workspace().load_project(project.root)
         self.assertNotIn("contentSource", loaded.metadata)
+        self.assertNotIn("agentApprovalEnabled", loaded.metadata)
+        self.assertFalse(loaded.agent_approval_enabled)
         self.assertEqual(metadata_path.read_bytes(), before)
 
     def test_v1_loader_exposes_disabled_compatibility_view_without_rewrite(self) -> None:
@@ -680,6 +784,7 @@ class ProjectWorkspaceTests(unittest.TestCase):
 
         self.assertEqual(loaded.schema_version, 1)
         self.assertEqual(loaded.voiceover_mode, "disabled")
+        self.assertFalse(loaded.agent_approval_enabled)
         self.assertEqual(loaded.render_profile, FIXED_RENDER_PROFILE)
         self.assertFalse(loaded.timing_plan_persisted)
         self.assertEqual(loaded.timing_plan["voiceoverMode"], "disabled")

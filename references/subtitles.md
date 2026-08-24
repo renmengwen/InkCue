@@ -32,7 +32,7 @@ Disabled 的画面与字幕从全局 0 开始，以 source SRT 最后一条 cue 
 
 ## 旁白阶段与正式字幕的边界
 
-Edge `generate_voiceover.py full` 生成 current `audio/narration.srt`，但此时尚未生图，也没有真实线稿画面。流程因此不再把该 SRT 烧录到 1920×1080 空背景视频；`approve-full` 只在用户完整试听 narration WAV 后绑定 current `FULL_IDENTITY` 和真实时长决定。
+Edge `generate_voiceover.py full` 生成 current `audio/narration.srt`，但此时尚未生图，也没有真实线稿画面。流程因此不再把该 SRT 烧录到 1920×1080 空背景视频；`approve-full` 只在当前批准主体完整试听 narration WAV、决定通过后绑定 current `FULL_IDENTITY` 和真实时长决定。`agentApprovalEnabled` 缺失或为 `false` 时批准主体是用户；为 `true` 时由 coordinator AI 真实试听、决定通过或返工，并在通过时调用同一 `approve-full` 动作。
 
 字幕文本/时序由技术 binding 保证，视觉判断统一留给下列有真实画面的步骤：
 
@@ -40,7 +40,7 @@ Edge `generate_voiceover.py full` 生成 current `audio/narration.srt`，但此�
 - `burn_subtitles.py` 把正式 ASS 烧录到 current clean master；
 - `previews/final-subtitle-contact-sheet.png` 的本地检查；
 - `validate_final_media.py` 的完整技术验证；
-- 用户完整播放 `output/final.mp4` 后执行的最终媒体批准。
+- 当前批准主体完整播放 `output/final.mp4` 后执行的最终媒体批准。
 
 正式 ASS 的文本或时序若与 current narration SRT/timeline binding 不兼容，必须按 stale/identity 规则失败，不能静默换稿。完整旁白批准也不替代线稿、一次性 annotation review bundle 批准、一次性 scene review bundle 批准、正式字幕画面检查或最终成片批准。clean master 只做技术验证，不设独立人工确认。
 
@@ -149,9 +149,9 @@ subtitles / captionedVideo / final / finalApproval
 "gapEvidence": "not_applicable_no_gap"
 ```
 
-不得为了满足检查伪造无字幕帧。contact sheet 需要本地查看字幕位置、两行换行、黑色描边和安全边距，但不能替代像素检测、ffprobe、完整解码或用户最终完整看片批准。
+不得为了满足检查伪造无字幕帧。contact sheet 需要本地查看字幕位置、两行换行、黑色描边和安全边距，但不能替代像素检测、ffprobe、完整解码或当前批准主体最终完整看片批准。
 
-contact sheet 和正式字幕流程都不需要浏览器、预览台、文件选择框或电脑控制。应直接用本地图片查看能力打开 PNG；最终批准前则完整播放 `output/final.mp4`。
+contact sheet 和正式字幕流程都不需要浏览器、预览台、文件选择框或电脑控制。应直接用本地图片查看能力打开 PNG；当前批准主体在最终批准前则完整播放 `output/final.mp4`。
 
 ## 命令与验收
 
@@ -159,17 +159,17 @@ contact sheet 和正式字幕流程都不需要浏览器、预览台、文件选
 <ENV_PY> scripts/burn_subtitles.py --project <项目根目录>
 <ENV_PY> scripts/validate_final_media.py --project <项目根目录>
 
-# 仅在用户完整确认 current final 后：
+# 仅在当前批准主体完整确认 current final 后：
 <ENV_PY> scripts/approve_final_media.py `
   --project <项目根目录> `
   --identity-hash <刚完整看片听音的 FINAL_IDENTITY>
 ```
 
-烧录命令没有 `--preset`：它只读取 workspace JSON 中的 `execution.videoEncoding.subtitlePreset`，缺失时为 `medium`。正式多幕候选当前已经支持 `execution.concurrency.sceneRender` 控制的有界并发；`sceneRender=1` 只是可用的安全基线和运行时降级值，不是能力限制。并行 worker 只生成并深验彼此独立的单幕 candidate，coordinator 仍按 generation plan 顺序发布；部分幕失败时不得形成可批准的完整 bundle。用户必须对全部 current scene 的有序 review bundle 一次确认，current scene review approval 通过后才能进入合并与字幕烧录，字幕 preset 不改变这一边界。
+烧录命令没有 `--preset`：它只读取 workspace JSON 中的 `execution.videoEncoding.subtitlePreset`，缺失时为 `medium`。正式多幕候选当前已经支持 `execution.concurrency.sceneRender` 控制的有界并发；`sceneRender=1` 只是可用的安全基线和运行时降级值，不是能力限制。并行 worker 只生成并深验彼此独立的单幕 candidate，coordinator 仍按 generation plan 顺序发布；部分幕失败时不得形成可批准的完整 bundle。`agentApprovalEnabled` 缺失或为 `false` 时，用户必须对全部 current scene 的有序 review bundle 一次确认；为 `true` 时，coordinator AI 必须真实审阅同一 current bundle、决定通过或返工，并在通过时调用现有 scene review 批准动作。current scene review approval 通过后才能进入合并与字幕烧录，字幕 preset 不改变这一边界。
 
 Disabled 验收要求 clean/captioned/final 都恰好 1 路视频、0 音频；captioned/final 为 H.264、1920×1080、yuv420p、项目 fps，烧录前后帧数和时长保持。Edge 的字幕仍先独立烧录为 0 音频的 captioned video，最终 AAC 封装由 `mux_voiceover.py` 完成。
 
-最终技术验证和完整旁白批准通过后仍未获得最终人工批准。只有用户完整看片（Edge 还需完整听音）并明确确认后，才允许执行 `approve_final_media.py` 绑定 current final identity；任何字幕源、timeline、样式、字体、ASS、clean video、render profile、`subtitlePreset`、encoding contract 或 final SHA 变化都会使旧批准 stale。
+最终技术验证和完整旁白批准通过后仍未获得最终质量批准。`agentApprovalEnabled` 缺失或为 `false` 时，只有用户完整看片（Edge 还需完整听音）并明确确认后，才允许执行 `approve_final_media.py`；为 `true` 时，coordinator AI 必须完整看片听音、决定通过或返工，并仅在通过时调用同一脚本。该脚本绑定 current final identity；任何字幕源、timeline、样式、字体、ASS、clean video、render profile、`subtitlePreset`、encoding contract 或 final SHA 变化都会使旧批准 stale。
 
 `burn_subtitles.py` 成功输出 captioned `OUTPUT` 和 `VOICEOVER_MODE`。Disabled 会同时原子发布相同已验证字节的 `final.mp4`；Edge 只发布 captioned master，之后必须由 `mux_voiceover.py` 封装 current、approved WAV。`validate_final_media.py` 会独立重验三层输出并把 `technicalValidation` 证据写入 delivery manifest，但不会写人工批准；`approve_final_media.py` 成功输出 `FINAL_APPROVED=<identity>`。
 
@@ -182,6 +182,6 @@ Disabled 没有 mux 阶段，因此用于最终批准的 identity 从 `validate_
 | 0 | 字幕/媒体操作成功且对应技术验证通过 |
 | 2 | 参数、项目、plan、manifest、SRT 或 timeline 无效 |
 | 4 | FFmpeg、ffprobe、libass、字体、ASS 编译或媒体验证失败 |
-| 5 | 字幕/媒体 stale、identity 不匹配或缺少人工批准 |
+| 5 | 字幕/媒体 stale、identity 不匹配或缺少批准 |
 
-烧录和发布始终先在本次 ASCII `.work/subtitle-<runId>/` 生成候选。候选失败不得覆盖已有 `subtitles/final.ass`、captioned master 或 final；新候选经 ffprobe 和一次完整解码后才使用 `os.replace` 原子发布，正式路径只复用该 receipt 做 SHA/bytes binding。已发布但 manifest 更新失败时保留工作目录并报错，不伪造成功状态。任何真实外部 Edge 不可用与字幕技术验收是两个不同结果，不能把 fixture 或 Disabled 字幕 PASS 写成真实 Edge PASS。未实际执行的真实 Edge、真实图片 provider、NVENC/QSV/AMF 和人工视觉/声音验收必须写为 SKIP/BLOCK/待用户确认，不能声称 PASS。
+烧录和发布始终先在本次 ASCII `.work/subtitle-<runId>/` 生成候选。候选失败不得覆盖已有 `subtitles/final.ass`、captioned master 或 final；新候选经 ffprobe 和一次完整解码后才使用 `os.replace` 原子发布，正式路径只复用该 receipt 做 SHA/bytes binding。已发布但 manifest 更新失败时保留工作目录并报错，不伪造成功状态。任何真实外部 Edge 不可用与字幕技术验收是两个不同结果，不能把 fixture 或 Disabled 字幕 PASS 写成真实 Edge PASS。未实际执行的真实 Edge、真实图片 provider、NVENC/QSV/AMF 和当前批准主体的视觉/声音验收必须写为 SKIP、BLOCK 或待确认，不能声称 PASS。

@@ -11,7 +11,7 @@
 
 这些规则约束内容草案、SRT storyboard candidate、正式 generation plan 以及
 后续 annotation 可分区性。它们不增加 JSON 字段，不改变 provider 协议，不改变
-人工线稿批准、annotation 联合批准或 scene review 批准，也不授权 child 写正式文件。
+线稿、annotation 联合或 scene review 的既有 Gate 与批准动作，也不授权 child 写正式文件。
 
 - 每幕只表达一个核心视觉命题；scene 边界由视觉状态、因果阶段、构图中心或
   必须独立呈现的结果决定，不按名词数量或固定秒数机械切幕。
@@ -89,19 +89,24 @@ generation plan 不得保留 `imagePrompt`，内容草案也不得提前把字�
 - 把 `sequence`、时间戳、坐标、批准状态或正式文件路径当作生图指令；
 - 将凭据、临时 URL、完整 provider 响应、完整主对话或未经冻结的素材塞进 prompt。
 
-## 5. 与人工 Gate 的边界
+## 5. 与质量 Gate 的边界
 
 提示词通过 schema/确定性 validator 只代表 candidate 技术可读；不代表内容、构图或
 审美获批。流程必须保持：
 
 ```text
 candidate → schema validator PASS → coordinator current publish
-→ 用户明确确认 current 线稿 identity → 才能进入 annotation
+→ 当前批准主体真实审阅 current 线稿 identity → 调用现有批准动作 → 才能进入 annotation
 ```
+
+`agentApprovalEnabled` 缺失或为 `false` 时，当前批准主体是用户；为 `true` 时，
+coordinator AI 必须真实查看 current 线稿、决定通过或返工，并仅在通过时调用现有
+批准动作。该选择只改变批准主体，不删除 Gate，也不增加 identity、manifest、状态机或
+专用恢复协议。
 
 修改 `imagePrompt`/`prompt` 会产生新的 generation-plan identity、图片和视觉下游
 状态；旧 review 或旧聊天确认不得用于新 current。技术 PASS、child completed、
-visual findings 或用户没有反对都不能写线稿批准。
+visual findings、用户没有反对或 AI 未报告异常都不能单独写线稿批准。
 
 ## 6. 角色上下文最小化
 
@@ -120,7 +125,7 @@ manifest、identity、stale、checkpoint 与批准仍由 coordinator 单写。
 4. 构图可由 1–3 个连续墨迹簇完整分区；
 5. prompt 不含时间轴、坐标控制、凭据、长上下文或批准声明；
 6. topic/text 使用 `imagePrompt`，正式 plan 使用 `prompt`，映射由 coordinator 完成；
-7. 候选通过 validator 后仍停在 current/待用户确认，不越过人工 Gate。
+7. 候选通过 validator 后仍停在 current/待批准主体真实审阅，不越过质量 Gate。
 
 命令和 provider 失败/恢复语义分别见
 [`image-generation.md`](image-generation.md)；stale、identity、retry 和

@@ -117,10 +117,22 @@ voice plan 另有 `voicePlanAuditHash`，覆盖完整审计合同。audit hash �
 
 ```text
 SAMPLE_AUDIO=<项目根目录>\previews\voice-sample.wav
+SAMPLE_REVIEW_AUDIO=<项目根目录>\previews\voice-sample-<voice>-<identity前12位>.wav
+SAMPLE_REQUEST_AUDIT=<同名脱敏审计 JSON>
+SAMPLE_VOICE_ID=<本次请求 voice id>
+SAMPLE_AUDIO_SHA256=<current WAV SHA-256>
 SAMPLE_IDENTITY=<64位 sha256>
 ```
 
-技术校验只说明 WAV 可读、媒体合同正确，不代表用户已接受 voice/rate。必须播放完整样音并等待明确确认；收到确认后才执行：
+`SAMPLE_AUDIO` 仍是供批准合同使用的 canonical current 文件；`SAMPLE_REVIEW_AUDIO`
+是字节完全相同、按 voice 与 identity 唯一命名的不可变试听副本，交付用户时必须优先使用它，
+避免桌面播放器或浏览器按固定路径缓存上一版样音。脱敏审计只记录 provider/model、规范化
+voice/rate/volume/pitch、identity、媒体 SHA/bytes/duration，以及 provider 是否回显实际
+voice id；不得保存 API Key、Authorization、正文或完整 provider 响应。若 provider 不回显
+voice id，审计必须明确记录 `voiceIdEchoAvailable=false`，不得把“客户端已发送”表述为
+“服务端已确认采用”。
+
+技术校验只说明 WAV 可读、媒体合同正确，不代表 voice/rate 已获接受。必须播放并完整听取 current 样音后作出明确决定：`agentApprovalEnabled` 缺失/为 `false` 时等待用户确认，为 `true` 时由具备真实听音能力的 coordinator 审阅；审阅能力不足时报告 `BLOCKED`。明确接受后才执行：
 
 ```powershell
 <ENV_PY> scripts/generate_voiceover.py approve-sample `
@@ -227,12 +239,14 @@ FULL_IDENTITY=<64位 sha256>
 
 ## 完整旁白与真实时长批准
 
-完整旁白生成后，用户必须完整试听 `audio/narration.wav`，完成两项明确人工判断：
+完整旁白生成后，指定审阅主体必须完整试听 `audio/narration.wav`，完成两项明确判断：人工模式为用户，AI 代理模式为具备真实听音能力的 coordinator；能力不足时必须 `BLOCKED`。
 
 1. 配音内容、音色、语速与完整听感可接受，没有漏读、重复、断裂或奇怪停顿。
 2. 查看 target/source provisional duration 与真实 audio duration 的差值和比例，决定是否接受真实时长。
 
-同一条完整旁白确认请求还必须展示本次运行的生成后审阅策略：`user_first` 直接把各阶段通过技术校验的 current artifact 交给用户，`agent_first` 在交付用户前为各阶段准备一次辅助 AI 语义预审。用户应能在一次回复中同时确认完整旁白、作出所需的真实时长决定并选择策略，例如“确认完整旁白，选择 user_first”；不得先完成 `approve-full`，再设置一次只用于选择策略的独立聊天关卡。用户未指定策略时必须继续停在本 Gate 询问，禁止静默默认。
+`agentApprovalEnabled` 缺失或为 `false` 时，同一条完整旁白确认请求还必须展示本次运行的生成后审阅策略：`user_first` 直接把各阶段通过技术校验的 current artifact 交给用户，`agent_first` 在交付用户前为各阶段准备一次辅助 AI 语义预审。用户应能在一次回复中同时确认完整旁白、作出所需的真实时长决定并选择策略，例如“确认完整旁白，选择 user_first”；不得先完成 `approve-full`，再设置一次只用于选择策略的独立聊天关卡。用户未指定策略时必须继续停在本 Gate 询问，禁止静默默认。
+
+`agentApprovalEnabled=true` 时，审阅策略确定性为 `agent_first`，不再询问 `user_first|agent_first`。coordinator 完整听取并接受 current 旁白后，使用同一 `approve-full --review-policy agent_first` 原子绑定配音、真实时长决定和后续审阅策略。
 
 `audio/narration.srt` 继续作为 current 权威字幕源和技术证据，但此时尚无真实画面，因此不做字幕视觉批准。换行、对比度、遮挡与安全区统一在正式字幕 contact sheet 和最终成片中审查。
 
@@ -255,7 +269,7 @@ FULL_IDENTITY=<64位 sha256>
 
 `--identity-hash` 必须是 current full identity；不匹配时返回 5，且不得修改旧批准。`--review-policy` 必填并持久化到 `fullApproval.reviewPolicy`；后续视觉阶段省略参数时读取冻结值，显式冲突时返回 stale。旧批准缺少该字段时可以读取和重新试听，但不得进入视觉阶段，必须对 current identity 重新执行带策略的 `approve-full`。阈值内不得传 `accept_actual` 冒充超阈值人工决定；manifest 应记录 `within_threshold`。超阈值未显式接受时返回 5，另一条合法路径是修改 rate/文本后重新生成、完整试听和批准。
 
-coordinator 收到同时包含两项决定的回复后，必须先核对 current `FULL_IDENTITY` 并成功执行 `approve-full`，再采用审阅策略并开始生图；旁白被拒绝、identity stale 或超阈值时长未获接受时，不得只凭同一回复中的策略选择启动任何视觉生成。审阅策略不是人工批准，不进入作品 identity，也不能替代后续线稿、annotation review bundle、scene review bundle 或最终成片批准。
+coordinator 在人工模式收到同时包含两项决定的回复后，或在 AI 代理模式完成两项真实审阅决定后，必须先核对 current `FULL_IDENTITY` 并成功执行 `approve-full`，再采用审阅策略并开始生图；旁白被拒绝、identity stale 或超阈值时长未获接受时，不得只凭策略启动任何视觉生成。AI 驳回时只返工受影响的配音/时间阶段并重新完整试听；需实质改写阶段 0 文本或已冻结策略时必须回到用户确认。审阅策略本身不是批准，不进入作品 identity，也不能替代后续线稿、annotation review bundle、scene review bundle 或最终成片批准。
 
 批准成功输出 `FULL_APPROVED_IDENTITY` 和 `TIMING_PLAN`，并原子更新 `planning/timing-plan.json`，使 current audio timeline 成为正式时钟。此操作不能修改图片 `generation-plan.json` 或 generation manifest。
 
@@ -286,7 +300,7 @@ mux 允许 Edge 或 MiniMax 模式，要求 current full approval、captioned vi
 
 若 `project.json.backgroundMusic.enabled=true`，同一个 mux 命令额外读取 skill 内置 CC0 曲目，按固定 `-15 dB` 混入旁白，应用 1.2 秒淡入和 1.8 秒淡出，并在曲目短于成片时循环。最终仍只有一路 AAC；delivery manifest 的 `final.backgroundMusic` 记录曲名、作者、许可证、资产 SHA 与混音参数。若字段为 `false` 或旧项目缺少该字段，保持原有纯旁白封装。BGM 不新增人工 Gate，最终完整看片听音批准同时验收其听感。
 
-完整旁白批准和技术验证都不等于最终人工批准。用户必须完整看片听音，确认最终真实画面上的字幕、画面、音频和尾部均无截断后，才允许执行：
+完整旁白批准和技术验证都不等于最终 Gate 批准。指定审阅主体必须完整看片听音，确认最终真实画面上的字幕、画面、音频和尾部均无截断后，才允许执行：人工模式由用户审阅，AI 代理模式由具备完整视频与音频查看能力的 coordinator 审阅；能力不足时必须 `BLOCKED`，不得以关键帧、contact sheet 或媒体技术验证代替。
 
 ```powershell
 <ENV_PY> scripts/approve_final_media.py `
@@ -347,6 +361,6 @@ stale 文件可作为历史证据保留，但不得作为 current 输入进入�
 真实 Edge 外部验收：BLOCKED（具体网络/服务原因）
 ```
 
-不得报告为 PASS，也不得用 SKIP 或 fixture PASS 冒充真实 Edge 已验收。真实图片 provider 与人工视觉/声音判断也必须单列为 SKIP/BLOCK/待用户确认。本文只描述验收合同，不声明当前环境已经完成真实 Edge、真实图片 provider 或人工验收。
+不得报告为 PASS，也不得用 SKIP 或 fixture PASS 冒充真实 Edge 已验收。真实图片 provider 与视觉/声音审阅也必须按项目模式单列为 SKIP/BLOCK/待用户确认/待 coordinator 代理审阅。本文只描述验收合同，不声明当前环境已经完成真实 Edge、真实图片 provider 或真实媒体审阅。
 
-完整旁白批准只提前确认 current 配音与真实时长，不替代线稿、一次性 annotation review bundle 批准、一次性 scene review bundle 批准、最终字幕烧录/contact sheet 或最终成片完整看片听音批准。annotation 技术 current 后可先生成本地区域预览，再把标注内容、预览、`protectedRegions` 与 reveal 时序合并确认；scene 按 `sceneRender` 有界并行生成 candidate、逐幕技术检查并由 coordinator 按 plan 顺序发布，但仍只对有序 current bundle 做一次人工批准。clean master 只是连续成片链路中的技术中间工件，不设独立人工确认。
+完整旁白批准只提前确认 current 配音与真实时长，不替代线稿、一次性 annotation review bundle 批准、一次性 scene review bundle 批准、最终字幕烧录/contact sheet 或最终成片完整看片听音批准。annotation 技术 current 后可先生成本地区域预览，再把标注内容、预览、`protectedRegions` 与 reveal 时序合并审阅；scene 按 `sceneRender` 有界并行生成 candidate、逐幕技术检查并由 coordinator 按 plan 顺序发布，但仍只对有序 current bundle 做一次 Gate 批准。人工/AI 审阅主体的分支均不合并这些 Gate；clean master 只是连续成片链路中的技术中间工件，不设独立确认。

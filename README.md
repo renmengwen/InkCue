@@ -8,7 +8,7 @@ InkCue（墨序）可以把主题、正文或 SRT 制作为 1920x1080、60fps �
 
 [在 Bilibili 观看 InkCue 白板动画演示](https://www.bilibili.com/video/BV1ik836ME8B/)
 
-> 当前版本面向 Windows 本地工作流。内容、声音、线稿、标注、场景和最终成片都保留明确的人工确认关卡，不是无人值守的一键生成器。
+> 当前版本面向 Windows 本地工作流。首次内容/分镜确认时可选择后续逐阶段亲自批准，或委托 AI coordinator 审阅、返工并推进；两种模式都保留 current、stale、identity 和质量 Gate。
 
 ## 核心能力
 
@@ -19,7 +19,7 @@ InkCue（墨序）可以把主题、正文或 SRT 制作为 1920x1080、60fps �
 - 提供标注预览、局部重做、断点恢复和 stale 检查。
 - 正式多幕按 `sceneRender` 有界并行生成 candidate，并由 coordinator 按 generation plan 顺序复核、原子发布。
 - 使用 FFmpeg/libx264 编码，并进行 ffprobe、帧数和完整解码验证。
-- 人工批准绑定 artifact identity，上游变化后不会误用旧结果。
+- 每次批准都绑定 artifact identity，上游变化后不会误用旧结果。
 - 326 个 `unittest` 测试覆盖主要工作流。
 
 ## 输入与输出
@@ -44,6 +44,12 @@ topic/text 的旁白 provider 不需要用户选择。skill 始终读取自身�
 
 非 SRT 输入的目标时长必须在 15 到 600 秒之间。Edge TTS 不需要 API Key，但需要访问微软在线语音服务。
 
+阶段 0 有两个独立选择：`backgroundMusic.enabled` 控制是否在最终旁白封装时混入内置
+CC0 BGM；`agentApprovalEnabled` 控制初始确认之后的 Gate 由用户亲自批准，还是由 AI
+coordinator 代理批准。topic/text 在同一次“内容与制作方案联合确认”中选择，传统 SRT 在
+首次分镜确认时选择，不新增 Gate。旧项目或缺少 `agentApprovalEnabled` 时按 `false` 处理，
+保持现有人工确认流程。
+
 ## 工作流程
 
 ```text
@@ -55,7 +61,7 @@ topic/text 的旁白 provider 不需要用户选择。skill 始终读取自身�
         v
 严格 SRT + generation plan + timing plan
         |
-        +---- Edge TTS 样音与完整旁白确认
+        +---- Edge TTS 样音与完整旁白质量确认
         |
         v
 线稿确认 -> 区域标注与预览确认 -> 正式多幕有界并行 -> 场景联合确认
@@ -67,9 +73,9 @@ topic/text 的旁白 provider 不需要用户选择。skill 始终读取自身�
 output/final.mp4 最终确认
 ```
 
-技术校验通过不等于人工批准。每次批准只对当时的文件、时间轴和配置 identity 有效。
+技术校验通过不等于批准。每次批准只对当时的文件、时间轴和配置 identity 有效。代理批准模式下，AI coordinator 也必须真实查看图片、完整试听音频、完整观看视频；能力不足时必须报告 `BLOCKED`。
 
-正式多幕渲染会记录 `configuredSceneRenderConcurrency` 与 `readySceneCount`，并按 `effectiveSceneRenderConcurrency = min(configuredSceneRenderConcurrency, readySceneCount)` 计算有效 worker 数。worker 只生成并深验彼此独立的单幕 candidate；coordinator 即使收到乱序结果，也必须按 generation plan 顺序复核 current binding 并原子发布。任一必需幕失败时 batch 仍为 `FAIL`；即使已有部分幕成功发布，也不能进入全量 scene review。只有全部必需幕 current、用户明确批准 current 有序 scene bundle 后，才允许合并。
+正式多幕渲染会记录 `configuredSceneRenderConcurrency` 与 `readySceneCount`，并按 `effectiveSceneRenderConcurrency = min(configuredSceneRenderConcurrency, readySceneCount)` 计算有效 worker 数。worker 只生成并深验彼此独立的单幕 candidate；coordinator 即使收到乱序结果，也必须按 generation plan 顺序复核 current binding 并原子发布。任一必需幕失败时 batch 仍为 `FAIL`；即使已有部分幕成功发布，也不能进入全量 scene review。只有全部必需幕 current、并由项目当前批准主体明确批准 current 有序 scene bundle 后，才允许合并。
 
 ## 环境要求
 
@@ -153,7 +159,13 @@ $envPy = "D:\SRTWhiteboard\runtime\.venv\Scripts\python.exe"
 制作约 60 秒、使用 Edge TTS 旁白的白板动画。
 ```
 
-Codex 会读取 [SKILL.md](SKILL.md)，运行对应脚本，并在需要内容、声音或视觉判断时等待确认。
+若希望初始确认后不再因常规质量判断中断，可以直接说明：
+
+```text
+内容与制作方案由我确认；确认后委托 AI 自行审阅、返工并推进。
+```
+
+Codex 会读取 [SKILL.md](SKILL.md)，运行对应脚本，并在初始确认中冻结 BGM 与批准模式。自动模式仍会保留每个 Gate，由 coordinator 实际审阅后调用现有批准动作；child 和 runner 都不会自行批准。
 
 ## 常用 CLI
 
@@ -166,26 +178,29 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 # 创建项目
 & $envPy scripts\create_project.py --name <项目名> `
   --srt <字幕.srt> --plan <分镜.json> --voiceover-mode disabled `
-  --background-music disabled
+  --background-music disabled --agent-approval disabled
 
 # 不传 --voiceover-mode 时，新项目读取 config/voice-providers.local.json 的 activeProvider；
 # 如果需要明确创建静音项目，请显式传 --voiceover-mode disabled。
 # 阶段 0 还需让用户选择 --background-music enabled|disabled；enabled 使用内置 CC0
 # 轻音乐，以固定 -15 dB 在最终旁白封装阶段混入，不增加独立人工 Gate。
+# 同一次确认还需选择 --agent-approval enabled|disabled；旧项目缺失时等价于 disabled。
 
-# Edge：生成样音；完整试听并明确确认后，才批准刚试听的 current identity
+# Edge：生成样音；当前批准主体完整试听并明确通过后，才批准刚试听的 current identity
 & $envPy scripts\generate_voiceover.py sample --project <项目根目录> `
   --voice zh-CN-YunjianNeural --rate 0
 & $envPy scripts\generate_voiceover.py approve-sample --project <项目根目录> `
-  --identity-hash <刚完整试听的-SAMPLE_IDENTITY>
+  --identity-hash <刚完整试听所对应的-SAMPLE_IDENTITY>
 
-# Edge：生成并技术校验完整旁白；完整试听并确认真实时长后，才批准 current identity
+# Edge：生成并技术校验完整旁白；当前批准主体完整试听并确认真实时长后，才批准 current identity
 & $envPy scripts\generate_voiceover.py full --project <项目根目录>
 & $envPy scripts\validate_voiceover.py --project <项目根目录>
 & $envPy scripts\generate_voiceover.py approve-full --project <项目根目录> `
   --identity-hash <刚完整试听旁白所对应的-FULL_IDENTITY> `
   --review-policy user_first
-# 仅当真实时长偏差超过 10% 且用户明确接受时，approve-full 再附加：
+# agentApprovalEnabled=true 时 review policy 确定性派生为 agent_first，不再询问用户；
+# false/缺失时仍由用户选择 user_first|agent_first。
+# 仅当真实时长偏差超过 10% 且当前批准主体明确接受时，approve-full 再附加：
 #   --duration-decision accept_actual
 
 # 图片
@@ -201,7 +216,7 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 # 旁白项目继承 approve-full 冻结的 review policy
 & $envPy scripts\generate_annotation_previews.py --project <项目根目录> --all
 # agent_first 只在 preview bundle 完成后增加一次预审；annotationDrafting 仍须查看原图
-# 仅在用户一次确认 current 标注、区域预览、protectedRegions 与 reveal 时序后：
+# 仅在当前批准主体一次确认 current 标注、区域预览、protectedRegions 与 reveal 时序后：
 & $envPy scripts\approve_annotation_review.py --project <项目根目录> `
   --identity-hash <annotationReviewIdentitySha256>
 
@@ -210,7 +225,7 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 # 旁白项目继承 approve-full 冻结的 review policy
 & $envPy scripts\scene_review.py --project <项目根目录>
 # agent_first 只准备一次全量 bundle 预审，每幕仅抽少量关键帧
-# 仅在用户确认全部 current scene 的有序 bundle 后：
+# 仅在当前批准主体确认全部 current scene 的有序 bundle 后：
 & $envPy scripts\approve_scene_review.py --project <项目根目录> `
   --identity-hash <sceneReviewIdentityHash>
 
@@ -224,29 +239,29 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 & $envPy scripts\validate_final_media.py --project <项目根目录>
 # 推荐：scene bundle 已批准后，用一个确定性 runner 连续完成上述全部技术步骤：
 & $envPy scripts\run_phase.py --project <项目根目录> --phase final-delivery
-# 仅在用户完整观看 current final（旁白模式还须完整听音）并明确确认后：
+# 仅在当前批准主体完整观看 current final（旁白模式还须完整听音）并明确确认后：
 & $envPy scripts\approve_final_media.py --project <项目根目录> `
-  --identity-hash <刚完整看片听音的-FINAL_IDENTITY>
+  --identity-hash <刚完整看片听音所对应的-FINAL_IDENTITY>
 ```
 
-`merge_scenes.py` 会在写 concat 列表或 candidate 之前硬校验 current scene review approval；批准缺失、stale、scene 集合或输入顺序不匹配时返回退出码 5。批准通过后，`merge_scenes.py → burn_subtitles.py →（旁白模式）mux_voiceover.py → validate_final_media.py` 是连续技术链路，clean master 不增加人工关卡。技术验证完成后仍必须停在最终成片人工确认；CLI 不读取或推断聊天批准。
+`merge_scenes.py` 会在写 concat 列表或 candidate 之前硬校验 current scene review approval；批准缺失、stale、scene 集合或输入顺序不匹配时返回退出码 5。批准通过后，`merge_scenes.py → burn_subtitles.py →（旁白模式）mux_voiceover.py → validate_final_media.py` 是连续技术链路，clean master 不增加质量 Gate。技术验证完成后 runner 仍停在最终成片 Gate；人工模式等待用户，代理批准模式由 coordinator 在 runner 外完整看片听音后决定返工或调用批准脚本。CLI 不读取或推断聊天批准。
 
-上述三个阶段都支持 `--review-policy user_first|agent_first`。旁白项目必须在 `approve-full` 时显式选择并冻结，后续不传参时自动继承；显式传入冲突值会 fail-closed，不能静默改回 `user_first`。旧项目若已有批准但缺少该字段，应对 current `FULL_IDENTITY` 重新执行一次带 `--review-policy` 的 `approve-full`。线稿验证成功后自动生成 `reviews/line-art-review-<identity>.md` 与 current technical manifest，主窗口只交付文件链接、identity 和异常摘要。`user_first` 在必要技术校验后记录 `semanticReview.status=skipped_by_user` 并直接交给用户；`agent_first` 只准备宿主可消费的 spawn package，由 child 通过 findings/result 文件交接完整意见，不自动批准。两种策略都保留对应人工确认关卡。
+上述三个阶段都支持 `--review-policy user_first|agent_first`。`agentApprovalEnabled=true` 时由项目授权确定性派生并冻结 `agent_first`；为 `false`/缺失时，旁白项目仍须在 `approve-full` 时由用户显式选择并冻结。后续不传参时自动继承，显式传入冲突值会 fail-closed，不能静默改回 `user_first`。旧项目若已有批准但缺少该字段，应对 current `FULL_IDENTITY` 重新执行一次带 `--review-policy` 的 `approve-full`。线稿验证成功后自动生成 `reviews/line-art-review-<identity>.md` 与 current technical manifest，主窗口只交付文件链接、identity 和异常摘要。`user_first` 在必要技术校验后记录 `semanticReview.status=skipped_by_user` 并直接交给用户；`agent_first` 只准备宿主可消费的 spawn package，由 child 通过 findings/result 文件交接完整意见，本身不自动批准。只有项目同时明确 `agentApprovalEnabled=true` 时，coordinator 才可在亲自审阅 current artifact 后写“AI 代理批准”；人工模式仍保留用户确认关卡。
 
 Edge TTS / MiniMax 的样音、完整旁白和真实时长流程见 [语音合同](references/voiceover.md)。人工批准、annotation candidate 和恢复流程的完整命令见 [SKILL.md](SKILL.md)。
 
 ### Phase 4 可选 coordinator runner
 
-需要减少命令启动和主窗口往返时，可以使用可选 runner 串联本地确定性步骤；它不会自动批准，也不会把图片/TTS provider 请求藏进 agent task：
+需要减少命令启动和主窗口往返时，可以使用可选 runner 串联本地确定性步骤；无论批准模式如何，它都不会自动批准，也不会把图片/TTS provider 请求藏进 agent task：
 
 ```powershell
 & $envPy scripts\run_phase.py --project <项目根目录> --phase annotation-preview
 & $envPy scripts\run_phase.py --project <项目根目录> --phase final-delivery
 ```
 
-`annotation-preview` 完成 annotation technical validation、current receipt 复用、candidate/区域预览、contact sheet 和 review manifest 后，必须停在 annotation 联合人工确认。`final-delivery` 在 current scene bundle 已批准后，同一进程连续执行 merge → burn →（旁白模式）mux → final validation，输出每步 `timingsMs` 和总墙钟时间，然后停在最终看片/听音 Gate。两者都输出 artifact、identity、status、`approvalWritten=false` 和下一步需要的明确用户回复；技术 PASS、candidate、receipt 或 agent findings 都不等于用户批准。
+`annotation-preview` 完成 annotation technical validation、current receipt 复用、candidate/区域预览、contact sheet 和 review manifest 后，必须停在 annotation 联合质量 Gate。`final-delivery` 在 current scene bundle 已批准后，同一进程连续执行 merge → burn →（旁白模式）mux → final validation，输出每步 `timingsMs` 和总墙钟时间，然后停在最终看片/听音 Gate。两者都输出 artifact、identity、status 与 `approvalWritten=false`；人工模式的下一步是用户回复，代理批准模式的下一步是 coordinator 在 runner 外实际审阅。技术 PASS、candidate、receipt 或 agent findings 都不等于用户亲自批准或 AI 代理批准。
 
-runner 到达预期人工 Gate 时输出 `status=WAITING_HUMAN_GATE`、`technicalStatus=PASS`、`processOutcome=completed_waiting_for_user`，并以进程退出码 0 结束，避免通用 PowerShell/桌面包装层显示为技术失败。自动化仍必须读取 JSON，看到 `approvalWritten=false` 时停止；退出码 0 绝不授权调用批准脚本或继续需要批准的下游。
+runner 到达预期 Gate 时仍输出现有 `status=WAITING_HUMAN_GATE`、`technicalStatus=PASS`、`processOutcome=completed_waiting_for_user`，并以进程退出码 0 结束，避免通用 PowerShell/桌面包装层显示为技术失败。自动化仍必须读取 JSON，看到 `approvalWritten=false` 时停止；退出码 0 绝不授权调用批准脚本或继续需要批准的下游。代理模式也只能由 coordinator 完成真实媒体审阅后另行调用原批准动作。
 
 runner 中断后可直接恢复，也可退回逐步 CLI；保留 current binding 的步骤可以复用 receipt，binding 变化则重新 deep validation 并 fail closed：
 
@@ -307,9 +322,9 @@ $runtimePython = "D:\SRTWhiteboard\runtime\.venv\Scripts\python.exe"
 & $runtimePython -m unittest discover -s tests -p "test_*.py"
 ```
 
-自动测试通过不代表真实 provider 或人工视觉、听觉验收通过。
+自动测试通过不代表真实 provider、用户亲自验收或 AI 代理验收通过。
 
-测试/CI 报告必须分别标记三类状态：本地 fake/fixture 的自动 `PASS`、真实图片或语音 provider/媒体不可用时的 `SKIP` 或 `BLOCKED`，以及尚未由用户明确确认的人工 Gate（`待确认`）。fixture 的通过不能冒充真实 provider、真实媒体或人工验收通过。
+测试/CI 报告必须分别标记三类状态：本地 fake/fixture 的自动 `PASS`、真实图片或语音 provider/媒体不可用时的 `SKIP` 或 `BLOCKED`，以及尚未由当前批准主体确认的质量 Gate（`待确认`）。fixture 的通过不能冒充真实 provider、真实媒体、用户亲自批准或 AI 代理批准。
 
 固定场景 benchmark 同样只属于第一类；例如：
 
@@ -317,7 +332,7 @@ $runtimePython = "D:\SRTWhiteboard\runtime\.venv\Scripts\python.exe"
 & $runtimePython benchmarks\run_scene_render_benchmark.py --fixture fixture-medium
 ```
 
-该命令输出的 `PASS` 只覆盖仓库 fixture 的渲染、技术验证和恢复探针。真实 provider 未执行时必须另报 `SKIP`（外部条件不可用则报 `BLOCKED`），人工 Gate 必须保留为“待确认”且 `approvalWritten=false`。
+该命令输出的 `PASS` 只覆盖仓库 fixture 的渲染、技术验证和恢复探针。真实 provider 未执行时必须另报 `SKIP`（外部条件不可用则报 `BLOCKED`），质量 Gate 必须保留为“待确认”且 `approvalWritten=false`。
 
 ## 已知限制
 

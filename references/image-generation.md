@@ -220,7 +220,7 @@ coordinator 先冻结 `attemptId`、image input identity、candidate/receipt/for
 - 实际图片 SHA-256 与 manifest 一致。
 - 失败幕不会进入可消费集合。
 
-脚本向标准输出写单个 JSON 摘要。`validated` 只表示文件技术上完整且与计划一致，不能代替第 2 步结束后的用户明确确认。只有技术验证通过且用户确认画面语义和视觉质量后，才可开始标注。
+脚本向标准输出写单个 JSON 摘要。`validated` 只表示文件技术上完整且与计划一致，不能代替线稿 Gate 的真实视觉审阅和明确决定。只有技术验证通过且指定审阅主体确认画面语义和视觉质量后，才可开始标注；人工模式为用户，AI 代理模式为 coordinator。
 
 ## 线稿文件交接
 
@@ -229,13 +229,13 @@ coordinator 先冻结 `attemptId`、image input identity、candidate/receipt/for
 - `manifests/line-art-review-manifest.json`：current 技术证据，绑定 project、generation plan SHA、generation manifest SHA、场景顺序，以及每张 current PNG 的相对路径、SHA 和 bytes；输出 `lineArtReviewIdentitySha256`，但不写人工批准。
 - `reviews/line-art-review-<identity前12位>.md`：面向用户的有序审阅文件，按 scene ID 展示 current 图片、全分辨率相对链接和必要的场景语义/提示词。它只是由 manifest identity 派生的审阅视图，不是第二份机器权威源。
 
-coordinator 面向用户只能交付可点击 review 文件链接、完整 identity、场景计数和异常 scene 摘要；不得把全部 PNG、完整提示词或 Markdown 全文重新嵌入主聊天。`user_first` 时 coordinator 不为介绍文件而逐张打开图片；`agent_first` 时 visualReview child 在新鲜短上下文中查看 current PNG，把完整意见留在 attempt 的 `findings.json/result.json`，coordinator 只接收结果路径、status、validator 状态和精简摘要，不得重复逐图审阅。
+coordinator 在人工模式面向用户时只能交付可点击 review 文件链接、完整 identity、场景计数和异常 scene 摘要；不得把全部 PNG、完整提示词或 Markdown 全文重新嵌入主聊天。`user_first` 时 coordinator 不为介绍文件而逐张打开图片；`agent_first` 时 visualReview child 在新鲜短上下文中查看 current PNG，把完整意见留在 attempt 的 `findings.json/result.json`，coordinator 只接收结果路径、status、validator 状态和精简摘要，不得重复逐图审阅。AI 代理模式必须使用 `agent_first`，coordinator 在重验 child 确已具备 `viewImage`、实际检查全量 current PNG 且 findings/current binding 完整后独立决策。
 
-用户仍须回到聊天，以 current identity 明确确认全部线稿，或按 scene ID 指出需要修改的幕。打开 Markdown、点击原图、技术 PASS、child completed、findings 无问题或用户没有反对都不构成批准。generation plan、generation manifest、场景顺序或任一 PNG 字节变化都会生成新 identity 和新 review 文件；旧文件可保留为历史证据，但旧聊天确认不得用于 current bundle。进入 annotation 前必须复核用户确认的 identity 与 current `line-art-review-manifest.json.identityHash` 一致。
+人工模式下，用户仍须回到聊天，以 current identity 明确确认全部线稿，或按 scene ID 指出需要修改的幕。AI 代理模式下，coordinator 对同一 current identity 作出明确接受或驳回决定；驳回只重生需要修改的 scene 并重审 current bundle，不因普通返工等待用户。打开 Markdown、点击原图、技术 PASS、child completed、findings 无问题、用户没有反对或 AI 无异常摘要都不能单独构成批准。generation plan、generation manifest、场景顺序或任一 PNG 字节变化都会生成新 identity 和新 review 文件；旧文件可保留为历史证据，但旧批准决定不得用于 current bundle。进入 annotation 前必须复核获批准的 identity 与 current `line-art-review-manifest.json.identityHash` 一致。
 
 ### 可选 Global visualReview 初检
 
-技术验证始终执行；图片完成后必须显式选择直接交用户，或先准备 global review：
+技术验证始终执行。人工模式在图片完成后使用已冻结的 `user_first|agent_first`；AI 代理模式确定性使用 `agent_first`，不再询问用户：
 
 ```powershell
 <ENV_PY> scripts/validate_generated_images.py --project <项目根目录> `
@@ -245,17 +245,17 @@ coordinator 面向用户只能交付可点击 review 文件链接、完整 ident
   --review-policy agent_first
 ```
 
-`user_first` 不创建或派发 visualReview，在机器摘要记录 `reviewPolicy=user_first`、`semanticReview.status=skipped_by_user`、`approvalWritten=false` 和 `userConfirmationRequired=true`，随后直接交付 current 线稿 review 文件。`agent_first` 通过现有 `whiteboard-agent-task-v1` 合同创建并重验 `visualReview` task：task 冻结 generation plan、generation manifest、全部 current PNG/SHA、role contract 与 current bindings；只允许写 attempt 内 `findings.json/result.json`，`formalWritesAllowed=false`、`approvalWritesAllowed=false`。旧 `--prepare-visual-review` 保留为 `agent_first` 兼容入口。
+`user_first` 不创建或派发 visualReview，在机器摘要记录 `reviewPolicy=user_first`、`semanticReview.status=skipped_by_user`、`approvalWritten=false` 和 `userConfirmationRequired=true`，随后直接交付 current 线稿 review 文件。`agent_first` 通过现有 `whiteboard-agent-task-v1` 合同创建并重验 `visualReview` task：task 冻结 generation plan、generation manifest、全部 current PNG/SHA、role contract 与 current bindings；只允许写 attempt 内 `findings.json/result.json`，`formalWritesAllowed=false`、`approvalWritesAllowed=false`。旧 `--prepare-visual-review` 保留为 `agent_first` 兼容入口。AI 代理模式下 CLI 摘要仍可保留 `userConfirmationRequired=true` 与 `approvalWritten=false` 的旧有结构；它只表示脚本未写批准，coordinator 必须立即接回代理审阅，不转化为用户停顿。
 
 命令返回 `visualReview.preparedTask`，只包含 task/role 的定位路径、SHA、允许 attempt、required capabilities 与结果位置；不包含宿主调用参数、child slots、fallback 判断或 agentId。coordinator 收到 descriptor 后直接按当前真实宿主状态调用协作工具；真实 effective/peak 与 agent/task 映射只能在实际派发后记录。child 或 fallback coordinator 都必须实际具备 `viewImage`，否则报告 `BLOCKED`。
 
-visualReview findings 只用于提示跨幕人物、配色、纸张、构图漂移和建议重点重生成的 scene；它不修改图片、不调用 provider、不写 generation manifest、不重试生图，也绝不写线稿批准。即使 result 为 completed，仍须等待用户逐图明确确认。
+visualReview findings 只用于提示跨幕人物、配色、纸张、构图漂移和建议重点重生成的 scene；它不修改图片、不调用 provider、不写 generation manifest、不重试生图，也绝不写线稿批准。即使 result 为 completed，仍须由指定审阅主体对全量 current 图像作出明确决定；只有 coordinator 能在重验后调用既有批准脚本。
 
-同一策略也用于后续两个视觉 bundle，但不改变各阶段的生成职责：`generate_annotation_previews.py --all --review-policy user_first|agent_first` 只控制 preview 生成后的额外 AI 复查，`annotationDrafting` 仍必须查看原图；`scene_review.py --review-policy user_first|agent_first` 在全部 current 单幕形成一次有序 bundle 后决定是否准备预审，`agent_first` 每幕只抽首帧、中段和完成帧等少量关键帧。两者的 `agent_first` 同样只准备宿主 spawn package，不自动批准；技术验证和人工批准始终保留。
+同一策略也用于后续两个视觉 bundle，但不改变各阶段的生成职责：`generate_annotation_previews.py --all --review-policy user_first|agent_first` 只控制 preview 生成后的额外 AI 复查，`annotationDrafting` 仍必须查看原图；`scene_review.py --review-policy user_first|agent_first` 在全部 current 单幕形成一次有序 bundle 后决定是否准备预审，`agent_first` 每幕只抽首帧、中段和完成帧等少量关键帧。两者的 `agent_first` 同样只准备宿主 spawn package，不自动批准；技术验证和 Gate 批准始终保留。关键帧只是 scene 预审辅助证据；AI 代理批准 scene bundle 前必须具备视频能力并实际完整观看 current 有序单幕。
 
 ## 机器摘要与退出码
 
-生成和验证脚本都输出机器可读 JSON 摘要，不输出密钥、完整 API 响应或临时 URL。生成摘要包含配置/实际并发、task 数、采用 candidate 数和 unknown 外部结果数；验证摘要包含配置/实际并发、task 数，并固定输出 `userConfirmationRequired: true`、`approvalWritten: false`。全量技术 PASS 时还输出 `lineArtReview.reviewFile`、`lineArtReview.manifestFile`、`lineArtReview.lineArtReviewIdentitySha256` 与 `lineArtReview.sceneCount`；审阅文件生成失败时整次验证不得报告成功或启动 visualReview。
+生成和验证脚本都输出机器可读 JSON 摘要，不输出密钥、完整 API 响应或临时 URL。生成摘要包含配置/实际并发、task 数、采用 candidate 数和 unknown 外部结果数；验证摘要包含配置/实际并发、task 数，并固定输出 `userConfirmationRequired: true`、`approvalWritten: false`。这两个旧有字段只说明脚本停在 Gate 且没有写批准：人工模式交付用户，AI 代理模式由 coordinator 立即接回审阅，无需改名或新增状态。全量技术 PASS 时还输出 `lineArtReview.reviewFile`、`lineArtReview.manifestFile`、`lineArtReview.lineArtReviewIdentitySha256` 与 `lineArtReview.sceneCount`；审阅文件生成失败时整次验证不得报告成功或启动 visualReview。
 
 - `0`：全部目标场景成功，或全部待消费图片验证成功。
 - `1`：批量已执行，但至少一幕失败。
@@ -266,7 +266,7 @@ visualReview findings 只用于提示跨幕人物、配色、纸张、构图漂�
 
 ## 成片链路中的技术合并
 
-全部正式单幕按 generation plan 有界并行渲染、逐幕技术验证并按 plan 顺序发布，但不在每幕之间等待用户，也不逐幕重复 AI 视觉复查。全部 current scene 由 `scene_review.py --review-policy user_first|agent_first` 形成一次有序 review bundle 并输出 `sceneReviewIdentityHash`；`agent_first` 只准备一次少量关键帧预审的宿主 spawn package。用户一次明确确认后，`approve_scene_review.py` 把批准持久化为 `manifests/render-manifest.json.sceneReviewApproval`。bundle 绑定 generation plan SHA、sceneOrder、timing plan file/SHA/activeTimeline、render profile SHA，以及逐幕 render identity、MP4 SHA/bytes/frameRange；`merge_scenes.py` 必须在创建 concat 列表或候选前硬校验该批准，缺失、stale、scene 集合或输入顺序不符时返回 5。输入、输出必须属于同一项目；FFmpeg concat 列表只写入该项目本次 `.work/merge-<运行 ID>` 目录。clean master 是字幕烧录所需的内部技术工件，不是独立人工关卡。
+全部正式单幕按 generation plan 有界并行渲染、逐幕技术验证并按 plan 顺序发布，但不在每幕之间等待用户，也不逐幕重复 AI 视觉复查。全部 current scene 由 `scene_review.py --review-policy user_first|agent_first` 形成一次有序 review bundle 并输出 `sceneReviewIdentityHash`；`agent_first` 只准备一次少量关键帧预审的宿主 spawn package。人工模式由用户一次明确确认；AI 代理模式由具备视频能力的 coordinator 完整观看 current 有序单幕后决定，不得只凭关键帧。接受后由 coordinator 调用 `approve_scene_review.py` 把批准持久化为 `manifests/render-manifest.json.sceneReviewApproval`；驳回只重渲染受影响单幕并重审 current bundle。bundle 绑定 generation plan SHA、sceneOrder、timing plan file/SHA/activeTimeline、render profile SHA，以及逐幕 render identity、MP4 SHA/bytes/frameRange；`merge_scenes.py` 必须在创建 concat 列表或候选前硬校验该批准，缺失、stale、scene 集合或输入顺序不符时返回 5。输入、输出必须属于同一项目；FFmpeg concat 列表只写入该项目本次 `.work/merge-<运行 ID>` 目录。clean master 是字幕烧录所需的内部技术工件，不是独立 Gate。
 
 ```powershell
 <ENV_PY> scripts/merge_scenes.py --project <项目根目录> `

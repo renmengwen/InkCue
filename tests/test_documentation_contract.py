@@ -83,7 +83,8 @@ class DocumentationContractTests(unittest.TestCase):
             "不得再次 trim",
             "不得再次 trim、拼接、调用模型、改写语义或调换 scene/cue 顺序",
             "不允许 formal plan 保留 `imagePrompt`",
-            "任何需要改变提示词的意见都必须回到新的 revision attempt 与人工确认",
+            "任何需要改变提示词的意见都必须回到新的 revision attempt，并回到阶段 0 取得用户对实质新方案的确认",
+            "`agentApprovalEnabled` 不授权 coordinator 改写已冻结用户意图",
         ):
             with self.subTest(invariant=invariant):
                 self.assertIn(invariant, orchestration)

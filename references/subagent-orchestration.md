@@ -6,7 +6,7 @@
 
 ## 1. 唯一 Coordinator
 
-主 agent 是唯一 coordinator、用户接口和正式写者。只有 coordinator 可以决定阶段和 role 是否 ready，接收用户确认或修改，创建 task，计算有效并发，派发或 retry，验证 task/result 与 current binding，发布正式候选，并写 manifest、timeline、SRT、identity、stale、checkpoint 和批准。
+主 agent 是唯一 coordinator、用户接口和正式写者。只有 coordinator 可以决定阶段和 role 是否 ready，接收用户确认/修改或根据项目冻结的 `agentApprovalEnabled` 执行代理审阅，创建 task，计算有效并发，派发或 retry，验证 task/result 与 current binding，发布正式候选，并写 manifest、timeline、SRT、identity、stale、checkpoint 和批准。
 
 每个 task 必须显式包含：
 
@@ -89,7 +89,7 @@ formal.scenes[i].prompt = candidate.scenes[i].imagePrompt
 formal.scenes[i].sceneId/name/coreIdea/visualSubject/cueRange = candidate 对应字段（按原顺序）
 ```
 
-其中 `candidate` 已是 `validate_content_draft()` 返回的 canonical candidate；映射必须逐字复制该 canonical `imagePrompt`，只 materialize 正式 schema 的字段名和 coordinator 从 current cue/timing evidence 确定的字段，不得再次 trim、拼接、调用模型、改写语义或调换 scene/cue 顺序，也不允许 formal plan 保留 `imagePrompt`。child 不直接写 formal plan，provider 只消费 formal `prompt`；任何需要改变提示词的意见都必须回到新的 revision attempt 与人工确认。
+其中 `candidate` 已是 `validate_content_draft()` 返回的 canonical candidate；映射必须逐字复制该 canonical `imagePrompt`，只 materialize 正式 schema 的字段名和 coordinator 从 current cue/timing evidence 确定的字段，不得再次 trim、拼接、调用模型、改写语义或调换 scene/cue 顺序，也不允许 formal plan 保留 `imagePrompt`。child 不直接写 formal plan，provider 只消费 formal `prompt`；任何需要改变提示词的意见都必须回到新的 revision attempt，并回到阶段 0 取得用户对实质新方案的确认；`agentApprovalEnabled` 不授权 coordinator 改写已冻结用户意图。
 
 ## 6. 调度与并发
 
@@ -134,10 +134,11 @@ candidate created
 result contract validated
 business validator passed
 coordinator published current
-user explicitly approved current
+指定审阅主体对 current 作出明确决定
+coordinator 调用既有批准脚本绑定 current identity
 ```
 
-前一步不能自动推出后一步。失败、取消或 stale candidate 保留在 attempt 目录供诊断，不覆盖旧 current 文件。subagent、CLI、fake scheduler、findings 和技术 manifest 都不得写人工批准。
+前一步不能自动推出后一步。失败、取消或 stale candidate 保留在 attempt 目录供诊断，不覆盖旧 current 文件。subagent、worker、CLI、fake scheduler、findings 和技术 manifest 都不得写任何批准。即使 `agentApprovalEnabled=true`，child task 也始终保持 `approvalWritesAllowed:false`；只有 coordinator 在重验真实审阅证据和 current identity 后才可调用原批准脚本。批准主体不进入作品 identity。
 
 retry 只针对 `failed | cancelled | stale` 创建新 attempt。current completed 且 input/role contract SHA 未变化的候选不得重复执行；`blocked` 必须先改变能力或外部条件。
 
@@ -149,23 +150,29 @@ Phase 4 只能在线稿已获用户明确确认后开始。coordinator 先构建
 
 每个 task descriptor 必须携带只读 `candidateLint` 命令。该 lint 仅检查 UTF-8 JSON、顶层合同、element/region/reveal 字段、`reveal.protectedRegions` 嵌套和基础几何/时序 schema，不写 result、materialized candidate、正式 annotation、manifest 或批准。全量发布前仍必须执行绑定 current project/timing 的完整 validator；早期 lint 不能替代完整验证。
 
-候选可有界并行校验，但正式 annotation 必须按 generation plan 顺序逐幕原子发布。任一必需 scene 失败、缺失或 stale 时 batch 为 `FAIL`；已有发布则记录 `partialSuccess:true`，不得启动全量预览或写批准。全部 scene current 且 validator PASS 后，才启动项目预览与区域预览并进入聊天人工确认。
+候选可有界并行校验，但正式 annotation 必须按 generation plan 顺序逐幕原子发布。任一必需 scene 失败、缺失或 stale 时 batch 为 `FAIL`；已有发布则记录 `partialSuccess:true`，不得启动全量预览或写批准。全部 scene current 且 validator PASS 后，才启动项目预览与区域预览并进入 annotation 联合 Gate：人工模式交付用户确认，AI 代理模式由 coordinator 接回真实审阅。
 
 ## 8.1 生成后审阅策略
 
-生图消费验证、annotation preview bundle 和 scene review bundle 都接受 `--review-policy user_first|agent_first`。两种策略都必须先完成当前阶段的确定性技术验证，并保留对应人工批准；策略只决定用户关卡之前是否多一次 AI 语义预审，不进入作品内容 identity，也不得写批准。
+生图消费验证、annotation preview bundle 和 scene review bundle 都接受 `--review-policy user_first|agent_first`。两种策略都必须先完成当前阶段的确定性技术验证，并保留对应 Gate 批准；策略只决定是否准备 AI 语义审阅，不进入作品内容 identity，也不得直接写批准。
 
-该策略应在交付完整旁白、等待用户确认的同一条消息中征询，使用户一次回复即可同时表达完整旁白与真实时长决定以及 `user_first|agent_first` 选择。coordinator 必须先成功写入 current `approve-full`，再采用策略并开始视觉阶段；不得在旁白批准后另设一次只用于选择策略的聊天停顿，也不得在旁白未获批准时仅凭策略选择启动生图。用户确认旁白但未指定时继续停在 Gate 追问，禁止静默默认。
+- `agentApprovalEnabled` 缺失或为 `false`：在交付完整旁白、等待用户确认的同一条消息中征询策略，使用户一次回复即可同时表达完整旁白与真实时长决定以及 `user_first|agent_first` 选择。用户确认旁白但未指定时继续停在 Gate 追问，禁止静默默认。
+- `agentApprovalEnabled=true`：审阅策略确定性为 `agent_first`，不再询问 `user_first|agent_first`。coordinator 必须先完整审阅 current 旁白、核对 current `FULL_IDENTITY` 并成功执行 `approve-full --review-policy agent_first`，才能开始视觉阶段。
+
+两种模式都不得在旁白未获 current Gate 批准时仅凭策略选择启动生图。
 
 - `user_first`：不创建或派发额外 `visualReview`，机器摘要记录 `semanticReview.status=skipped_by_user`，只把 current 线稿 review Markdown 链接、identity、计数和异常摘要交给用户；不得把全部图片重新嵌入主聊天。
-- `agent_first`：只冻结宿主中立 `visualReview` task descriptor；coordinator 必须直接调用宿主协作工具完成真实 spawn/wait。child 把完整意见写入 attempt 的 `findings.json/result.json`；coordinator 只接收路径、status、validator 状态和精简摘要，不得再次逐图审阅，再把 advisory findings 摘要与 current review 文件一并交用户。prepared descriptor 不能报告成真实派发或 review 完成。
-- 生图复用覆盖全部 current PNG 的 global `visualReview`；annotation 只复查已生成的 preview bundle，不能跳过 `annotationDrafting` 对原图的实际查看；scene 只在全部 current 单幕形成一次有序 bundle 后预审，每幕仅抽首帧、中段和完成帧等少量关键帧，不逐幕重复 AI review。
+- `agent_first`：只冻结宿主中立 `visualReview` task descriptor；coordinator 必须直接调用宿主协作工具完成真实 spawn/wait。child 把完整意见写入 attempt 的 `findings.json/result.json`；coordinator 只接收路径、status、validator 状态和精简摘要，不得再次逐图审阅。人工模式将 advisory findings 摘要与 current review 文件一并交用户；AI 代理模式下，coordinator 必须重验 child 确实具备所需媒体能力、已检查全部冻结 scope、findings 内容和 current binding，再作出独立审阅决定；`completed` 或无 findings 不能自动推出批准。prepared descriptor 不能报告成真实派发或 review 完成。
+- 生图复用覆盖全部 current PNG 的 global `visualReview`；annotation 只复查已生成的 preview bundle，不能跳过 `annotationDrafting` 对原图的实际查看；scene 只在全部 current 单幕形成一次有序 bundle 后预审，每幕抽首帧、中段和完成帧等少量关键帧仅作 advisory review；AI 代理模式下的 scene bundle 和 final Gate 仍必须由具备视频查看能力的审阅者实际完整观看 current 视频，不得以关键帧代替。
 
-## 9. 人工关卡
+## 9. Gate 决策与自动代理
 
-coordinator 必须分别等待用户明确确认 topic/text 内容草案、传统 SRT 分镜与策略、Edge 样音、完整旁白与真实时长、线稿、标注/区域/时序联合 bundle、全部正式单幕和最终成片。
+topic/text 内容草案与传统 SRT 的初始分镜/策略仍属于阶段 0 用户意图冻结，必须由用户明确确认。阶段 0 之后，coordinator 为每个项目读取 `project.json.agentApprovalEnabled`：
 
-技术 PASS、agent findings、candidate、批次完成或用户没有反对，都不能替代明确确认。
+- 缺失或 `false`：继续分别等待用户明确确认样音、完整旁白与真实时长、线稿、标注/区域/时序联合 bundle、全部正式单幕和最终成片。
+- `true`：保留同样数量和边界的 Gate，但由 coordinator 完成或组织具备真实媒体能力的冻结审阅，核对 current identity 后作出独立决定，合格时调用既有批准脚本并继续，驳回时只返工受影响阶段并重审，不再等待用户常规确认。
+
+技术 PASS、agent findings、candidate、批次完成、用户没有反对或 AI 无异常摘要，都不能直接替代指定审阅主体对 current identity 的真实审阅和明确决定。审阅所需的查图、完整听音或完整观看视频能力不足时必须 `BLOCKED`。`unknown_external_outcome`、额外费用/新服务/新凭据、版权授权和实质改变阶段 0 意图的用户例外统一见 [`recovery-and-identity.md`](recovery-and-identity.md)。
 
 ## 10. 状态边界
 
@@ -173,6 +180,6 @@ coordinator 必须分别等待用户明确确认 topic/text 内容草案、传�
 - `FAIL`：合同、路径、binding、SHA、validator 或执行失败；
 - `BLOCKED`：执行者缺少 role 必需能力；
 - `SKIP`：当前阶段未执行真实派发或外部调用；
-- `待确认`：技术结果已准备，仍等待用户人工关卡。
+- `待确认`：技术结果已准备，仍等待指定审阅主体的 Gate 决定；AI 代理模式下 coordinator 应立即接回审阅，不把该状态转成用户停顿。
 
-真实宿主协作只有在 child 从冻结 task 读取输入、写出 candidate（annotationDrafting 的 result 由 coordinator 随后生成），并记录真实 agent/task 标识后才能报告 dispatch `PASS`。真实图片 provider、Edge 服务、声音接受度和视觉接受度必须与自动 fixture/技术验证分别报告。
+真实宿主协作只有在 child 从冻结 task 读取输入、写出 candidate（annotationDrafting 的 result 由 coordinator 随后生成），并记录真实 agent/task 标识后才能报告 dispatch `PASS`。真实图片 provider、Edge 服务、声音接受度和视觉接受度必须与自动 fixture/技术验证分别报告；报告中应按项目模式准确区分“待用户确认”和“待 coordinator 代理审阅”。

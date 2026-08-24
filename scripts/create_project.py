@@ -44,6 +44,11 @@ def _parser() -> argparse.ArgumentParser:
         help="阶段 0 已确认的 BGM 选择；默认 disabled 仅用于旧调用兼容",
     )
     parser.add_argument(
+        "--agent-approval",
+        choices=("enabled", "disabled"),
+        help="阶段 0 已确认的后续批准主体；新建时省略按 disabled 兼容旧调用",
+    )
+    parser.add_argument(
         "--source-input",
         type=Path,
         help="可选：content source 准备包中的 input.json；必须与 --source-manifest 成对使用",
@@ -94,6 +99,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise ProjectValidationError("--voiceover-mode 仅用于创建新项目，续接时读取已冻结模式")
             if args.background_music != "disabled":
                 raise ProjectValidationError("--background-music 仅用于创建新项目，续接时读取已冻结选择")
+            if args.agent_approval is not None:
+                raise ProjectValidationError("--agent-approval 仅用于创建新项目，续接时读取已冻结选择")
             if has_source_input:
                 raise ProjectValidationError("content source 证据仅用于新建项目，续接时读取项目内冻结证据")
             project = workspace.resume_project(args.resume, args.srt)
@@ -113,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 voiceover_mode=voiceover_mode,
                 background_music_enabled=args.background_music == "enabled",
+                agent_approval_enabled=args.agent_approval == "enabled",
                 source_input=args.source_input,
                 source_manifest=args.source_manifest,
                 source_plan=args.plan if has_source_input else None,
@@ -126,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"TIMING_PLAN_PATH={project.timing_plan_path}")
     print(f"VOICEOVER_MODE={project.voiceover_mode}")
     print(f"BACKGROUND_MUSIC={'enabled' if project.background_music_enabled else 'disabled'}")
+    print(f"AGENT_APPROVAL={'enabled' if project.agent_approval_enabled else 'disabled'}")
     print(f"SCENES_DIR={project.scenes_dir}")
     return 0
 

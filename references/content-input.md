@@ -1,6 +1,6 @@
 # 主题 / 正文内容入口合同
 
-本文说明阶段 0 的 `topic | text` 首版入口、`whiteboard-content-draft-v1`、artifact-first 审阅与修订、内容与制作方案联合确认、确定性 source package、正式项目 provenance、stale/恢复与验收边界。传统 `inputMode=srt` 路径保持一次独立的模式/语义分镜确认；其 `voiceoverMode=disabled | edge-tts | minimax`、严格 SRT、人工关卡和最终交付语义不得回归。
+本文说明阶段 0 的 `topic | text` 首版入口、`whiteboard-content-draft-v1`、artifact-first 审阅与修订、内容与制作方案联合确认、确定性 source package、正式项目 provenance、stale/恢复与验收边界。传统 `inputMode=srt` 路径保持一次独立的模式/语义分镜确认；其 `voiceoverMode=disabled | edge-tts | minimax`、严格 SRT、质量 Gate 和最终交付语义不得回归。
 
 ## 首版能力边界
 
@@ -27,14 +27,18 @@ rewritePolicy = preserve | polish | generate
 
 topic/text 的权威顺序是：
 
-1. 接收原始主题或正文，并冻结 `rewritePolicy`、`targetDurationSeconds` 与用户的 BGM 加入/不加入选择；`voiceoverMode` 始终从 skill 根目录 `config/voice-providers.local.json` 的 `activeProvider` 派生。用户无需提供或选择 Edge TTS/MiniMax，编排层不得询问“旁白方式”。派生结果只可规范化为 `edge-tts` 或 `minimax`，并写入冻结的 content input/review，供用户知情查看。只有用户明确要求静音时，才走传统 SRT 的 `disabled` 显式入口。BGM 不进入 content draft schema；coordinator 在联合确认消息中展示选择，并在建项时唯一写入 `project.json.backgroundMusic.enabled`。
+1. 接收原始主题或正文，并冻结 `rewritePolicy`、`targetDurationSeconds`；在同一次联合确认中，让用户分别选择 BGM“加入/不加入”和后续“逐阶段由我确认/委托 AI 自动判断并推进”，对应 `backgroundMusic.enabled` 与 `agentApprovalEnabled` 两个独立布尔值。`voiceoverMode` 始终从 skill 根目录 `config/voice-providers.local.json` 的 `activeProvider` 派生。用户无需提供或选择 Edge TTS/MiniMax，编排层不得询问“旁白方式”。派生结果只可规范化为 `edge-tts` 或 `minimax`，并写入冻结的 content input/review，供用户知情查看。只有用户明确要求静音时，才走传统 SRT 的 `disabled` 显式入口。BGM 与代理批准选择都不进入 content draft schema；coordinator 在联合确认消息中展示两个选择，并在建项时分别写入 `project.json.backgroundMusic.enabled` 与顶层 `project.json.agentApprovalEnabled`。
 2. coordinator 运行 `prepare_draft_agent_task.py contentDrafting` 冻结 attempt 和 `preparedTask`，再直接根据当前宿主状态调用 `spawn_agent` 或 `followup`；脚本不参与 dispatch/fallback 决策。首次草案默认使用短上下文 child；真实派发不可用时才由具备相同能力的 coordinator fallback。所有路径使用同一 task/result 合同。
 3. coordinator 重验 result、SHA 与 candidate 合同后，从 `candidate.content-draft.json` 确定性生成不可变 Markdown 审阅 artifact。主窗口只发送文件链接、完整 identity、cue/scene 计数和短摘要，不把长正文、逐幕提示词或整份 Markdown 读回、转述或粘贴到聊天。
-4. **停止并等待用户明确确认 current `contentDraftIdentitySha256`，完成“内容与制作方案联合确认”。** 这一次确认同时覆盖内容草案与模式/语义分镜策略；未回复、此前笼统授权、技术校验通过或“用户没有反对”都不是批准。
+4. **停止并等待用户明确确认 current `contentDraftIdentitySha256`，完成“内容与制作方案联合确认”。** 这一次确认同时覆盖内容草案、模式/语义分镜策略、BGM 选择与后续批准方式；未回复、此前笼统授权、技术校验通过或“用户没有反对”都不是批准。
 5. 用户要求实质修改时，把意见冻结为 revision request，绑定 current base identity并创建新 attempt。attempt 是版本边界，不是执行者边界：上一 attempt 的 `contentDrafting` child 仍存在、idle、上一结果 completed 且 role contract 兼容时，优先 followup 原 child读取新 task/base/revision；原 child 不可用、失败、role 改变、修订升级为全面独立重写或用户明确要求换执行者时才 spawn 新 child。新 candidate 重新校验并生成新 identity、新 Markdown；旧版保留但判为 stale。
 6. 只有 current identity 获明确确认后才允许运行 `prepare_source.py`。准备包生成后，确定性复核 provisional 总时长、cue、scene、generation plan 与已确认方案一致，并说明它不是最终真实语音时钟。一致时直接创建正式项目，不再询问相同策略；出现实质差异时必须回到步骤 3 生成新审阅 artifact 并重新联合确认。
 
-脚本不提供“自动批准”参数，也不能从 JSON 或 Markdown 字段推断用户已经同意。是否允许调用 `prepare_source.py` 是代理在聊天层必须执行的人工关卡；技术验证不能冒充用户确认。联合确认前仍处于 draft scope，不存在正式 project；审阅文件只能位于 workspace 的 `drafts/<draft-id>/reviews/`，不得提前写入 `projects/<项目名>`。联合确认后的确定性准备、严格 round-trip 与一致性校验不新增第二次策略确认。
+内容准备脚本不批准草案，也不能从 JSON 或 Markdown 字段推断用户已经同意。是否允许调用 `prepare_source.py` 是 coordinator 在聊天层必须执行的初始人工关卡；技术验证不能冒充用户确认。`agentApprovalEnabled` 只控制正式项目在此关卡之后的批准主体，不能跳过联合确认。联合确认前仍处于 draft scope，不存在正式 project；审阅文件只能位于 workspace 的 `drafts/<draft-id>/reviews/`，不得提前写入 `projects/<项目名>`。联合确认后的确定性准备、严格 round-trip 与一致性校验不新增第二次策略确认。
+
+联合确认后，`agentApprovalEnabled=false` 或字段缺失继续使用现有人工 Gate；为 `true` 时，后续常规质量 Gate 由 coordinator AI 实际审阅 current artifact、决定通过或返工，并在通过时调用原批准动作。AI 必须真实查看图片、完整试听音频、完整观看视频；能力不足即 `BLOCKED`。`true` 还将 `reviewPolicy` 确定性派生为 `agent_first`，完整旁白阶段不再询问用户选择；`false` 时保留现行 `user_first|agent_first` 询问。Gate、current/stale、identity、child `approvalWritesAllowed:false` 与 runner 不自动批准的边界都不改变。
+
+即使启用代理批准，`unknown_external_outcome` 后可能重复的新外部请求、冻结计划之外的新费用/凭据/服务授权、版权授权，以及必须实质改变已冻结用户意图的修订，仍须单独询问用户。计划内正常有界调用和常规返工不打断用户；不为此增加 identity、manifest、状态机或专用恢复协议。
 
 ### Artifact-first 审阅与修订
 
@@ -261,6 +265,7 @@ topic/text 准备包创建正式项目时使用：
   --srt <draft-dir\source.srt> `
   --plan <draft-dir\generation-plan.json> `
   --background-music <enabled|disabled> `
+  --agent-approval <enabled|disabled> `
   --source-input <draft-dir\input.json> `
   --source-manifest <draft-dir\manifest.json>
 ```
@@ -279,13 +284,15 @@ source/source.srt
 
 ```powershell
 <ENV_PY> scripts/create_project.py --name <项目名> `
-  --srt <字幕.srt> --plan <已确认策略.json> --voiceover-mode disabled
+  --srt <字幕.srt> --plan <已确认策略.json> --voiceover-mode disabled `
+  --background-music <enabled|disabled> --agent-approval <enabled|disabled>
 
 <ENV_PY> scripts/create_project.py --name <项目名> `
-  --srt <字幕.srt> --plan <已确认策略.json>
+  --srt <字幕.srt> --plan <已确认策略.json> `
+  --background-music <enabled|disabled> --agent-approval <enabled|disabled>
 ```
 
-旧 v1/v2 项目没有 `contentSource` 时继续按传统 SRT 项目读取，不静默改写或强制升级。新建项目的旁白 provider 唯一读取 `config/voice-providers.local.json` 的 `activeProvider`；topic/text 的 content input 缺少 `voiceoverMode` 时由该配置自动补入，调用方传入不一致值则拒绝。需要静音时才显式使用 `--voiceover-mode disabled`。新项目把阶段 0 已确认的 BGM 选择写为 `project.json.backgroundMusic.enabled`；旧项目缺少该字段时等价于 `false`。Disabled/Edge/MiniMax 的字幕权威来源、样音、人工批准、渲染和最终交付合同保持不变。
+旧 v1/v2 项目没有 `contentSource` 时继续按传统 SRT 项目读取，不静默改写或强制升级。新建项目的旁白 provider 唯一读取 `config/voice-providers.local.json` 的 `activeProvider`；topic/text 的 content input 缺少 `voiceoverMode` 时由该配置自动补入，调用方传入不一致值则拒绝。需要静音时才显式使用 `--voiceover-mode disabled`。新项目把初始确认中的两个独立选择分别写为 `project.json.backgroundMusic.enabled` 与顶层布尔值 `project.json.agentApprovalEnabled`；旧项目缺少任一字段时，该字段分别等价于 `false`。传统 SRT 在首次分镜确认时一并冻结并传入这两个值，不新增 Gate。Disabled/Edge/MiniMax 的字幕权威来源、样音、质量批准、渲染和最终交付合同保持不变。
 
 ## stale、恢复与失败语义
 
@@ -310,7 +317,7 @@ source/source.srt
 | 2 | content draft、参数、SRT、plan、manifest 或绑定无效 |
 | 3 | Edge 外部请求失败或重试耗尽；确定性内容准备本身不应访问网络 |
 | 4 | 后续 FFmpeg、ffprobe、字体、ASS、WAV 或媒体验证失败 |
-| 5 | stale、identity 不匹配或缺少人工批准 |
+| 5 | stale、identity 不匹配或缺少所需批准 |
 
 ## 验收与报告边界
 
@@ -319,8 +326,8 @@ source/source.srt
 fixture PASS 不证明以下事项已经通过：
 
 - 用户已经确认某份具体内容草案；
-- 微软 Edge 服务当前可用或某个 voice/rate 已被用户接受；
+- 微软 Edge 服务当前可用或某个 voice/rate 已被当前批准主体接受；
 - 真实图片 provider 可用或线稿审美合格；
-- 完整旁白、最终字幕 contact sheet 或最终成片已经过人工确认。
+- 完整旁白、最终字幕 contact sheet 或最终成片已经过用户亲自批准或 AI 代理批准。
 
-未实际执行的真实 provider 和人工关卡必须明确写为 SKIP、BLOCKED 或待用户确认，不能声称 PASS。内容与制作方案联合确认只允许进入 source 准备、确定性 round-trip 与一致时的正式建项；它不替代样音、完整旁白试听与真实时长批准、线稿、annotation review bundle、scene review bundle、正式字幕烧录/contact sheet 或最终成片批准。annotation 的内容/区域/时序在一次持久化联合批准中确认，全部正式单幕在一次持久化有序 bundle 批准中确认；clean master 只作为技术中间工件，不设独立人工确认。
+未实际执行的真实 provider 和质量 Gate 必须明确写为 SKIP、BLOCKED 或待确认，不能声称 PASS。内容与制作方案联合确认只允许进入 source 准备、确定性 round-trip 与一致时的正式建项；它不替代样音、完整旁白试听与真实时长批准、线稿、annotation review bundle、scene review bundle、正式字幕烧录/contact sheet 或最终成片批准，只在 `agentApprovalEnabled=true` 时把这些后续 Gate 的批准主体委托给 coordinator AI。annotation 的内容/区域/时序在一次持久化联合批准中确认，全部正式单幕在一次持久化有序 bundle 批准中确认；clean master 只作为技术中间工件，不设独立确认。

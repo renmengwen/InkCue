@@ -8,6 +8,7 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import uuid
@@ -314,6 +315,86 @@ def _sample_identity(plan: Mapping[str, Any], text: str, media: Mapping[str, Any
     )
 
 
+def _sample_review_paths(
+    paths: Mapping[str, Path], plan: Mapping[str, Any], identity: str
+) -> tuple[Path, Path]:
+    voice = str(plan["selection"]["voice"])
+    safe_voice = re.sub(r"[^A-Za-z0-9._-]+", "_", voice).strip("._-")[:64] or "voice"
+    review_audio = paths["sample"].with_name(
+        f"voice-sample-{safe_voice}-{identity[:12]}.wav"
+    )
+    return review_audio, review_audio.with_suffix(".audit.json")
+
+
+def _publish_sample_review_artifacts(
+    paths: Mapping[str, Path],
+    plan: Mapping[str, Any],
+    media: Mapping[str, Any],
+    identity: str,
+) -> tuple[Path, Path]:
+    """发布不可变样音试听副本，避免播放器按 canonical 路径缓存旧音频。"""
+
+    review_audio, audit_path = _sample_review_paths(paths, plan, identity)
+    source = paths["sample"]
+    expected_sha = str(media["sha256"])
+    expected_bytes = int(media["bytes"])
+    if review_audio.exists():
+        if review_audio.stat().st_size != expected_bytes or sha256_file(review_audio) != expected_sha:
+            raise VoiceoverStateError("样音 review identity 文件发生字节冲突")
+    else:
+        review_audio.parent.mkdir(parents=True, exist_ok=True)
+        temporary = review_audio.with_name(f".{review_audio.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with source.open("rb") as input_handle, temporary.open("xb") as output_handle:
+                shutil.copyfileobj(input_handle, output_handle)
+                output_handle.flush()
+                os.fsync(output_handle.fileno())
+            if temporary.stat().st_size != expected_bytes or sha256_file(temporary) != expected_sha:
+                raise VoiceoverStateError("样音 review 临时副本与 current WAV 不一致")
+            os.replace(temporary, review_audio)
+        finally:
+            temporary.unlink(missing_ok=True)
+    if review_audio.stat().st_size != expected_bytes or sha256_file(review_audio) != expected_sha:
+        raise VoiceoverStateError("样音 review 发布后 SHA/bytes 核对失败")
+
+    selection = plan["selection"]
+    provider = plan["provider"]
+    audit = {
+        "schemaVersion": 1,
+        "contractVersion": "sample-request-audit-v1",
+        "provider": provider["id"],
+        "model": provider.get("options", {}).get("model"),
+        "request": {
+            "voiceId": selection["voice"],
+            "rate": selection["rate"],
+            "volume": selection["volume"],
+            "pitch": selection["pitch"],
+        },
+        "providerResponse": {
+            "voiceIdEchoAvailable": False,
+            "voiceIdEcho": None,
+        },
+        "sample": {
+            "identitySha256": identity,
+            "canonicalFile": "previews/voice-sample.wav",
+            "reviewFile": f"previews/{review_audio.name}",
+            "audioSha256": expected_sha,
+            "bytes": expected_bytes,
+            "durationMs": media["durationMs"],
+            "approved": False,
+        },
+        "containsCredentials": False,
+        "containsNarrationText": False,
+    }
+    if audit_path.exists():
+        current_audit = _read_json(audit_path, "sample request audit")
+        if current_audit != audit:
+            raise VoiceoverStateError("样音 request audit identity 文件发生内容冲突")
+    else:
+        write_json_atomic(audit_path, audit)
+    return review_audio, audit_path
+
+
 def _write_manifest(path: Path, manifest: Mapping[str, Any], plan: Mapping[str, Any], units: Sequence[Mapping[str, Any]]) -> None:
     candidate = copy.deepcopy(dict(manifest))
     candidate["updatedAt"] = _now()
@@ -367,7 +448,7 @@ def _sample(
     provider_config: Mapping[str, Any] | None = None,
     adapter: ProviderAdapter,
     normalizer: Callable[..., CanonicalAudioResult],
-) -> tuple[str, str]:
+) -> tuple[str, str, str, str, str]:
     plan, units = _build_plan_and_units(
         project, voice=voice, rate=rate, provider_id=provider_id, provider_config=provider_config
     )
@@ -386,6 +467,9 @@ def _sample(
     media = _media_dict(result)
     media["file"] = "previews/voice-sample.wav"
     identity = _sample_identity(plan, text, media)
+    review_audio, audit_path = _publish_sample_review_artifacts(
+        paths, plan, media, identity
+    )
     manifest["sample"] = {
         "status": "validated",
         "text": text,
@@ -398,7 +482,13 @@ def _sample(
     )
     write_json_atomic(paths["plan"], plan)
     _write_manifest(paths["manifest"], manifest, plan, units)
-    return str(paths["sample"].resolve()), identity
+    return (
+        str(paths["sample"].resolve()),
+        identity,
+        str(review_audio.resolve()),
+        str(audit_path.resolve()),
+        str(media["sha256"]),
+    )
 
 
 def _canonical_validator_receipt(result: CanonicalAudioResult) -> dict[str, Any]:
@@ -1512,6 +1602,23 @@ def _approve_full(
     return identity_hash
 
 
+def _resolve_full_approval_review_policy(
+    project: Project,
+    requested: str | None,
+) -> str:
+    if project.agent_approval_enabled:
+        if requested == "user_first":
+            raise ProjectValidationError(
+                "agentApprovalEnabled=true 与 reviewPolicy=user_first 冲突"
+            )
+        return "agent_first"
+    if requested is None:
+        raise ProjectValidationError(
+            "人工批准模式必须显式提供 --review-policy user_first|agent_first"
+        )
+    return requested
+
+
 def _status(project: Project) -> dict[str, Any]:
     paths = _voice_paths(project)
     payload: dict[str, Any] = {
@@ -1565,8 +1672,10 @@ def _parser() -> argparse.ArgumentParser:
     approve_full.add_argument(
         "--review-policy",
         choices=("user_first", "agent_first"),
-        required=True,
-        help="冻结后续图片、annotation 和 scene bundle 的检查顺序",
+        help=(
+            "冻结后续图片、annotation 和 scene bundle 的检查顺序；"
+            "agentApprovalEnabled=true 时可省略并确定性采用 agent_first"
+        ),
     )
     status = sub.add_parser("status", help="只读输出旁白状态")
     status.add_argument("--project", required=True, type=Path)
@@ -1599,7 +1708,7 @@ def main(
                 raise VoiceoverStateError(
                     "activeProvider 必须与项目 voiceoverMode 一致；请使用匹配的项目"
                 )
-            audio, identity = _sample(
+            audio, identity, review_audio, request_audit, audio_sha256 = _sample(
                 project, voice=voice, rate=rate, provider_id=provider_id,
                 provider_config=provider_config,
                 adapter=adapter or (_adapter_from_plan(_build_plan_and_units(
@@ -1609,6 +1718,10 @@ def main(
                 normalizer=normalizer or normalize_and_publish,
             )
             print(f"SAMPLE_AUDIO={audio}")
+            print(f"SAMPLE_REVIEW_AUDIO={review_audio}")
+            print(f"SAMPLE_REQUEST_AUDIT={request_audit}")
+            print(f"SAMPLE_VOICE_ID={voice}")
+            print(f"SAMPLE_AUDIO_SHA256={audio_sha256}")
             print(f"SAMPLE_IDENTITY={identity}")
         elif args.command == "approve-sample":
             identity = _approve_sample(project, args.identity_hash)
@@ -1624,14 +1737,17 @@ def main(
             print(f"FULL_AUDIO={project.path('audio/narration.wav')}")
             print(f"FULL_IDENTITY={identity}")
         elif args.command == "approve-full":
+            review_policy = _resolve_full_approval_review_policy(
+                project, args.review_policy
+            )
             identity = _approve_full(
                 project,
                 args.identity_hash,
                 args.duration_decision,
-                args.review_policy,
+                review_policy,
             )
             print(f"FULL_APPROVED_IDENTITY={identity}")
-            print(f"REVIEW_POLICY={args.review_policy}")
+            print(f"REVIEW_POLICY={review_policy}")
             print(f"TIMING_PLAN={project.timing_plan_path}")
         else:
             print(json.dumps(_status(project), ensure_ascii=False, sort_keys=True))

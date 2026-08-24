@@ -63,7 +63,13 @@ class VoiceoverCliTests(unittest.TestCase):
         cls._drive_patcher.stop()
         cls._temporary_root.cleanup()
 
-    def make_project(self, cue_count: int = 2, voiceover_mode: str = "edge-tts"):
+    def make_project(
+        self,
+        cue_count: int = 2,
+        voiceover_mode: str = "edge-tts",
+        *,
+        agent_approval_enabled: bool = False,
+    ):
         case = self.root / uuid.uuid4().hex[:8]
         case.mkdir()
         config = case / "workspace.json"
@@ -97,7 +103,11 @@ class VoiceoverCliTests(unittest.TestCase):
             ],
         }
         return ProjectWorkspace.from_config(config).create_project(
-            f"v-{uuid.uuid4().hex[:8]}", source, confirmed_plan=plan, voiceover_mode=voiceover_mode
+            f"v-{uuid.uuid4().hex[:8]}",
+            source,
+            confirmed_plan=plan,
+            voiceover_mode=voiceover_mode,
+            agent_approval_enabled=agent_approval_enabled,
         )
 
     def execution_config(self, project, *, voice_generation: int) -> WorkspaceConfig:
@@ -128,6 +138,29 @@ class VoiceoverCliTests(unittest.TestCase):
             self.assertEqual(voice_main(["sample", "--project", str(project.root)], adapter=sample_adapter), 0)
         text = output.getvalue()
         self.assertIn("SAMPLE_AUDIO=", text)
+        review_audio = Path(next(
+            line.split("=", 1)[1]
+            for line in text.splitlines()
+            if line.startswith("SAMPLE_REVIEW_AUDIO=")
+        ))
+        request_audit = Path(next(
+            line.split("=", 1)[1]
+            for line in text.splitlines()
+            if line.startswith("SAMPLE_REQUEST_AUDIT=")
+        ))
+        self.assertTrue(review_audio.is_file())
+        self.assertTrue(request_audit.is_file())
+        self.assertEqual(
+            review_audio.read_bytes(),
+            project.path("previews/voice-sample.wav").read_bytes(),
+        )
+        audit = json.loads(request_audit.read_text(encoding="utf-8"))
+        self.assertEqual(audit["request"]["voiceId"], "zh-CN-YunjianNeural")
+        self.assertFalse(audit["providerResponse"]["voiceIdEchoAvailable"])
+        self.assertFalse(audit["containsCredentials"])
+        self.assertFalse(audit["containsNarrationText"])
+        self.assertIn("SAMPLE_VOICE_ID=zh-CN-YunjianNeural", text)
+        self.assertIn("SAMPLE_AUDIO_SHA256=", text)
         identity = next(line.split("=", 1)[1] for line in text.splitlines() if line.startswith("SAMPLE_IDENTITY="))
         manifest_path = project.path("manifests/voice-manifest.json")
         before = manifest_path.read_bytes()
@@ -159,6 +192,15 @@ class VoiceoverCliTests(unittest.TestCase):
         self.assertEqual(
             voice_main([
                 "approve-full", "--project", str(project.root),
+                "--identity-hash", full_identity,
+            ]),
+            2,
+        )
+        self.assertEqual(project.timing_plan_path.read_bytes(), timing_before)
+        self.assertEqual(manifest_path.read_bytes(), manifest_before)
+        self.assertEqual(
+            voice_main([
+                "approve-full", "--project", str(project.root),
                 "--identity-hash", "f" * 64,
                 "--review-policy", "user_first",
             ]), 5
@@ -183,6 +225,56 @@ class VoiceoverCliTests(unittest.TestCase):
         with self.assertRaisesRegex(workspace_module.ProjectValidationError, "不一致"):
             workspace_module.resolve_project_review_policy(project, "user_first")
         self.assertNotIn("reviewIdentityHash", manifest["fullApproval"])
+
+    def test_agent_approval_approve_full_derives_only_agent_first(self) -> None:
+        project = self.make_project(agent_approval_enabled=True)
+        self.sample_and_approve(project)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(
+                voice_main(
+                    ["full", "--project", str(project.root)],
+                    adapter=FakeProviderAdapter(canonical_wav_bytes(), "audio/wav"),
+                ),
+                0,
+            )
+        full_identity = next(
+            line.split("=", 1)[1]
+            for line in output.getvalue().splitlines()
+            if line.startswith("FULL_IDENTITY=")
+        )
+        manifest_path = project.path("manifests/voice-manifest.json")
+        timing_before = project.timing_plan_path.read_bytes()
+        manifest_before = manifest_path.read_bytes()
+
+        self.assertEqual(
+            voice_main([
+                "approve-full", "--project", str(project.root),
+                "--identity-hash", full_identity,
+                "--review-policy", "user_first",
+            ]),
+            2,
+        )
+        self.assertEqual(project.timing_plan_path.read_bytes(), timing_before)
+        self.assertEqual(manifest_path.read_bytes(), manifest_before)
+
+        approval_output = io.StringIO()
+        with redirect_stdout(approval_output):
+            self.assertEqual(
+                voice_main([
+                    "approve-full", "--project", str(project.root),
+                    "--identity-hash", full_identity,
+                ]),
+                0,
+            )
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["fullApproval"]["reviewPolicy"], "agent_first")
+        self.assertIn("REVIEW_POLICY=agent_first", approval_output.getvalue())
+        self.assertEqual(
+            workspace_module.resolve_project_review_policy(project), "agent_first"
+        )
+        with self.assertRaisesRegex(workspace_module.ProjectValidationError, "冲突"):
+            workspace_module.resolve_project_review_policy(project, "user_first")
 
     def test_minimax_mode_uses_shared_sample_full_timeline_gate_with_fake_adapter(self) -> None:
         project = self.make_project(voiceover_mode="minimax")
