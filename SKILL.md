@@ -78,7 +78,7 @@ topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经�
 12. image validation 每张 PNG 同一打开周期只完整解码一次；voice deep validation、timeline、SRT、累计帧、identity、binding 和 approval 仍按合同串行/有界，证据缺失或 bytes 变化不得降级为 binding PASS。
 13. 正式成片永远烧录字幕：disabled 为 H.264、0 音频且使用 source SRT；Edge/MiniMax 为 H.264 + AAC 旁白且使用 current narration SRT。旁白项目 `backgroundMusic.enabled=true` 时，最终封装在同一路 AAC 中按固定 `-15 dB` 混入内置 CC0 BGM；关闭或旧项目缺字段时保持原旁白封装。旁白模式缺少 current narration SRT/timeline/full approval/identity 必须失败，不能回退 source SRT。
 14. 任一输入、旁白文本/分段、scene mapping、imagePrompt、音频/timing/render binding、annotation/reveal、scene 集合/顺序、手部素材 `handSha256`、字幕 preset/字体/SRT 或 clean/final SHA 变化，按 [references/recovery-and-identity.md](references/recovery-and-identity.md) 使受影响 identity 和批准 stale；历史 stale 证据不得作为 current 输入。
-15. 每次进入工作区前先用 `prepare_env.py --check-workspace-access` 完成真实 create/write/flush/read/delete 预检。宿主 `CreateProcess rejected by policy` 与 Windows 文件写入拒绝必须分开报告；UI 刚切换权限时在新回合重跑预检，不用复杂 shell 写删命令试探。
+15. 每次进入工作区前先用当前可启动的 Python 运行 `prepare_env.py --check-workspace-access`，完成真实 create/write/flush/read/delete 预检；随后在任何业务脚本、导入探测或渲染启动前运行 `python scripts/prepare_env.py --check`，读取末行 `ENV_PY=<绝对解释器路径>`。若仅因专用环境或依赖尚未就绪而失败，运行不带 `--check` 的同一脚本完成准备并重新读取 `ENV_PY`。本次任务后续每条 Python 命令都必须直接调用该绝对路径；不得使用裸 `python`、`py`、shebang 或不会跨工具调用持久化的临时 shell 变量先试跑再回退，也不得把系统 Python 缺少 `cv2` 误报成 OpenCV 未安装。宿主 `CreateProcess rejected by policy` 与 Windows 文件写入拒绝必须分开报告；UI 刚切换权限时在新回合重跑预检，不用复杂 shell 写删命令试探。
 16. 旁白项目的 `approve-full` 必须显式带 `--review-policy user_first|agent_first` 并写入 `fullApproval.reviewPolicy`；后续线稿、annotation preview 和 scene review 自动继承且拒绝冲突值。`agentApprovalEnabled=true` 时由项目授权确定性派生 `agent_first`，不得再次询问或接受冲突值；为 `false`/缺失时仍由用户选择，不得静默采用默认策略。
 
 ## current、stale 与恢复摘要
@@ -134,8 +134,11 @@ coordinator 必须运行 `serve_preview.py --ensure --project <项目根目录>`
 
 ```powershell
 # 环境与输入准备
-<ENV_PY> scripts/prepare_env.py --check-workspace-access
-<ENV_PY> scripts/prepare_env.py
+python scripts/prepare_env.py --check-workspace-access
+python scripts/prepare_env.py --check
+# 上一步仅因专用环境或依赖缺失而失败时：
+python scripts/prepare_env.py
+# 捕获末行 ENV_PY；后续每次工具调用都直接使用该绝对路径，不用裸 python/py
 <ENV_PY> scripts/prepare_draft_agent_task.py contentDrafting --content-input <input.json> --draft-root <draft-root>
 <ENV_PY> scripts/validate_content_draft.py --stdin
 <ENV_PY> scripts/prepare_draft_agent_task.py storyboardPlanning --draft-root <draft-root> --source-srt <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 35

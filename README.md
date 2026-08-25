@@ -135,10 +135,19 @@ create/write/flush/read/delete。`workspace_write_denied` 表示当前进程或 
 ### 3. 准备运行环境
 
 ```powershell
+python scripts\prepare_env.py --check
+# 如果只因专用环境尚未建立或依赖缺失而失败，再运行：
 python scripts\prepare_env.py
 ```
 
-命令最后会输出 `ENV_PY=<解释器路径>`。需要 Edge TTS 时：
+命令最后会输出 `ENV_PY=<绝对解释器路径>`。从这里开始，所有业务脚本（尤其是
+annotation preview、scene render、合并、字幕和最终验证）都必须直接使用这个绝对路径，
+不能先用裸 `python`、`py` 或 shebang 试跑再失败后回退。不同 Codex 工具调用之间不要假设
+临时 PowerShell 变量仍然存在；应在同一调用中重新声明变量，或直接调用绝对路径。
+
+例如，系统的 `python` 可以只负责运行上述标准库环境引导脚本；OpenCV、NumPy、PyAV 和
+Pillow 安装在 `D:\SRTWhiteboard\runtime\.venv` 时，系统 Python 没有 `cv2` 不表示 OpenCV
+未安装，也不应触发一次预期中的失败。需要 Edge TTS 时：
 
 ```powershell
 $envPy = "D:\SRTWhiteboard\runtime\.venv\Scripts\python.exe"

@@ -61,6 +61,21 @@ class DocumentationContractTests(unittest.TestCase):
             with self.subTest(status=status):
                 self.assertIn(status, readme)
 
+    def test_runtime_interpreter_is_resolved_before_business_commands(self) -> None:
+        skill = read_document("SKILL.md")
+        readme = read_document("README.md")
+
+        for document in (skill, readme):
+            with self.subTest(document="SKILL.md" if document is skill else "README.md"):
+                self.assertIn("python scripts/prepare_env.py --check", document.replace("\\", "/"))
+                self.assertIn("ENV_PY", document)
+                self.assertIn("绝对路径", document)
+                self.assertIn("裸 `python`", document)
+
+        self.assertIn("任何业务脚本、导入探测或渲染启动前", skill)
+        self.assertIn("不得把系统 Python 缺少 `cv2` 误报成 OpenCV 未安装", skill)
+        self.assertIn("不同 Codex 工具调用之间不要假设", readme)
+
     def test_content_image_prompt_mapping_to_formal_prompt_is_documented(self) -> None:
         image_generation = read_document("references/image-generation.md")
         orchestration = read_document("references/subagent-orchestration.md")
