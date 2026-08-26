@@ -13,7 +13,7 @@ InkCue（墨序）可以把主题、正文或 SRT 制作为 1920x1080、60fps �
 ## 核心能力
 
 - 支持 `topic`、`text`、`srt` 三种输入。
-- 支持静音成片、Edge TTS 和 MiniMax 中文旁白。
+- 支持静音成片、Edge TTS、MiniMax 和豆包语音中文旁白。
 - 按字幕事件和全局帧边界依次落墨，而不是一次性显示整张图片。
 - 支持 OpenAI Images Generations 兼容的图片服务。
 - 提供标注预览、局部重做、断点恢复和 stale 检查。
@@ -31,8 +31,8 @@ InkCue（墨序）可以把主题、正文或 SRT 制作为 1920x1080、60fps �
 | `text` | 保留原文或润色 | 自动读取 `activeProvider` |
 
 topic/text 的旁白 provider 不需要用户选择。skill 始终读取自身目录
-`config/voice-providers.local.json` 的 `activeProvider`，自动冻结为 `edge-tts` 或
-`minimax`；缺少 `voiceoverMode` 的内容输入会自动补入该值，传入不一致值会被拒绝。
+`config/voice-providers.local.json` 的 `activeProvider`，自动冻结为 `edge-tts`、
+`minimax` 或 `doubao`；缺少 `voiceoverMode` 的内容输入会自动补入该值，传入不一致值会被拒绝。
 只有明确要求静音时，传统 SRT 才显式使用 `--voiceover-mode disabled`。
 
 最终的 `output/final.mp4` 始终带烧录字幕：
@@ -40,7 +40,7 @@ topic/text 的旁白 provider 不需要用户选择。skill 始终读取自身�
 | 模式 | 时间轴与字幕 | 最终媒体 |
 |---|---|---|
 | `disabled` | 原始 `source/source.srt` | H.264，静音 |
-| `edge-tts` / `minimax` | 已批准的真实音频时间轴和 `audio/narration.srt` | H.264 + AAC 旁白 |
+| `edge-tts` / `minimax` / `doubao` | 已批准的真实音频时间轴和 `audio/narration.srt` | H.264 + AAC 旁白 |
 
 非 SRT 输入的目标时长必须在 15 到 600 秒之间。Edge TTS 不需要 API Key，但需要访问微软在线语音服务。
 
@@ -61,7 +61,7 @@ coordinator 代理批准。topic/text 在同一次“内容与制作方案联合
         v
 严格 SRT + generation plan + timing plan
         |
-        +---- Edge TTS 样音与完整旁白质量确认
+        +---- 在线 provider 样音与完整旁白质量确认
         |
         v
 线稿确认 -> 区域标注与预览确认 -> 正式多幕有界并行 -> 场景联合确认
@@ -118,7 +118,9 @@ Copy-Item config\voice-providers.example.json config\voice-providers.local.json
 }
 ```
 
-真实 API Key 只能保存在被 `.gitignore` 排除的 `*.local.json` 中。
+真实 API Key 只能保存在被 `.gitignore` 排除的 `*.local.json` 中。启用豆包语音时，把
+`activeProvider` 设为 `doubao`，并只在 `providers.doubao` 的本地副本中补入 `apiKey` 与
+控制台提供的实际 `voice`（音色 ID）；示例文件中的 `YOUR_DOUBAO_SPEAKER_ID` 不是可调用音色。
 
 先单独验证当前回合是否真的能写目标工作区：
 
@@ -243,7 +245,7 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 # generation plan 顺序；不得用目录枚举、完成顺序或旧日志自行拼接输入。
 & $envPy scripts\merge_scenes.py --project <项目根目录> --inputs <场景视频...>
 & $envPy scripts\burn_subtitles.py --project <项目根目录>
-# 仅 Edge TTS / MiniMax：
+# 仅 Edge TTS / MiniMax / 豆包语音：
 & $envPy scripts\mux_voiceover.py --project <项目根目录>
 & $envPy scripts\validate_final_media.py --project <项目根目录>
 # 推荐：scene bundle 已批准后，用一个确定性 runner 连续完成上述全部技术步骤：
@@ -257,7 +259,7 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 
 上述三个阶段都支持 `--review-policy user_first|agent_first`。`agentApprovalEnabled=true` 时由项目授权确定性派生并冻结 `agent_first`；为 `false`/缺失时，旁白项目仍须在 `approve-full` 时由用户显式选择并冻结。后续不传参时自动继承，显式传入冲突值会 fail-closed，不能静默改回 `user_first`。旧项目若已有批准但缺少该字段，应对 current `FULL_IDENTITY` 重新执行一次带 `--review-policy` 的 `approve-full`。线稿验证成功后自动生成 `reviews/line-art-review-<identity>.md` 与 current technical manifest，主窗口只交付文件链接、identity 和异常摘要。`user_first` 在必要技术校验后记录 `semanticReview.status=skipped_by_user` 并直接交给用户；`agent_first` 只准备宿主可消费的 spawn package，由 child 通过 findings/result 文件交接完整意见，本身不自动批准。只有项目同时明确 `agentApprovalEnabled=true` 时，coordinator 才可在亲自审阅 current artifact 后写“AI 代理批准”；人工模式仍保留用户确认关卡。
 
-Edge TTS / MiniMax 的样音、完整旁白和真实时长流程见 [语音合同](references/voiceover.md)。人工批准、annotation candidate 和恢复流程的完整命令见 [SKILL.md](SKILL.md)。
+Edge TTS / MiniMax / 豆包语音的样音、完整旁白和真实时长流程见 [语音合同](references/voiceover.md)。人工批准、annotation candidate 和恢复流程的完整命令见 [SKILL.md](SKILL.md)。
 
 ### Phase 4 可选 coordinator runner
 
@@ -287,7 +289,7 @@ runner 中断后可直接恢复，也可退回逐步 CLI；保留 current bindin
 - [`workspace.example.json`](config/workspace.example.json)：首次运行的全 `1` 安全基线，不主动增加外部请求或本机负载。
 - [`workspace.performance.example.json`](config/workspace.performance.example.json)：性能配置示例，只能作为测量后调优的起点，不是默认配置。
 - [`image-providers.example.json`](config/image-providers.example.json)：图片服务配置模板。
-- [`voice-providers.example.json`](config/voice-providers.example.json)：Edge TTS / MiniMax 配置模板。
+- [`voice-providers.example.json`](config/voice-providers.example.json)：Edge TTS / MiniMax / 豆包语音配置模板。
 
 `execution.agents` 控制 Codex 子任务并发，`execution.concurrency` 控制本地 worker；两者是独立资源池。首次运行直接使用 `workspace.example.json` 的全 `1` 安全基线。`workspace.performance.example.json` 中高于 `1` 的值只是性能示例；启用前需基于实际测量评估 CPU、内存、磁盘、provider 限流和费用。`sceneRender` 已是当前正式多幕能力，但不承诺某个固定值一定最快；它只改变运行调度和审计，不进入作品 identity。
 
@@ -299,7 +301,7 @@ runner 中断后可直接恢复，也可退回逐步 CLI；保留 current bindin
 |-- source/source.srt
 |-- planning/                 # generation、timing、voice plan
 |-- scenes/                   # 图片、annotation、单幕视频
-|-- audio/                    # Edge 旁白、SRT、timeline
+|-- audio/                    # provider 旁白、SRT、timeline
 |-- previews/
 |-- reviews/                  # identity 绑定的线稿 Markdown 交接
 |-- manifests/
@@ -347,7 +349,7 @@ $runtimePython = "D:\SRTWhiteboard\runtime\.venv\Scripts\python.exe"
 
 - 当前仅支持 Windows，并要求 `D:` 盘工作区和 Microsoft YaHei。
 - 只实现软件编码，尚未接入 NVENC、QSV 或 AMF。
-- topic/text 只支持 Edge TTS 或 MiniMax，不支持静音模式。
+- topic/text 只支持 Edge TTS、MiniMax 或豆包语音，不支持静音模式。
 - 图片 provider 当前只支持 OpenAI Images Generations 兼容协议。
 - 视觉标注仍需要具备图片理解能力的 Agent 或人工处理。
 

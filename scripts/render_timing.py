@@ -162,14 +162,14 @@ def build_formal_validation_context(project: Project) -> FormalValidationContext
     active = copy.deepcopy(project.timing_plan["activeTimeline"])
     audio_sha: str | None = None
     approval_identity: str | None = None
-    if project.voiceover_mode in {"edge-tts", "minimax"}:
+    if project.voiceover_mode in {"edge-tts", "minimax", "doubao"}:
         if active.get("kind") not in {"edge-tts-audio-timeline", "audio-authoritative-timeline"}:
             raise RenderTimingError("正式音频渲染只接受 current audio timeline timing plan")
         audio_sha, approval_identity = _validate_audio_approval(project)
     elif active.get("kind") != "source-srt":
         raise RenderTimingError("Disabled 正式渲染只接受 current source-srt timing plan")
     voice_manifest_sha: str | None = None
-    if project.voiceover_mode in {"edge-tts", "minimax"}:
+    if project.voiceover_mode in {"edge-tts", "minimax", "doubao"}:
         voice_manifest = project.path("manifests/voice-manifest.json")
         if voice_manifest.is_file():
             voice_manifest_sha = sha256_file(voice_manifest)
@@ -331,7 +331,7 @@ def validate_formal_context_current(
         raise RenderTimingError("batch 期间 render profile 已变化")
     if project.timing_plan.get("activeTimeline") != context.active_timeline:
         raise RenderTimingError("batch 期间 active timeline 已变化")
-    if project.voiceover_mode in {"edge-tts", "minimax"}:
+    if project.voiceover_mode in {"edge-tts", "minimax", "doubao"}:
         audio_path = project.path("audio/narration.wav")
         if not audio_path.is_file() or sha256_file(audio_path) != context.audio_sha256:
             raise RenderTimingError("batch 期间 current narration.wav 已变化")
@@ -598,7 +598,7 @@ def _validate_timing_source(
     for key, expected in expected_common.items():
         if source.get(key) != expected:
             raise RenderTimingError(f"annotation timingSource.{key} 与 current timing plan 不一致")
-    if project.voiceover_mode in {"edge-tts", "minimax"}:
+    if project.voiceover_mode in {"edge-tts", "minimax", "doubao"}:
         if source.get("audioSha256") != audio_sha256:
             raise RenderTimingError("annotation timingSource.audioSha256 与 current narration.wav 不一致")
     elif "audioSha256" in source and source.get("audioSha256") not in (None, ""):

@@ -191,11 +191,37 @@ class EdgeDeliveryE2ETests(unittest.TestCase):
         argv = ["full", "--project", str(self.project_root)]
         if retry:
             argv.append("--retry-failed")
+        source_cues = generate_voiceover.parse_srt(
+            (self.project_root / "source" / "source.srt").read_text(encoding="utf-8-sig")
+        )
+
+        def asr_runner(_project, _narration_path: Path) -> Path:
+            asr_path = self.project_root / ".work" / "e2e-asr" / "result.srt"
+            asr_path.parent.mkdir(parents=True, exist_ok=True)
+            asr_path.write_text(
+                generate_voiceover.serialize_srt(
+                    [
+                        {
+                            "originalIndex": index,
+                            "startMs": (index - 1) * 1017,
+                            "endMs": index * 1017,
+                            "text": cue["text"],
+                        }
+                        for index, cue in enumerate(source_cues, start=1)
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            return asr_path
+
         with contextlib.redirect_stdout(output):
             code = voice_main(
                 argv,
                 adapter=adapter
-                or FakeProviderAdapter(_canonical_wav_bytes(1017), "audio/wav"),
+                or FakeProviderAdapter(
+                    _canonical_wav_bytes(1017 * len(source_cues)), "audio/wav"
+                ),
+                asr_runner=asr_runner,
             )
         self.assertEqual(code, 0)
         return _identity(output.getvalue(), "FULL_IDENTITY")

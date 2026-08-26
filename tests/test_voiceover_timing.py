@@ -157,10 +157,38 @@ class VoiceoverTimingTests(unittest.TestCase):
             self.assertEqual(voice_main(["sample", "--project", str(project.root)], adapter=adapter), 0)
         sample_identity = next(line.split("=", 1)[1] for line in sample_output.getvalue().splitlines() if line.startswith("SAMPLE_IDENTITY="))
         self.assertEqual(voice_main(["approve-sample", "--project", str(project.root), "--identity-hash", sample_identity]), 0)
+        source_cues = parse_srt(
+            project.path("source/source.srt").read_text(encoding="utf-8-sig")
+        )
+        full_duration_ms = wav_ms * len(source_cues)
+
+        def asr_runner(_project, _narration_path: Path) -> Path:
+            asr_path = project.path(".work/timing-asr/result.srt")
+            asr_path.parent.mkdir(parents=True, exist_ok=True)
+            asr_path.write_text(
+                voice_module.serialize_srt(
+                    [
+                        {
+                            "originalIndex": index,
+                            "startMs": (index - 1) * wav_ms,
+                            "endMs": index * wav_ms,
+                            "text": cue["text"],
+                        }
+                        for index, cue in enumerate(source_cues, start=1)
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            return asr_path
+
         full_output = io.StringIO()
         with redirect_stdout(full_output):
             self.assertEqual(
-                voice_main(["full", "--project", str(project.root)], adapter=FakeProviderAdapter(canonical_wav_bytes(wav_ms), "audio/wav")),
+                voice_main(
+                    ["full", "--project", str(project.root)],
+                    adapter=FakeProviderAdapter(canonical_wav_bytes(full_duration_ms), "audio/wav"),
+                    asr_runner=asr_runner,
+                ),
                 0,
             )
         lines = full_output.getvalue().splitlines()
@@ -228,7 +256,11 @@ class VoiceoverTimingTests(unittest.TestCase):
         output = io.StringIO()
         with redirect_stdout(output):
             self.assertEqual(
-                voice_main(["full", "--project", str(project.root)], adapter=no_call),
+                voice_main(
+                    ["full", "--project", str(project.root)],
+                    adapter=no_call,
+                    asr_runner=lambda _project, _audio: narration_path,
+                ),
                 0,
             )
         second_identity = next(

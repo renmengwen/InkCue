@@ -25,7 +25,7 @@ topic/text 的正式时钟由获批真实音频 timeline 接管。
 
 1. coordinator 冻结输入模式、rewritePolicy、target，并在同一次确认中确定 BGM、后续批准方式与 `imageGenerationMode`；旁白 provider 不询问用户，始终
    读取 skill 根目录 `config/voice-providers.local.json` 的 `activeProvider`，规范化后自动
-   冻结为 `voiceoverMode=edge-tts` 或 `voiceoverMode=minimax`。review 只展示当前已采用的
+   冻结为 `voiceoverMode=edge-tts`、`voiceoverMode=minimax` 或 `voiceoverMode=doubao`。review 只展示当前已采用的
    provider；只有用户明确要求静音时，传统 SRT 才允许显式使用 `disabled`。BGM 只询问
    “加入/不加入”，不让用户配置曲目或混音参数；加入时固定使用内置 CC0 曲目、`-15 dB`、
    1.2 秒淡入、1.8 秒淡出和必要循环。后续批准只询问“逐阶段由我确认/委托 AI 自动判断并推进”，

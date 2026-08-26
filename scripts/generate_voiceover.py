@@ -42,6 +42,8 @@ try:
     from .srt_timeline import parse_srt, serialize_srt
     from .voiceover import (
         CancelledError,
+        FULL_TRACK_SEGMENTATION,
+        FULL_TRACK_SEGMENTATION_CONTRACT_VERSION,
         PermanentProviderError,
         ProviderAdapter,
         RetryableProviderError,
@@ -50,6 +52,7 @@ try:
         bind_synthesis_identities,
         build_voice_plan,
         create_voice_manifest,
+        plan_full_track_unit,
         plan_speech_units,
         synthesis_settings_from_plan,
         validate_voice_manifest,
@@ -59,6 +62,7 @@ try:
     # edge_tts_adapter intentionally imports the protocol through the
     # top-level alias installed by scripts.voiceover.
     from .edge_tts_adapter import EdgeTtsAdapter
+    from .doubao_adapter import DoubaoAdapter, DOUBAO_ENDPOINT, DOUBAO_PROVIDER_CONTRACT_VERSION
     from .minimax_adapter import MiniMaxAdapter, MINIMAX_PROVIDER_CONTRACT_VERSION
     from .voice_provider_config import VoiceProviderConfigError, active_provider_id, load_voice_provider_config
     from . import validation_receipts
@@ -73,6 +77,7 @@ except ImportError:  # pragma: no cover - direct script execution
         validate_canonical_wav,
     )
     from edge_tts_adapter import EdgeTtsAdapter
+    from doubao_adapter import DoubaoAdapter, DOUBAO_ENDPOINT, DOUBAO_PROVIDER_CONTRACT_VERSION
     from minimax_adapter import MiniMaxAdapter, MINIMAX_PROVIDER_CONTRACT_VERSION
     from voice_provider_config import VoiceProviderConfigError, active_provider_id, load_voice_provider_config
     from project_workspace import (
@@ -90,6 +95,8 @@ except ImportError:  # pragma: no cover - direct script execution
     from srt_timeline import parse_srt, serialize_srt
     from voiceover import (
         CancelledError,
+        FULL_TRACK_SEGMENTATION,
+        FULL_TRACK_SEGMENTATION_CONTRACT_VERSION,
         PermanentProviderError,
         ProviderAdapter,
         RetryableProviderError,
@@ -98,6 +105,7 @@ except ImportError:  # pragma: no cover - direct script execution
         bind_synthesis_identities,
         build_voice_plan,
         create_voice_manifest,
+        plan_full_track_unit,
         plan_speech_units,
         synthesis_settings_from_plan,
         validate_voice_manifest,
@@ -105,6 +113,23 @@ except ImportError:  # pragma: no cover - direct script execution
         voice_plan_audit_hash,
     )
     import validation_receipts
+
+try:
+    from .reference_audio_alignment import ReferenceAlignmentError, align_reference_audio
+except ImportError:  # pragma: no cover - direct script execution / staged integration
+    try:
+        from reference_audio_alignment import ReferenceAlignmentError, align_reference_audio
+    except ImportError:  # pragma: no cover - fail closed until the companion module is installed
+        ReferenceAlignmentError = ValueError  # type: ignore[assignment,misc]
+        align_reference_audio = None  # type: ignore[assignment]
+
+try:
+    from .transcribe_narration import transcribe_narration
+except ImportError:  # pragma: no cover - direct script execution / staged integration
+    try:
+        from transcribe_narration import transcribe_narration
+    except ImportError:  # pragma: no cover - fail closed until the companion module is installed
+        transcribe_narration = None  # type: ignore[assignment]
 
 
 VOICE_TIMELINE_SCHEMA_VERSION = 1
@@ -154,7 +179,7 @@ def _voice_paths(project: Project) -> dict[str, Path]:
 
 
 def _load_source_context(project: Project) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    if project.schema_version != 2 or project.voiceover_mode not in {"edge-tts", "minimax"}:
+    if project.schema_version != 2 or project.voiceover_mode not in {"edge-tts", "minimax", "doubao"}:
         raise VoiceoverStateError("旁白 CLI 只允许 schema v2 的音频旁白项目")
     source_path = project.path(project.metadata["source"]["file"])
     cues = parse_srt(source_path.read_text(encoding="utf-8-sig"))
@@ -180,8 +205,17 @@ def _build_plan_and_units(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     cues, scenes = _load_source_context(project)
     config = dict(provider_config or {})
-    protocol = "MiniMax" if provider_id == "minimax" else "edge-tts"
-    contract = config.get("contractVersion") or (MINIMAX_PROVIDER_CONTRACT_VERSION if provider_id == "minimax" else "edge-tts-python-7.2.8-v1")
+    protocol = {
+        "edge-tts": "edge-tts",
+        "minimax": "MiniMax",
+        "doubao": "Doubao",
+    }.get(provider_id, provider_id)
+    default_contract = {
+        "edge-tts": "edge-tts-python-7.2.8-v1",
+        "minimax": MINIMAX_PROVIDER_CONTRACT_VERSION,
+        "doubao": DOUBAO_PROVIDER_CONTRACT_VERSION,
+    }.get(provider_id, "")
+    contract = config.get("contractVersion") or default_contract
     plan = build_voice_plan(
         project_id=project.project_id,
         source_srt_sha256=project.metadata["source"]["sha256"],
@@ -196,10 +230,22 @@ def _build_plan_and_units(
         provider_id=provider_id,
         protocol=protocol,
         provider_contract_version=contract,
-        provider_options={key: config[key] for key in ("model", "emotion", "textNormalization", "stream", "endpoint") if key in config},
+        provider_options={
+            key: config[key]
+            for key in (
+                "model",
+                "emotion",
+                "textNormalization",
+                "stream",
+                "endpoint",
+                "requestTimeoutSeconds",
+            )
+            if key in config
+        },
+        segmentation=FULL_TRACK_SEGMENTATION,
     )
     units = bind_synthesis_identities(
-        plan_speech_units(cues, scenes, segmentation=plan["segmentation"]), plan
+        plan_full_track_unit(cues, scenes, segmentation=plan["segmentation"]), plan
     )
     return plan, units
 
@@ -232,14 +278,32 @@ def _load_current_plan_units(project: Project) -> tuple[dict[str, Any], list[dic
     )
     if expected != plan:
         raise ApprovalGateError("voice plan identities 已 stale")
-    units = bind_synthesis_identities(
-        plan_speech_units(cues, scenes, segmentation=plan["segmentation"]), plan
+    planner = (
+        plan_full_track_unit
+        if plan["segmentation"]["contractVersion"]
+        == FULL_TRACK_SEGMENTATION_CONTRACT_VERSION
+        else plan_speech_units
     )
+    units = bind_synthesis_identities(planner(cues, scenes, segmentation=plan["segmentation"]), plan)
     return plan, units
 
 
 def _sample_text(units: Sequence[Mapping[str, Any]]) -> str:
-    natural = [str(unit["speechText"]).strip() for unit in units if str(unit["speechText"]).strip()]
+    natural: list[str] = []
+    for unit in units:
+        text = str(unit["speechText"]).strip()
+        if not text:
+            continue
+        # full-track unit 只改变完整合成粒度；样音仍选取一条代表性自然句。
+        starts = 0
+        for match in re.finditer(r"[。！？!?；;]+|\n+", text):
+            candidate = text[starts : match.end()].strip()
+            if candidate:
+                natural.append(candidate)
+            starts = match.end()
+        tail = text[starts:].strip()
+        if tail:
+            natural.append(tail)
     if not natural:
         raise VoiceoverStateError("没有可用于样音的自然中文文本")
     chinese = [text for text in natural if any("\u4e00" <= character <= "\u9fff" for character in text)]
@@ -250,6 +314,15 @@ def _sample_text(units: Sequence[Mapping[str, Any]]) -> str:
 
 def _request(plan: Mapping[str, Any], text: str) -> SynthesisRequest:
     settings = synthesis_settings_from_plan(plan)
+    timeout_seconds = plan["provider"].get("options", {}).get(
+        "requestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT_SECONDS
+    )
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or float(timeout_seconds) <= 0
+    ):
+        raise VoiceoverStateError("provider requestTimeoutSeconds 必须为正数")
     return SynthesisRequest(
         text=text,
         voice=settings["voice"],
@@ -257,7 +330,7 @@ def _request(plan: Mapping[str, Any], text: str) -> SynthesisRequest:
         normalizedPitch=settings["normalizedPitch"],
         normalizedVolume=settings["normalizedVolume"],
         providerContractVersion=settings["providerContractVersion"],
-        timeoutSeconds=DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        timeoutSeconds=float(timeout_seconds),
         cancellationToken=None,
     )
 
@@ -285,6 +358,16 @@ def _adapter_from_plan(plan: Mapping[str, Any]) -> ProviderAdapter:
             queue_interval_seconds=float(config.get("queueIntervalMs", 500)) / 1000.0,
             requests_per_minute=int(config.get("requestsPerMinute", 20)),
             rate_limit_backoff_seconds=float(config.get("rateLimitBackoffMs", 35000)) / 1000.0,
+        )
+    if provider_id == "doubao":
+        config = load_voice_provider_config(provider_id="doubao")
+        options = plan["provider"].get("options", {})
+        return DoubaoAdapter(
+            api_key=str(config["apiKey"]),
+            model=str(options.get("model", config.get("model", "seed-audio-1.0"))),
+            endpoint=str(options.get("endpoint", config.get("endpoint", DOUBAO_ENDPOINT))),
+            max_attempts=int(config.get("maxRetries", 2)) + 1,
+            queue_interval_seconds=float(config.get("queueIntervalMs", 500)) / 1000.0,
         )
     raise VoiceoverStateError(f"不支持的旁白 provider: {provider_id}")
 
@@ -331,6 +414,7 @@ def _publish_sample_review_artifacts(
     plan: Mapping[str, Any],
     media: Mapping[str, Any],
     identity: str,
+    provider_request_id: str | None,
 ) -> tuple[Path, Path]:
     """发布不可变样音试听副本，避免播放器按 canonical 路径缓存旧音频。"""
 
@@ -373,6 +457,7 @@ def _publish_sample_review_artifacts(
         "providerResponse": {
             "voiceIdEchoAvailable": False,
             "voiceIdEcho": None,
+            **_provider_receipt(provider_request_id),
         },
         "sample": {
             "identitySha256": identity,
@@ -468,13 +553,14 @@ def _sample(
     media["file"] = "previews/voice-sample.wav"
     identity = _sample_identity(plan, text, media)
     review_audio, audit_path = _publish_sample_review_artifacts(
-        paths, plan, media, identity
+        paths, plan, media, identity, raw.providerRequestId
     )
     manifest["sample"] = {
         "status": "validated",
         "text": text,
         "identityHash": identity,
         "media": media,
+        "providerReceipt": _provider_receipt(raw.providerRequestId),
         "approval": {"approved": False, "identityHash": None, "approvedAt": None},
     }
     manifest["runs"].append(
@@ -1107,6 +1193,18 @@ def _full_identity(
     )
 
 
+def _full_audio_identity(plan: Mapping[str, Any], composite: Mapping[str, Any]) -> str:
+    """整轨音频技术身份；它不是可批准的 FULL_IDENTITY。"""
+
+    return sha256_json(
+        {
+            "contractVersion": "full-track-audio-v1",
+            "voicePlanAuditHash": voice_plan_audit_hash(plan),
+            "audioSha256": composite["sha256"],
+        }
+    )
+
+
 def _full(
     project: Project,
     *,
@@ -1116,6 +1214,12 @@ def _full(
     configured_concurrency: int,
 ) -> str:
     plan, units = _load_current_plan_units(project)
+    if (
+        plan["segmentation"]["contractVersion"]
+        != FULL_TRACK_SEGMENTATION_CONTRACT_VERSION
+        or len(units) != 1
+    ):
+        raise ApprovalGateError("旧逐句 voice plan 已 stale；请重新生成并批准 full-track 样音")
     paths = _voice_paths(project)
     old = _read_json(paths["manifest"], "voice manifest")
     manifest = _fresh_manifest_with_reuse(project, plan, units, old)
@@ -1318,9 +1422,6 @@ def _full(
 
     try:
         composite = _merge_segments(project, manifest["segments"], run_dir)
-        timeline, narration_srt = _build_timeline(project, plan, units, manifest["segments"], composite)
-        _publish_text(paths["srt"], narration_srt)
-        write_json_atomic(paths["timeline"], timeline)
     except (AudioNormalizationError, wave.Error, VoiceoverStateError, OSError) as exc:
         run["status"] = "failed"
         run["finishedAt"] = _now()
@@ -1328,11 +1429,6 @@ def _full(
         run["errorSummary"] = str(exc)[:300]
         _write_manifest(paths["manifest"], manifest, plan, units)
         raise
-    timeline_sha = sha256_file(paths["timeline"])
-    narration_sha = sha256_file(paths["srt"])
-    if timeline["narrationSrt"]["sha256"] != narration_sha:
-        raise VoiceoverStateError("timeline narrationSrt linkage 与正式 SRT 不一致")
-
     source_duration = parse_srt(project.path("source/source.srt").read_text(encoding="utf-8-sig"))[-1]["endMs"]
     delta = composite.durationMs - source_duration
     ratio = abs(delta) / source_duration
@@ -1343,13 +1439,18 @@ def _full(
         "validatorReceipt": _canonical_validator_receipt(composite),
     }
     manifest["composite"].pop("file", None)
+    manifest["fullAudioIdentityHash"] = _full_audio_identity(plan, manifest["composite"])
     manifest["timeline"] = {
-        "status": "validated", "relativePath": "audio/timeline.json", "sha256": timeline_sha,
-        "durationMs": composite.durationMs, "contractVersion": VOICE_TIMELINE_CONTRACT_VERSION,
+        "status": "waiting_alignment",
+        "relativePath": "audio/timeline.json",
     }
     manifest["narrationSrt"] = {
-        "status": "validated", "relativePath": "audio/narration.srt", "sha256": narration_sha,
-        "cueCount": len(units),
+        "status": "waiting_alignment",
+        "relativePath": "audio/narration.srt",
+    }
+    manifest["alignment"] = {
+        "status": "waiting_alignment",
+        "source": "external-asr-srt",
     }
     manifest["durationReview"] = {
         "sourceDurationMs": source_duration,
@@ -1359,6 +1460,262 @@ def _full(
         "thresholdRatio": 0.10,
         "exceedsThreshold": ratio > 0.10,
     }
+    manifest.pop("fullIdentityHash", None)
+    manifest["fullApproval"] = {
+        "approved": False,
+        "identityHash": None,
+        "durationDecision": None,
+        "reviewPolicy": None,
+        "approvedAt": None,
+    }
+    # Old projects may retain narration-review files and manifest fields as
+    # historical evidence. New runs deliberately stop after publishing the
+    # canonical WAV/timeline/SRT and never encode a pictureless review video.
+    manifest.pop("review", None)
+    run["status"] = "waiting_alignment"
+    run["finishedAt"] = _now()
+    _write_manifest(paths["manifest"], manifest, plan, units)
+    return manifest["fullAudioIdentityHash"]
+
+
+def _build_aligned_timeline(
+    project: Project,
+    plan: Mapping[str, Any],
+    full_track_unit: Mapping[str, Any],
+    composite: CanonicalAudioResult,
+    alignment: Mapping[str, Any],
+    *,
+    asr_srt_sha256: str,
+    alignment_source: str,
+) -> tuple[dict[str, Any], str]:
+    cues = alignment.get("cues")
+    if not isinstance(cues, list) or not cues:
+        raise VoiceoverStateError("reference alignment 未返回 cues")
+    source_cues = parse_srt(project.path("source/source.srt").read_text(encoding="utf-8-sig"))
+    scene_specs = project.timing_plan["scenes"]
+    scene_by_ordinal = {
+        ordinal: spec["sceneId"]
+        for spec in scene_specs
+        for ordinal in range(spec["sourceCueRange"][0], spec["sourceCueRange"][1] + 1)
+    }
+    expected_source_text = {
+        cue["sourceOrdinal"]: re.sub(r"\s+", "", cue["text"])
+        for cue in source_cues
+    }
+    observed_source_text: dict[int, str] = {ordinal: "" for ordinal in expected_source_text}
+    timeline_units: list[dict[str, Any]] = []
+    cursor = 0
+    previous_ordinal = 0
+    for expected_index, cue in enumerate(cues, start=1):
+        if not isinstance(cue, Mapping) or cue.get("index") != expected_index:
+            raise VoiceoverStateError("reference alignment cue index 必须从 1 起连续")
+        ordinal = cue.get("sourceCueOrdinal")
+        start_ms = cue.get("startMs")
+        end_ms = cue.get("endMs")
+        text = cue.get("text")
+        scene_id = cue.get("sceneId")
+        if (
+            isinstance(ordinal, bool)
+            or not isinstance(ordinal, int)
+            or ordinal not in expected_source_text
+            or ordinal < previous_ordinal
+        ):
+            raise VoiceoverStateError("reference alignment sourceOrdinal 无效或乱序")
+        if (
+            isinstance(start_ms, bool)
+            or not isinstance(start_ms, int)
+            or isinstance(end_ms, bool)
+            or not isinstance(end_ms, int)
+            or start_ms != cursor
+            or end_ms <= start_ms
+        ):
+            raise VoiceoverStateError("reference alignment cue 必须连续、正时长且从 0 开始")
+        if not isinstance(text, str) or not text.strip():
+            raise VoiceoverStateError("reference alignment cue 文本不能为空")
+        if cue.get("sourceCueRange") != [ordinal, ordinal]:
+            raise VoiceoverStateError("reference alignment cue 不得跨 source cue")
+        if scene_by_ordinal.get(ordinal) != scene_id:
+            raise VoiceoverStateError("reference alignment cue 不得跨 scene 或改变 scene mapping")
+        observed_source_text[ordinal] += re.sub(r"\s+", "", text)
+        timeline_units.append(
+            {
+                "index": expected_index,
+                "sceneId": scene_id,
+                "sourceCueRange": [ordinal, ordinal],
+                "sourceOrdinalRange": [ordinal, ordinal],
+                "text": text,
+                "startMs": start_ms,
+                "endMs": end_ms,
+                "durationMs": end_ms - start_ms,
+                "segmentSha256": composite.sha256,
+                "voiceSynthesisIdentityHash": full_track_unit["voiceSynthesisIdentityHash"],
+            }
+        )
+        cursor = end_ms
+        previous_ordinal = ordinal
+    if cursor != composite.durationMs:
+        raise VoiceoverStateError("reference alignment 最后一条 cue 未收口到整轨真实时长")
+    if observed_source_text != expected_source_text:
+        raise VoiceoverStateError("reference alignment 文本未逐字覆盖已确认 source SRT")
+
+    fps = int(project.render_profile["fps"])
+    scenes: list[dict[str, Any]] = []
+    scene_cursor = 0
+    frame_cursor = 0
+    for scene_index, spec in enumerate(scene_specs):
+        scene_units = [item for item in timeline_units if item["sceneId"] == spec["sceneId"]]
+        if not scene_units:
+            raise VoiceoverStateError(f"{spec['sceneId']} 未覆盖任何对齐 cue")
+        end_ms = composite.durationMs if scene_index == len(scene_specs) - 1 else scene_units[-1]["endMs"]
+        if scene_units[0]["startMs"] != scene_cursor or scene_units[-1]["endMs"] != end_ms:
+            raise VoiceoverStateError(f"{spec['sceneId']} 对齐 cue 未连续覆盖场景")
+        end_frame = (end_ms * fps + 999) // 1000
+        scenes.append(
+            {
+                "sceneId": spec["sceneId"],
+                "sourceCueRange": list(spec["sourceCueRange"]),
+                "unitRange": [scene_units[0]["index"], scene_units[-1]["index"]],
+                "startMs": scene_cursor,
+                "endMs": end_ms,
+                "sceneDurationMs": end_ms - scene_cursor,
+                "startFrame": frame_cursor,
+                "endFrameExclusive": end_frame,
+                "frameCount": end_frame - frame_cursor,
+            }
+        )
+        scene_cursor = end_ms
+        frame_cursor = end_frame
+
+    narration_srt = serialize_srt(
+        [
+            {
+                "originalIndex": unit["index"],
+                "startMs": unit["startMs"],
+                "endMs": unit["endMs"],
+                "text": unit["text"],
+            }
+            for unit in timeline_units
+        ]
+    )
+    diagnostics = alignment.get("diagnostics")
+    diagnostics_summary = {
+        key: value
+        for key, value in dict(diagnostics).items()
+        if key in {"matchRatio", "normalizedEditRatio", "asrCueCount", "outputCueCount"}
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+    } if isinstance(diagnostics, Mapping) else {}
+    timeline = {
+        "schemaVersion": VOICE_TIMELINE_SCHEMA_VERSION,
+        "contractVersion": VOICE_TIMELINE_CONTRACT_VERSION,
+        "projectId": project.project_id,
+        "sourceSrt": {"file": "source/source.srt", "sha256": plan["source"]["sha256"]},
+        "voicePlanAuditHash": voice_plan_audit_hash(plan),
+        "audio": {
+            "file": "audio/narration.wav",
+            "sha256": composite.sha256,
+            "durationMs": composite.durationMs,
+            "bytes": composite.bytes,
+            "contractVersion": composite.contractVersion,
+        },
+        "renderProfileSha256": sha256_json(project.render_profile),
+        "alignment": {
+            "contractVersion": f"reference-audio-alignment-schema-{alignment.get('schemaVersion', 1)}",
+            "source": alignment_source,
+            "asrSrtSha256": asr_srt_sha256,
+            "diagnostics": diagnostics_summary,
+        },
+        "units": timeline_units,
+        "scenes": scenes,
+        "narrationSrt": {
+            "file": "audio/narration.srt",
+            "sha256": _sha256_text(narration_srt),
+        },
+    }
+    return timeline, narration_srt
+
+
+def _publish_alignment(
+    project: Project,
+    asr_srt_path: Path,
+    *,
+    alignment_source: str = "external-asr-srt",
+) -> str:
+    if align_reference_audio is None:
+        raise VoiceoverStateError("reference audio alignment 模块尚未安装")
+    plan, units = _load_current_plan_units(project)
+    if (
+        plan["segmentation"]["contractVersion"] != FULL_TRACK_SEGMENTATION_CONTRACT_VERSION
+        or len(units) != 1
+    ):
+        raise VoiceoverStateError("publish-alignment 只支持 full-track voice plan")
+    paths = _voice_paths(project)
+    manifest = validate_voice_manifest(
+        _read_json(paths["manifest"], "voice manifest"), voice_plan=plan, speech_units=units
+    )
+    current_sample = _validate_current_sample(project, plan, manifest)
+    approval = manifest["sample"]["approval"]
+    if not approval.get("approved") or approval.get("identityHash") != current_sample:
+        raise ApprovalGateError("未获得 current 样音 voice/rate 人工批准")
+    if len(manifest["segments"]) != 1 or not _segment_is_reusable(
+        project, manifest["segments"][0], units[0]
+    ):
+        raise VoiceoverStateError("整轨 synthesis segment 尚未 validated")
+    composite_ref = manifest.get("composite")
+    if not isinstance(composite_ref, Mapping) or composite_ref.get("status") != "validated":
+        raise VoiceoverStateError("audio/narration.wav 尚未 validated")
+    composite = _validate_media_ref(project, composite_ref, expected_file="audio/narration.wav")
+    expected_audio_identity = _full_audio_identity(plan, composite_ref)
+    if manifest.get("fullAudioIdentityHash") != expected_audio_identity:
+        raise ApprovalGateError("整轨音频技术 identity 已 stale")
+    try:
+        asr_srt = asr_srt_path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError) as exc:
+        raise VoiceoverStateError(f"无法读取 ASR SRT: {exc}") from exc
+    source_srt = project.path("source/source.srt").read_text(encoding="utf-8-sig")
+    alignment = align_reference_audio(
+        source_srt,
+        asr_srt,
+        project.timing_plan["scenes"],
+        composite.durationMs,
+    )
+    if not isinstance(alignment, Mapping):
+        raise VoiceoverStateError("reference audio alignment 返回值无效")
+    asr_sha = hashlib.sha256(asr_srt.encode("utf-8")).hexdigest()
+    timeline, narration_srt = _build_aligned_timeline(
+        project,
+        plan,
+        units[0],
+        composite,
+        alignment,
+        asr_srt_sha256=asr_sha,
+        alignment_source=alignment_source,
+    )
+    _publish_text(paths["srt"], narration_srt)
+    write_json_atomic(paths["timeline"], timeline)
+    timeline_sha = sha256_file(paths["timeline"])
+    narration_sha = sha256_file(paths["srt"])
+    if timeline["narrationSrt"]["sha256"] != narration_sha:
+        raise VoiceoverStateError("timeline narrationSrt linkage 与正式 SRT 不一致")
+    manifest["timeline"] = {
+        "status": "validated",
+        "relativePath": "audio/timeline.json",
+        "sha256": timeline_sha,
+        "durationMs": composite.durationMs,
+        "contractVersion": VOICE_TIMELINE_CONTRACT_VERSION,
+    }
+    manifest["narrationSrt"] = {
+        "status": "validated",
+        "relativePath": "audio/narration.srt",
+        "sha256": narration_sha,
+        "cueCount": len(timeline["units"]),
+    }
+    manifest["alignment"] = {
+        "status": "validated",
+        "source": alignment_source,
+        "asrSrtSha256": asr_sha,
+        "contractVersion": timeline["alignment"]["contractVersion"],
+    }
     manifest["fullIdentityHash"] = _full_identity(
         plan, manifest["composite"], manifest["timeline"], manifest["narrationSrt"]
     )
@@ -1366,16 +1723,64 @@ def _full(
         "approved": False,
         "identityHash": None,
         "durationDecision": None,
+        "reviewPolicy": None,
         "approvedAt": None,
     }
-    # Old projects may retain narration-review files and manifest fields as
-    # historical evidence. New runs deliberately stop after publishing the
-    # canonical WAV/timeline/SRT and never encode a pictureless review video.
-    manifest.pop("review", None)
-    run["status"] = "validated"
-    run["finishedAt"] = _now()
+    manifest["runs"].append(
+        {
+            "kind": "publish-alignment",
+            "status": "validated",
+            "startedAt": _now(),
+            "finishedAt": _now(),
+            "taskCount": 1,
+        }
+    )
     _write_manifest(paths["manifest"], manifest, plan, units)
     return manifest["fullIdentityHash"]
+
+
+def _run_local_asr(project: Project, narration_path: Path) -> Path:
+    """调用当前 skill 内部 FunASR runner；证据只写入项目 .work。"""
+
+    if transcribe_narration is None:
+        raise VoiceoverStateError(
+            "当前 skill 的 narration ASR runner 尚未安装；请先准备 narration-asr 环境"
+        )
+    output_dir = project.path(".work") / f"voice-align-{uuid.uuid4().hex}"
+    if output_dir.exists():
+        raise VoiceoverStateError("ASR 输出目录必须不存在")
+    try:
+        payload = transcribe_narration(narration_path.resolve(), output_dir.resolve())
+    except Exception as exc:
+        raise VoiceoverStateError(f"本地 narration ASR 失败: {str(exc)[-300:]}") from exc
+    if not isinstance(payload, Mapping):
+        raise VoiceoverStateError("本地 narration ASR 返回值必须是对象")
+    if payload.get("ok") is not True:
+        raise VoiceoverStateError("本地 narration ASR 未报告成功")
+    raw_srt = payload.get("rawSrtPath")
+    if not isinstance(raw_srt, str) or not raw_srt:
+        raise VoiceoverStateError("本地 narration ASR 返回值缺少 rawSrtPath")
+    raw_srt_path = Path(raw_srt).resolve()
+    try:
+        raw_srt_path.relative_to(output_dir.resolve())
+    except ValueError as exc:
+        raise VoiceoverStateError("本地 narration ASR rawSrtPath 越出本次输出目录") from exc
+    if not raw_srt_path.is_file():
+        raise VoiceoverStateError("本地 narration ASR rawSrtPath 不存在")
+    duration_ms = payload.get("durationMs")
+    sentence_count = payload.get("sentenceCount")
+    timing = payload.get("timingValidation")
+    if (
+        isinstance(duration_ms, bool)
+        or not isinstance(duration_ms, int)
+        or duration_ms <= 0
+        or isinstance(sentence_count, bool)
+        or not isinstance(sentence_count, int)
+        or sentence_count <= 0
+        or not isinstance(timing, Mapping)
+    ):
+        raise VoiceoverStateError("本地 narration ASR 摘要缺少有效时长、句数或时间校验")
+    return raw_srt_path
 
 
 def validate_current_voiceover(
@@ -1644,6 +2049,8 @@ def _status(project: Project) -> dict[str, Any]:
         counts[status] = counts.get(status, 0) + 1
     payload["segments"] = counts
     payload["full"] = {
+        "audioIdentityHash": manifest.get("fullAudioIdentityHash"),
+        "alignmentStatus": manifest.get("alignment", {}).get("status"),
         "identityHash": manifest.get("fullIdentityHash"),
         "approved": manifest.get("fullApproval", {}).get("approved", False),
         "durationDecision": manifest.get("fullApproval", {}).get("durationDecision"),
@@ -1662,9 +2069,14 @@ def _parser() -> argparse.ArgumentParser:
     approve_sample = sub.add_parser("approve-sample", help="持久化用户已试听的 current 样音批准")
     approve_sample.add_argument("--project", required=True, type=Path)
     approve_sample.add_argument("--identity-hash", required=True)
-    full = sub.add_parser("full", help="生成/恢复完整旁白")
+    full = sub.add_parser("full", help="生成/恢复整篇单次请求的 canonical 旁白音频")
     full.add_argument("--project", required=True, type=Path)
     full.add_argument("--retry-failed", action="store_true")
+    publish_alignment = sub.add_parser(
+        "publish-alignment", help="用外部 ASR SRT 对齐整轨音频并发布 timeline/FULL_IDENTITY"
+    )
+    publish_alignment.add_argument("--project", required=True, type=Path)
+    publish_alignment.add_argument("--asr-srt", required=True, type=Path)
     approve_full = sub.add_parser("approve-full", help="持久化用户完整试听和真实时长批准")
     approve_full.add_argument("--project", required=True, type=Path)
     approve_full.add_argument("--identity-hash", required=True)
@@ -1688,6 +2100,7 @@ def main(
     adapter: ProviderAdapter | None = None,
     normalizer: Callable[..., CanonicalAudioResult] | None = None,
     workspace_config: WorkspaceConfig | None = None,
+    asr_runner: Callable[[Project, Path], Path] | None = None,
 ) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -1711,10 +2124,10 @@ def main(
             audio, identity, review_audio, request_audit, audio_sha256 = _sample(
                 project, voice=voice, rate=rate, provider_id=provider_id,
                 provider_config=provider_config,
-                adapter=adapter or (_adapter_from_plan(_build_plan_and_units(
+                adapter=adapter or _adapter_from_plan(_build_plan_and_units(
                     project, voice=voice, rate=rate, provider_id=provider_id,
                     provider_config=provider_config,
-                )[0]) if provider_id == "minimax" else EdgeTtsAdapter()),
+                )[0]),
                 normalizer=normalizer or normalize_and_publish,
             )
             print(f"SAMPLE_AUDIO={audio}")
@@ -1728,13 +2141,32 @@ def main(
             print(f"SAMPLE_APPROVED_IDENTITY={identity}")
         elif args.command == "full":
             current_plan, _ = _load_current_plan_units(project)
-            identity = _full(
+            audio_identity = _full(
                 project, retry_failed=args.retry_failed,
                 adapter=adapter or _adapter_from_plan(current_plan),
                 normalizer=normalizer or normalize_to_candidate,
                 configured_concurrency=concurrency.for_stage("voiceGeneration"),
             )
             print(f"FULL_AUDIO={project.path('audio/narration.wav')}")
+            print(f"FULL_AUDIO_IDENTITY={audio_identity}")
+            runner = asr_runner or (_run_local_asr if argv is None else None)
+            if runner is None:
+                print("ALIGNMENT_REQUIRED=1")
+            else:
+                asr_srt_path = runner(project, project.path("audio/narration.wav"))
+                identity = _publish_alignment(
+                    project,
+                    asr_srt_path,
+                    alignment_source="internal-funasr",
+                )
+                print(f"ASR_SRT={asr_srt_path}")
+                print(f"NARRATION_SRT={project.path('audio/narration.srt')}")
+                print(f"AUDIO_TIMELINE={project.path('audio/timeline.json')}")
+                print(f"FULL_IDENTITY={identity}")
+        elif args.command == "publish-alignment":
+            identity = _publish_alignment(project, args.asr_srt)
+            print(f"NARRATION_SRT={project.path('audio/narration.srt')}")
+            print(f"AUDIO_TIMELINE={project.path('audio/timeline.json')}")
             print(f"FULL_IDENTITY={identity}")
         elif args.command == "approve-full":
             review_policy = _resolve_full_approval_review_policy(

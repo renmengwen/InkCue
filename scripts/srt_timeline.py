@@ -367,8 +367,8 @@ def build_source_timing_plan(
     full narration and real duration have received explicit approval.
     """
 
-    if voiceover_mode not in {"disabled", "edge-tts", "minimax"}:
-        raise SrtValidationError("voiceover_mode 只允许 disabled、edge-tts 或 minimax")
+    if voiceover_mode not in {"disabled", "edge-tts", "minimax", "doubao"}:
+        raise SrtValidationError("voiceover_mode 只允许 disabled、edge-tts、minimax 或 doubao")
     if not isinstance(project_id, str) or not project_id:
         raise SrtValidationError("project_id 不能为空")
     source_path = Path(source_srt_path)

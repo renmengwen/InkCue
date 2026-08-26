@@ -54,7 +54,7 @@ def load_voice_provider_config(*, provider_id: str | None = None, root: Path | N
     config = copy.deepcopy(value["providers"][key])
     if not isinstance(config, dict):
         raise VoiceProviderConfigError(f"provider {selected} 配置必须是对象")
-    normalized = "minimax" if key.lower() == "minimax" else key.lower()
+    normalized = key.lower()
     config["id"] = normalized
     config["configKey"] = key
     config["configFile"] = str(path.name)
@@ -87,6 +87,66 @@ def load_voice_provider_config(*, provider_id: str | None = None, root: Path | N
             raise VoiceProviderConfigError("MiniMax rateLimitBackoffMs 必须位于 1000–300000")
         config["requestsPerMinute"] = rpm
         config["rateLimitBackoffMs"] = backoff_ms
+    elif normalized == "doubao":
+        if not isinstance(config.get("apiKey"), str) or not config["apiKey"].strip():
+            raise VoiceProviderConfigError(
+                "豆包缺少本地 apiKey；请在 config/voice-providers.local.json 配置"
+            )
+        if config.get("protocol") != "Doubao":
+            raise VoiceProviderConfigError("豆包 protocol 必须为 Doubao")
+        for field in ("voice", "language", "model"):
+            if not isinstance(config.get(field), str) or not config[field].strip():
+                raise VoiceProviderConfigError(f"豆包 {field} 必须是非空字符串")
+        if config["model"] != "seed-audio-1.0":
+            raise VoiceProviderConfigError("豆包 model 当前只允许 seed-audio-1.0")
+        if config.get("contractVersion") != "doubao-seed-audio-http-v1":
+            raise VoiceProviderConfigError(
+                "豆包 contractVersion 必须为 doubao-seed-audio-http-v1"
+            )
+        if config.get("outputFormat") != "audio-24khz-mono-wav":
+            raise VoiceProviderConfigError(
+                "豆包 outputFormat 必须为 audio-24khz-mono-wav"
+            )
+        endpoint = config.get("endpoint", "https://openspeech.bytedance.com/api/v3/tts/create")
+        if not isinstance(endpoint, str) or not endpoint.startswith("https://"):
+            raise VoiceProviderConfigError("豆包 endpoint 必须是 HTTPS 地址")
+        try:
+            config["rate"] = normalize_rate(config.get("rate", 0))
+            config["pitch"] = normalize_pitch(config.get("pitch", 0))
+            config["volume"] = normalize_volume(config.get("volume", 0))
+        except VoiceoverValidationError as exc:
+            raise VoiceProviderConfigError(str(exc)) from exc
+        rate_value = int(config["rate"][:-1])
+        pitch_value = int(config["pitch"][:-2])
+        volume_value = int(config["volume"][:-1])
+        if not -50 <= rate_value <= 100:
+            raise VoiceProviderConfigError("豆包 rate 必须位于 -50–100")
+        if not -12 <= pitch_value <= 12:
+            raise VoiceProviderConfigError("豆包 pitch 必须位于 -12–12")
+        if not -50 <= volume_value <= 100:
+            raise VoiceProviderConfigError("豆包 volume 必须位于 -50–100")
+        timeout_seconds = config.get("requestTimeoutSeconds", 60)
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not 1 <= float(timeout_seconds) <= 600
+        ):
+            raise VoiceProviderConfigError(
+                "豆包 requestTimeoutSeconds 必须位于 1–600"
+            )
+        retries = config.get("maxRetries", 2)
+        if isinstance(retries, bool) or not isinstance(retries, int) or not 1 <= retries <= 10:
+            raise VoiceProviderConfigError("豆包 maxRetries 必须位于 1–10")
+        queue_interval_ms = config.get("queueIntervalMs", 500)
+        if (
+            isinstance(queue_interval_ms, bool)
+            or not isinstance(queue_interval_ms, int)
+            or not 0 <= queue_interval_ms <= 300000
+        ):
+            raise VoiceProviderConfigError("豆包 queueIntervalMs 必须位于 0–300000")
+        config["endpoint"] = endpoint
+        config["queueIntervalMs"] = queue_interval_ms
+        config["requestTimeoutSeconds"] = float(timeout_seconds)
     return config
 
 
@@ -98,10 +158,10 @@ def active_provider_id(*, root: Path | None = None) -> str:
     selected = value.get("activeProvider")
     if not isinstance(selected, str) or not selected.strip():
         raise VoiceProviderConfigError("activeProvider 必须是非空字符串")
-    normalized = "minimax" if selected.lower() == "minimax" else selected.lower()
-    if normalized not in {"edge-tts", "minimax"}:
+    normalized = selected.lower()
+    if normalized not in {"edge-tts", "minimax", "doubao"}:
         raise VoiceProviderConfigError(
-            "activeProvider 只允许 edge-tts 或 MiniMax"
+            "activeProvider 只允许 edge-tts、MiniMax 或 doubao"
         )
     return normalized
 

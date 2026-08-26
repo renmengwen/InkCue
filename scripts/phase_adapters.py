@@ -311,7 +311,7 @@ def run_final_delivery(
                 subtitle_preset=workspace.video_encoding.subtitle_preset,
             ),
         )
-    if ok and project.voiceover_mode in {"edge-tts", "minimax"}:
+    if ok and project.voiceover_mode in {"edge-tts", "minimax", "doubao"}:
         ok = execute(
             "muxVoiceover",
             lambda: mux_project(
@@ -356,7 +356,7 @@ def run_final_delivery(
         "status": "PASS" if ok else "FAIL",
         "projectId": project.project_id,
         "runId": requested_run_id,
-        "taskCount": 5 if project.voiceover_mode in {"edge-tts", "minimax"} else 4,
+        "taskCount": 5 if project.voiceover_mode in {"edge-tts", "minimax", "doubao"} else 4,
         "successCount": len([name for name in outputs if name != "muxVoiceover" or project.voiceover_mode != "disabled"]),
         "failureCount": len(failures),
         "partialSuccess": bool(last_completed and not ok),

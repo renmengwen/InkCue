@@ -36,7 +36,7 @@ PROJECT_PATHS_V2 = {
     "subtitles": "subtitles",
 }
 PROJECT_PATHS = PROJECT_PATHS_V2
-AUDIO_VOICEOVER_MODES = {"edge-tts", "minimax"}
+AUDIO_VOICEOVER_MODES = {"edge-tts", "minimax", "doubao"}
 VOICEOVER_MODES = {"disabled", *AUDIO_VOICEOVER_MODES}
 CONTENT_SOURCE_FIELDS = {
     "contractVersion",
@@ -773,7 +773,7 @@ def validate_pre_project_generation_plan_data(
     generation/timing validator。它不创建项目、不写批准，也不修改 source SRT。
     """
     if voiceover_mode not in VOICEOVER_MODES:
-        raise ProjectValidationError("voiceoverMode 只允许 disabled、edge-tts 或 minimax")
+        raise ProjectValidationError("voiceoverMode 只允许 disabled、edge-tts、minimax 或 doubao")
     source_path = _resolved(Path(source_srt_path))
     if not source_path.is_file():
         raise ProjectValidationError(f"原始 SRT 不存在: {source_path}")
@@ -1080,7 +1080,7 @@ def validate_project_metadata_data(root: Path, metadata: Any) -> dict[str, Any]:
         safe_project_path(root, paths[key])
     if schema_version == 2:
         if metadata.get("voiceoverMode") not in VOICEOVER_MODES:
-            raise ProjectValidationError("project.json voiceoverMode 只允许 disabled、edge-tts 或 minimax")
+            raise ProjectValidationError("project.json voiceoverMode 只允许 disabled、edge-tts、minimax 或 doubao")
         if metadata.get("renderProfile") != FIXED_RENDER_PROFILE:
             raise ProjectValidationError("project.json renderProfile 必须严格为 whiteboard-render-v2")
         background_music = metadata.get("backgroundMusic")
@@ -1225,7 +1225,7 @@ def upgrade_project(
     if to_schema != 2:
         raise ProjectValidationError("首版只支持显式升级到 schema 2")
     if voiceover_mode not in VOICEOVER_MODES:
-        raise ProjectValidationError("voiceoverMode 只允许 disabled、edge-tts 或 minimax")
+        raise ProjectValidationError("voiceoverMode 只允许 disabled、edge-tts、minimax 或 doubao")
     root = _resolved(Path(project_root))
     project = load_project(root)
     if project.schema_version == 2:
@@ -1335,7 +1335,7 @@ class ProjectWorkspace:
         source_plan: str | Path | None = None,
     ) -> Project:
         if voiceover_mode not in VOICEOVER_MODES:
-            raise ProjectValidationError("voiceoverMode 只允许 disabled、edge-tts 或 minimax")
+            raise ProjectValidationError("voiceoverMode 只允许 disabled、edge-tts、minimax 或 doubao")
         if not isinstance(background_music_enabled, bool):
             raise ProjectValidationError("backgroundMusic.enabled 必须是布尔值")
         if not isinstance(agent_approval_enabled, bool):
@@ -1364,7 +1364,7 @@ class ProjectWorkspace:
             if confirmed_plan is None:
                 raise ProjectValidationError("content source 创建必须提供已确认 generation plan")
             if voiceover_mode not in AUDIO_VOICEOVER_MODES:
-                raise ProjectValidationError("topic/text content source 只允许 edge-tts 或 minimax")
+                raise ProjectValidationError("topic/text content source 只允许 edge-tts、minimax 或 doubao")
             from content_source import ContentSourceError, validate_source_package
 
             try:

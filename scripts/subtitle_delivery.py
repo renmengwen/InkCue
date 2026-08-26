@@ -167,7 +167,7 @@ def select_authoritative_srt(project: Project) -> AuthoritativeSrt:
             cues=_read_srt(path),
         )
 
-    if mode not in {"edge-tts", "minimax"}:
+    if mode not in {"edge-tts", "minimax", "doubao"}:
         raise SubtitleDeliveryError(f"不支持的 voiceoverMode: {mode}")
     timeline_relative = "audio/timeline.json"
     if active.get("kind") not in {"edge-tts-audio-timeline", "audio-authoritative-timeline"} or active.get("file") != timeline_relative:

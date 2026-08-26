@@ -32,8 +32,14 @@ elif __name__ == "voiceover":
 VOICE_PLAN_SCHEMA_VERSION = 1
 VOICE_MANIFEST_SCHEMA_VERSION = 1
 SEGMENTATION_CONTRACT_VERSION = "speech-unit-v1"
+FULL_TRACK_SEGMENTATION_CONTRACT_VERSION = "full-track-v1"
 DEFAULT_PROVIDER_CONTRACT_VERSION = "edge-tts-python-7.2.8-v1"
-SUPPORTED_AUDIO_PROVIDERS = {"edge-tts", "minimax"}
+SUPPORTED_PROVIDER_PROTOCOLS = {
+    "edge-tts": "edge-tts",
+    "minimax": "MiniMax",
+    "doubao": "Doubao",
+}
+SUPPORTED_AUDIO_PROVIDERS = set(SUPPORTED_PROVIDER_PROTOCOLS)
 REVIEW_POLICIES = frozenset({"user_first", "agent_first"})
 DEFAULT_OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3"
 DEFAULT_SEGMENTATION = {
@@ -41,6 +47,10 @@ DEFAULT_SEGMENTATION = {
     "minCodePoints": 12,
     "targetCodePoints": 24,
     "maxCodePoints": 36,
+}
+FULL_TRACK_SEGMENTATION = {
+    "contractVersion": FULL_TRACK_SEGMENTATION_CONTRACT_VERSION,
+    "sceneSeparator": "\n\n",
 }
 SEGMENT_STATUSES = (
     "pending",
@@ -244,7 +254,14 @@ def _split_long_text(text: str, maximum: int) -> list[str]:
 
 def _validate_segmentation(value: Mapping[str, Any] | None) -> dict[str, Any]:
     segmentation = dict(DEFAULT_SEGMENTATION if value is None else value)
-    if segmentation.get("contractVersion") != SEGMENTATION_CONTRACT_VERSION:
+    contract_version = segmentation.get("contractVersion")
+    if contract_version == FULL_TRACK_SEGMENTATION_CONTRACT_VERSION:
+        if segmentation.get("sceneSeparator") != "\n\n":
+            raise VoiceoverValidationError("full-track sceneSeparator 首版固定为两个换行")
+        if set(segmentation) != {"contractVersion", "sceneSeparator"}:
+            raise VoiceoverValidationError("full-track segmentation 包含未知字段")
+        return copy.deepcopy(FULL_TRACK_SEGMENTATION)
+    if contract_version != SEGMENTATION_CONTRACT_VERSION:
         raise VoiceoverValidationError("segmentation.contractVersion 不受支持")
     minimum = segmentation.get("minCodePoints")
     target = segmentation.get("targetCodePoints")
@@ -259,6 +276,84 @@ def _validate_segmentation(value: Mapping[str, Any] | None) -> dict[str, Any]:
         "targetCodePoints": target,
         "maxCodePoints": maximum,
     }
+
+
+def plan_full_track_unit(
+    cues: Sequence[Mapping[str, Any]],
+    scenes: Sequence[Mapping[str, Any]] | None = None,
+    *,
+    segmentation: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """把全部确认旁白规划成一个保留 scene 段落的合成请求。
+
+    scene/cue 边界仍写入 unit 审计信息，但不会在 provider 请求层拆分。
+    正式 scene 时间必须在整轨音频生成后由外部 ASR 对齐结果派生。
+    """
+
+    validated_cues = _validate_cues(cues)
+    scene_ranges = _scene_assignments(validated_cues, scenes)
+    contract = _validate_segmentation(segmentation or FULL_TRACK_SEGMENTATION)
+    if contract["contractVersion"] != FULL_TRACK_SEGMENTATION_CONTRACT_VERSION:
+        raise VoiceoverValidationError("整轨规划必须使用 full-track segmentation contract")
+
+    scene_texts: list[str] = []
+    source_parts: list[dict[str, int]] = []
+    for scene_id, first, last in scene_ranges:
+        text = ""
+        for cue in validated_cues[first - 1 : last]:
+            speech = _normalise_speech_text(cue["text"])
+            if _is_punctuation_only(speech):
+                raise VoiceoverValidationError(f"{scene_id} 包含纯标点 cue，无法生成整轨旁白")
+            text = _join_text(text, speech)
+            source_parts.append({"sourceOrdinal": cue["sourceOrdinal"], "partIndex": 1})
+        if not text:
+            raise VoiceoverValidationError(f"{scene_id} 没有可朗读文本")
+        scene_texts.append(text)
+
+    speech_text = contract["sceneSeparator"].join(scene_texts)
+    source_text = speech_text
+    first = 1
+    last = len(validated_cues)
+    scene_specs = [
+        {"sceneId": scene_id, "sourceCueRange": [scene_first, scene_last]}
+        for scene_id, scene_first, scene_last in scene_ranges
+    ]
+    unit = {
+        "index": 1,
+        "sceneId": "full-track",
+        "sceneCueRanges": scene_specs,
+        "sourceCueRange": [first, last],
+        "sourceOrdinalRange": [first, last],
+        "sourceOrdinals": list(range(first, last + 1)),
+        "sourceParts": source_parts,
+        "originalText": source_text,
+        "speechText": speech_text,
+        "codePointCount": len(speech_text),
+        "sourceTextHash": sha256_text(source_text),
+        "speechTextHash": sha256_text(speech_text),
+        "sourceTextIdentityHash": sha256_json(
+            {
+                "sceneCueRanges": scene_specs,
+                "sourceParts": source_parts,
+                "originalText": source_text,
+            }
+        ),
+        "sourceTimingIdentityHash": sha256_json(
+            {
+                "sceneCueRanges": scene_specs,
+                "timings": [
+                    {
+                        "sourceOrdinal": cue["sourceOrdinal"],
+                        "startMs": cue["startMs"],
+                        "endMs": cue["endMs"],
+                    }
+                    for cue in validated_cues
+                ],
+            }
+        ),
+    }
+    validate_speech_units([unit], cue_count=len(validated_cues))
+    return [unit]
 
 
 def _validate_cues(cues: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -662,10 +757,12 @@ def build_voice_plan(
         raise VoiceoverValidationError("projectId 不能为空")
     if not all(isinstance(value, str) and value for value in (voice, language, output_format, provider_id, protocol, provider_contract_version)):
         raise VoiceoverValidationError("provider、voice、language、output format 不能为空")
-    provider_id = provider_id.lower() if provider_id.lower() == "minimax" else provider_id
-    expected_protocol = "MiniMax" if provider_id == "minimax" else "edge-tts"
+    provider_id = provider_id.lower()
+    expected_protocol = SUPPORTED_PROVIDER_PROTOCOLS.get(provider_id)
     if provider_id not in SUPPORTED_AUDIO_PROVIDERS or protocol != expected_protocol:
-        raise VoiceoverValidationError("provider/protocol 必须是 edge-tts/edge-tts 或 minimax/MiniMax")
+        raise VoiceoverValidationError(
+            "provider/protocol 必须是 edge-tts/edge-tts、minimax/MiniMax 或 doubao/Doubao"
+        )
     if isinstance(duration_review_threshold_ratio, bool) or not isinstance(duration_review_threshold_ratio, (int, float)) or duration_review_threshold_ratio != 0.10:
         raise VoiceoverValidationError("首版 durationReviewThresholdRatio 固定为 0.10")
     source_sha = _require_sha256(source_srt_sha256, label="source.sha256")
@@ -712,7 +809,7 @@ def validate_voice_plan(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(plan.get("projectId"), str) or not plan["projectId"]:
         raise VoiceoverValidationError("voice plan projectId 不能为空")
     if plan.get("mode") not in SUPPORTED_AUDIO_PROVIDERS:
-        raise VoiceoverValidationError("voice plan mode 必须是 edge-tts 或 minimax")
+        raise VoiceoverValidationError("voice plan mode 必须是 edge-tts、minimax 或 doubao")
     provider = plan.get("provider")
     selection = plan.get("selection")
     source = plan.get("source")
@@ -720,7 +817,7 @@ def validate_voice_plan(value: Mapping[str, Any]) -> dict[str, Any]:
     if not all(isinstance(item, Mapping) for item in (provider, selection, source, timing)):
         raise VoiceoverValidationError("voice plan 缺少 provider/selection/source/timingPolicy")
     provider_id = provider.get("id")
-    expected_protocol = "MiniMax" if provider_id == "minimax" else "edge-tts"
+    expected_protocol = SUPPORTED_PROVIDER_PROTOCOLS.get(provider_id)
     if provider_id not in SUPPORTED_AUDIO_PROVIDERS or provider.get("protocol") != expected_protocol:
         raise VoiceoverValidationError("provider/protocol 与支持的 provider 不匹配")
     if plan.get("mode") != provider_id:
@@ -1061,6 +1158,8 @@ __all__ = [
     "CancelledError",
     "DEFAULT_OUTPUT_FORMAT",
     "DEFAULT_PROVIDER_CONTRACT_VERSION",
+    "FULL_TRACK_SEGMENTATION",
+    "FULL_TRACK_SEGMENTATION_CONTRACT_VERSION",
     "DEFAULT_SEGMENTATION",
     "EdgeTtsAdapter",
     "FakeProviderAdapter",
@@ -1071,6 +1170,8 @@ __all__ = [
     "RetryableProviderError",
     "SEGMENTATION_CONTRACT_VERSION",
     "SEGMENT_STATUSES",
+    "SUPPORTED_AUDIO_PROVIDERS",
+    "SUPPORTED_PROVIDER_PROTOCOLS",
     "SynthesisRequest",
     "VoiceoverValidationError",
     "bind_synthesis_identities",
@@ -1083,6 +1184,7 @@ __all__ = [
     "normalize_rate",
     "normalize_volume",
     "plan_speech_units",
+    "plan_full_track_unit",
     "sha256_json",
     "sha256_text",
     "source_text_identity_hash",

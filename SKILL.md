@@ -1,6 +1,6 @@
 ---
 name: srt-whiteboard-animation
-description: 将主题、正文或 SRT 制作成暖米黄纸张底、按叙事顺序流式落墨的白板手绘视频；支持传统 SRT 的无旁白/Edge TTS/MiniMax 路径，以及经一次内容与制作方案联合确认后派生严格 SRT 的 topic/text 路径。用户要求“把主题/正文/SRT 做成白板手绘视频”“按文案分镜画手绘”“生成带字幕或 Edge TTS/MiniMax 旁白的白板动画”时触发。
+description: 将主题、正文或 SRT 制作成暖米黄纸张底、按叙事顺序流式落墨的白板手绘视频；支持传统 SRT 的无旁白/Edge TTS/MiniMax/豆包语音路径，以及经一次内容与制作方案联合确认后派生严格 SRT 的 topic/text 路径。用户要求“把主题/正文/SRT 做成白板手绘视频”“按文案分镜画手绘”“生成带字幕或在线旁白的白板动画”时触发。
 ---
 
 # SRT 白板动画：路由与不变量
@@ -17,22 +17,22 @@ description: 将主题、正文或 SRT 制作成暖米黄纸张底、按叙事�
 | `topic` | 仅 `generate` | 自动读取 `activeProvider` |
 | `text` | `preserve | polish` | 自动读取 `activeProvider` |
 
-`topic + preserve/polish`、`text + generate` 非法。非 SRT 必须有 15–600 秒 `targetDurationSeconds`；缺失时可建议 60 秒，但要与其他缺失配置一次性展示并等待确认。`voiceoverMode` 不属于用户选择项：除非用户明确要求静音，否则必须读取 skill 根目录 `config/voice-providers.local.json` 的 `activeProvider`，规范化为 `edge-tts` 或 `minimax` 后自动冻结。不得询问用户在 Edge TTS 与 MiniMax 之间选择，也不得从项目目录、旧项目 manifest、命令行 provider 参数或对话回复读取旁白 provider。
+`topic + preserve/polish`、`text + generate` 非法。非 SRT 必须有 15–600 秒 `targetDurationSeconds`；缺失时可建议 60 秒，但要与其他缺失配置一次性展示并等待确认。`voiceoverMode` 不属于用户选择项：除非用户明确要求静音，否则必须读取 skill 根目录 `config/voice-providers.local.json` 的 `activeProvider`，规范化为 `edge-tts`、`minimax` 或 `doubao` 后自动冻结。不得询问用户在 Edge TTS、MiniMax 与豆包语音之间选择，也不得从项目目录、旧项目 manifest、命令行 provider 参数或对话回复读取旁白 provider。
 
-topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经只读校验后，coordinator 生成审阅 artifact。内容、target、rewritePolicy、由 activeProvider 派生的 voiceoverMode、cue→scene、分镜、图片提示词、是否加入 BGM、阶段 0 后是否委托 AI 代理批准，以及 `imageGenerationMode`，必须通过一次“内容与制作方案联合确认”同时冻结；确认前不得运行 `prepare_source.py`、创建正式项目或写批准。review 中可以展示“当前已采用：MiniMax/Edge TTS”供用户知情查看，但不把旁白 provider 变成待选择问题。`backgroundMusic.enabled` 与 `agentApprovalEnabled` 是两个独立布尔选择：BGM 只询问“加入/不加入”，加入时固定使用内置 CC0 轻音乐和 `-15 dB` 预设；代理批准只询问“逐阶段由我确认/委托 AI 自动判断并推进”，二者都不增加独立 Gate。
+topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经只读校验后，coordinator 生成审阅 artifact。内容、target、rewritePolicy、由 activeProvider 派生的 voiceoverMode、cue→scene、分镜、图片提示词、是否加入 BGM、阶段 0 后是否委托 AI 代理批准，以及 `imageGenerationMode`，必须通过一次“内容与制作方案联合确认”同时冻结；确认前不得运行 `prepare_source.py`、创建正式项目或写批准。review 中可以展示“当前已采用：豆包语音/MiniMax/Edge TTS”供用户知情查看，但不把旁白 provider 变成待选择问题。`backgroundMusic.enabled` 与 `agentApprovalEnabled` 是两个独立布尔选择：BGM 只询问“加入/不加入”，加入时固定使用内置 CC0 轻音乐和 `-15 dB` 预设；代理批准只询问“逐阶段由我确认/委托 AI 自动判断并推进”，二者都不增加独立 Gate。
 
 `imageGenerationMode = provider | gpt-login` 是正式项目字段。只有当前 Codex/ChatGPT 确实使用 GPT 账号登录且宿主内置 `image_gen` 可用时，才在上述联合确认中询问“当前登录的 GPT 账号/已配置图片供应商”；否则不询问并直接冻结为 `provider`。用户已经明确指定时不重复询问，只展示当前已采用；若明确指定 `gpt-login` 但宿主能力不可用，则 `BLOCKED`，不得静默切换 provider 或需要 API Key 的 CLI。传统 SRT 在首次分镜确认时一并冻结 BGM、代理批准和生图方式，不新增 Gate。旧项目缺失字段按 `provider` 读取；仅对尚未生图的旧项目，若当前满足 GPT 登录态与 `image_gen` 能力条件，coordinator 可在首次生图前补问一次并持久化选择。详见 [references/phase-0-content.md](references/phase-0-content.md)、[references/content-input.md](references/content-input.md) 与 [references/image-generation.md](references/image-generation.md)。
 
 `agentApprovalEnabled` 写入正式项目；旧项目或字段缺失时等价于 `false`。`false` 保持现有人工 Gate；`true` 表示用户只把初次确认之后的常规质量 Gate 委托给 coordinator AI，后者必须实际审阅 current artifact，决定通过或返工，并在通过时调用现有批准动作。该字段不删除 Gate，不新增 identity、manifest、状态机或专用恢复协议，也不授权 child、CLI 或 runner 自行批准。
 
-权威时钟：`disabled` 使用 `source/source.srt` 原始全局时间轴；Edge/MiniMax 使用获批 provider 生成的真实 audio timeline 与 `audio/narration.srt`。`targetDurationSeconds` 只作内容预算和 provisional SRT，不是成片时钟。
+权威时钟：`disabled` 使用 `source/source.srt` 原始全局时间轴；Edge/MiniMax/豆包语音使用获批 provider 生成的真实 audio timeline 与 `audio/narration.srt`。`targetDurationSeconds` 只作内容预算和 provisional SRT，不是成片时钟。
 
 ## 七个工作阶段与交付链
 
 1. **阶段 0：内容与制作方案联合确认**。冻结输入、旁白稿、cue、scene、target、rewritePolicy、voiceoverMode、generation plan、`backgroundMusic.enabled`、`agentApprovalEnabled` 和 `imageGenerationMode`；topic/text 由 `contentDrafting` 候选开始，确认前 fail-closed。
 2. **阶段 1：严格 SRT 与分镜确认**。传统 SRT 严格解析、时长约束和 `storyboardPlanning` candidate/result 交接；用户首次确认分镜并同时冻结 BGM、代理批准与生图方式后才可建项。
-3. **阶段 3：样音与 voice/rate 确认**。Edge/MiniMax 生成 sample，由当前批准主体真实试听并绑定 current `SAMPLE_IDENTITY`；未批准时完整旁白以退出码 5 拒绝。
-4. **阶段 4：完整旁白、真实时长与 review policy 确认**。生成/验证 current WAV、timeline、narration SRT；当前批准主体完整试听并处理时长偏差，超过 10% 还须 `accept_actual`。人工模式由用户选择 review policy；代理批准模式确定性派生 `agent_first`，不再询问。
+3. **阶段 3：样音与 voice/rate 确认**。音频旁白 provider 生成 sample，由当前批准主体真实试听并绑定 current `SAMPLE_IDENTITY`；未批准时完整旁白以退出码 5 拒绝。
+4. **阶段 4：完整旁白、真实时长与 review policy 确认**。整篇旁白以单次 provider 请求生成 current WAV，再通过当前 skill 自带的本地 FunASR runner 与已确认原稿对齐后发布 timeline、narration SRT；当前批准主体完整试听并处理时长偏差，超过 10% 还须 `accept_actual`。人工模式由用户选择 review policy；代理批准模式确定性派生 `agent_first`，不再询问。
 5. **阶段 5：统一线稿确认**。图片候选独立有界生成、技术校验和 global visual review；线稿保留独立质量 Gate，主窗口只交付 review 文件链接、identity、计数和异常摘要。
 6. **阶段 6：annotation、区域预览与 reveal 联合确认**。技术 current 后生成预览和项目 URL；当前批准主体一次检查 annotation、区域、`protectedRegions`、reveal 时序并绑定 current review identity。
 7. **阶段 7：正式 scene bundle 确认**。按 `sceneRender` 有界并行生成候选，coordinator 按 generation plan 顺序单写发布；当前批准主体一次检查有序 scene bundle 后才可合并。
@@ -74,11 +74,11 @@ topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经�
 6. `imagePrompt`（content draft）到 formal generation plan 的 `prompt` 只允许 coordinator 确定性映射；child 不接收完整主对话、完整 SRT、provider 凭据、长日志或批准信息。详见 [references/prompt-writing.md](references/prompt-writing.md) 与 [references/subagent-orchestration.md](references/subagent-orchestration.md)。
 7. 每幕只表达一个核心视觉命题；可独立揭示的 2–3 个视觉簇之间保持真实纸面留白，不以道路/河流/山脉/箭头等贯穿结构连接，除非该结构本身不可分割。annotation 按连续墨迹簇划分，最多 3 个且不为凑数强拆。
 8. reveal 时间严格串行、不可重叠；空间 region 仅在真实遮挡/交界处适度重叠；`protectedRegions` 只能保护正确分区中不可避免的局部，不能掩盖错误分区。
-9. 图片采用 `continue_independent`：单幕失败不阻止其他幕候选，但任一必需 scene 缺失/失败/stale 时 batch 总状态为 FAIL，不得启动全量预览或写批准。TTS 采用滚动有界 `stop_dispatch`。
+9. 图片采用 `continue_independent`：单幕失败不阻止其他幕候选，但任一必需 scene 缺失/失败/stale 时 batch 总状态为 FAIL，不得启动全量预览或写批准。完整 TTS 固定为一个 full-track task；不得因 provider/ASR 失败回退成逐句多请求。
 10. provider worker 或宿主图片结果导入只能写已登记 attempt 的 candidate/去敏 receipt；coordinator 按 `prepared → requesting → candidate_ready → publishing → validated` 串行 checkpoint、重验、原子发布和清理。`gpt-login` 只替换图片字节来源，不另建 Gate、manifest 或发布链。
 11. `sceneRender` 是当前正式单幕候选的有界并行能力；worker 数只读 workspace `execution.concurrency.sceneRender`（缺失继承 pool default，最终默认 1，范围 1–16），候选完成顺序不得改变 generation plan 顺序或正式 manifest。
 12. image validation 每张 PNG 同一打开周期只完整解码一次；voice deep validation、timeline、SRT、累计帧、identity、binding 和 approval 仍按合同串行/有界，证据缺失或 bytes 变化不得降级为 binding PASS。
-13. 正式成片永远烧录字幕：disabled 为 H.264、0 音频且使用 source SRT；Edge/MiniMax 为 H.264 + AAC 旁白且使用 current narration SRT。旁白项目 `backgroundMusic.enabled=true` 时，最终封装在同一路 AAC 中按固定 `-15 dB` 混入内置 CC0 BGM；关闭或旧项目缺字段时保持原旁白封装。旁白模式缺少 current narration SRT/timeline/full approval/identity 必须失败，不能回退 source SRT。
+13. 正式成片永远烧录字幕：disabled 为 H.264、0 音频且使用 source SRT；Edge/MiniMax/豆包语音为 H.264 + AAC 旁白且使用 current narration SRT。旁白项目 `backgroundMusic.enabled=true` 时，最终封装在同一路 AAC 中按固定 `-15 dB` 混入内置 CC0 BGM；关闭或旧项目缺字段时保持原旁白封装。旁白模式缺少 current narration SRT/timeline/full approval/identity 必须失败，不能回退 source SRT。
 14. 任一输入、旁白文本/分段、scene mapping、imagePrompt、音频/timing/render binding、annotation/reveal、scene 集合/顺序、手部素材 `handSha256`、字幕 preset/字体/SRT 或 clean/final SHA 变化，按 [references/recovery-and-identity.md](references/recovery-and-identity.md) 使受影响 identity 和批准 stale；历史 stale 证据不得作为 current 输入。
 15. 每次进入工作区前先用当前可启动的 Python 运行 `prepare_env.py --check-workspace-access`，完成真实 create/write/flush/read/delete 预检；随后在任何业务脚本、导入探测或渲染启动前运行 `python scripts/prepare_env.py --check`，读取末行 `ENV_PY=<绝对解释器路径>`。若仅因专用环境或依赖尚未就绪而失败，运行不带 `--check` 的同一脚本完成准备并重新读取 `ENV_PY`。本次任务后续每条 Python 命令都必须直接调用该绝对路径；不得使用裸 `python`、`py`、shebang 或不会跨工具调用持久化的临时 shell 变量先试跑再回退，也不得把系统 Python 缺少 `cv2` 误报成 OpenCV 未安装。宿主 `CreateProcess rejected by policy` 与 Windows 文件写入拒绝必须分开报告；UI 刚切换权限时在新回合重跑预检，不用复杂 shell 写删命令试探。
 16. 旁白项目的 `approve-full` 必须显式带 `--review-policy user_first|agent_first` 并写入 `fullApproval.reviewPolicy`；后续线稿、annotation preview 和 scene review 自动继承且拒绝冲突值。`agentApprovalEnabled=true` 时由项目授权确定性派生 `agent_first`，不得再次询问或接受冲突值；为 `false`/缺失时仍由用户选择，不得静默采用默认策略。
@@ -98,7 +98,7 @@ topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经�
 
 ## 当前能力与失败边界
 
-支持真实 Edge TTS、MiniMax、图片 provider（按配置）、当前 GPT 登录态可用的宿主内置 `image_gen`，以及 fixture/fake provider 自动测试；不以 fixture、技术验证或 child/AI review findings 冒充真实外部或质量批准。`gpt-login` 不是 provider 配置或浏览器 cookie 路径，不读取 `image-providers.local.json`、不需要 API Key，也不得静默改用 provider/API CLI。正式 render 使用 BGR24 stdin → libx264 单次编码；禁止用 `--fps`、`--total-ms`、`--cap-long-edge` 覆盖持久化合同。需要 AI 代理批准时，coordinator 必须使用当前宿主实际可用的图片、音频或视频消费能力完整检查对应媒体；能力不足即 `BLOCKED`。
+支持真实 Edge TTS、MiniMax、豆包语音、图片 provider（按配置）、当前 GPT 登录态可用的宿主内置 `image_gen`，以及 fixture/fake provider 自动测试；不以 fixture、技术验证或 child/AI review findings 冒充真实外部或质量批准。`gpt-login` 不是 provider 配置或浏览器 cookie 路径，不读取 `image-providers.local.json`、不需要 API Key，也不得静默改用 provider/API CLI。正式 render 使用 BGR24 stdin → libx264 单次编码；禁止用 `--fps`、`--total-ms`、`--cap-long-edge` 覆盖持久化合同。需要 AI 代理批准时，coordinator 必须使用当前宿主实际可用的图片、音频或视频消费能力完整检查对应媒体；能力不足即 `BLOCKED`。
 
 ### 项目预览链接交付合同
 
@@ -141,6 +141,9 @@ python scripts/prepare_env.py --check
 # 上一步仅因专用环境或依赖缺失而失败时：
 python scripts/prepare_env.py
 # 捕获末行 ENV_PY；后续每次工具调用都直接使用该绝对路径，不用裸 python/py
+# 首次生成整轨旁白前准备/检查当前 skill 自带的本地 ASR：
+<ENV_PY> scripts/prepare_env.py --feature narration-asr
+<ENV_PY> scripts/prepare_env.py --check --feature narration-asr
 <ENV_PY> scripts/prepare_draft_agent_task.py contentDrafting --content-input <input.json> --draft-root <draft-root>
 <ENV_PY> scripts/validate_content_draft.py --stdin
 <ENV_PY> scripts/prepare_draft_agent_task.py storyboardPlanning --draft-root <draft-root> --source-srt <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 35
@@ -157,6 +160,8 @@ python scripts/prepare_env.py
 <ENV_PY> scripts/generate_voiceover.py sample --project <项目根目录> --voice <voice> --rate <rate>
 <ENV_PY> scripts/generate_voiceover.py approve-sample --project <项目根目录> --identity-hash <SAMPLE_IDENTITY>
 <ENV_PY> scripts/generate_voiceover.py full --project <项目根目录>
+# CLI 正常执行时会自动调用当前 skill 内部 FunASR runner 并发布对齐结果；调试/恢复也可显式导入 ASR SRT：
+<ENV_PY> scripts/generate_voiceover.py publish-alignment --project <项目根目录> --asr-srt <ASR句级字幕.srt>
 <ENV_PY> scripts/generate_voiceover.py status --project <项目根目录>
 <ENV_PY> scripts/validate_voiceover.py --project <项目根目录> [--force-deep]
 <ENV_PY> scripts/generate_voiceover.py approve-full --project <项目根目录> --identity-hash <FULL_IDENTITY> --review-policy <user_first|agent_first> [--duration-decision accept_actual]

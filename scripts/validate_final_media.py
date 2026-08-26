@@ -435,7 +435,7 @@ def inspect_project_final_media(
     final_record = _require_mapping(manifest.get("final"), "final")
     final_audio_streams = 0 if project.voiceover_mode == "disabled" else 1
     canonical_duration: int | None = None
-    if project.voiceover_mode in {"edge-tts", "minimax"}:
+    if project.voiceover_mode in {"edge-tts", "minimax", "doubao"}:
         try:
             timeline = json.loads(project.path("audio/timeline.json").read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -457,7 +457,7 @@ def inspect_project_final_media(
                 expected_frame_count=expected_frames, expected_audio_streams=0,
                 record=captioned_record, force_deep=force_deep,
             )
-        if project.voiceover_mode in {"edge-tts", "minimax"}:
+        if project.voiceover_mode in {"edge-tts", "minimax", "doubao"}:
             technical = final_record.get("technicalValidation")
             nested = technical.get("mediaValidation") if isinstance(technical, Mapping) else None
             receipt = nested if isinstance(nested, Mapping) else technical if isinstance(technical, Mapping) else None
@@ -533,7 +533,7 @@ def inspect_project_final_media(
     if dict(identity_inputs) != expected_inputs or final.get("finalIdentitySha256") != expected_identity:
         raise FinalMediaStaleError("final identity 与 current 输入不一致")
     _assert_background_music(project, final, background_music)
-    if project.voiceover_mode in {"edge-tts", "minimax"}:
+    if project.voiceover_mode in {"edge-tts", "minimax", "doubao"}:
         _assert_edge_audio(
             project,
             final_media,

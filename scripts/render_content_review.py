@@ -103,6 +103,11 @@ def render_review_markdown(draft: Mapping[str, Any]) -> str:
 
     normalised = validate_content_draft(draft)
     identity = content_draft_identity(normalised)
+    provider_label = {
+        "edge-tts": "Edge TTS",
+        "minimax": "MiniMax",
+        "doubao": "豆包语音",
+    }[normalised["voiceoverMode"]]
     lines = [
         "---",
         f"contractVersion: {REVIEW_DOCUMENT_CONTRACT_VERSION}",
@@ -115,6 +120,8 @@ def render_review_markdown(draft: Mapping[str, Any]) -> str:
         "---",
         "",
         "# 内容与制作方案联合审阅",
+        "",
+        f"当前已采用：{provider_label}（`{normalised['voiceoverMode']}`）。",
         "",
         "## 原始输入",
         "",
@@ -176,7 +183,7 @@ def render_review_markdown(draft: Mapping[str, Any]) -> str:
             "## 时序与确认边界",
             "",
             f"- provisional SRT 使用 `{PROVISIONAL_TIMING_VERSION}`，按旁白字符与停顿权重在目标时长内确定性分配。",
-            "- 当前目标时长只用于内容预算与 provisional source SRT；Edge TTS 获批后的真实音频时间轴才是权威时钟。",
+            f"- 当前目标时长只用于内容预算与 provisional source SRT；{provider_label} 获批后的真实音频时间轴才是权威时钟。",
             "- 正式字幕将来自获批真实音频时间轴派生的 narration SRT。",
             "- 当前状态为待“内容与制作方案联合确认”；尚未批准、尚未运行 prepare_source.py、尚未创建正式项目。",
             "",

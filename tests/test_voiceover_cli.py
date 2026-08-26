@@ -130,6 +130,49 @@ class VoiceoverCliTests(unittest.TestCase):
         )
         return identity, adapter
 
+    def publish_alignment(self, project) -> str:
+        manifest = json.loads(
+            project.path("manifests/voice-manifest.json").read_text(encoding="utf-8")
+        )
+        duration_ms = manifest["composite"]["durationMs"]
+        source_cues = voice_module.parse_srt(
+            project.path("source/source.srt").read_text(encoding="utf-8-sig")
+        )
+        asr_cues = []
+        for index, cue in enumerate(source_cues):
+            start_ms = index * duration_ms // len(source_cues)
+            end_ms = (index + 1) * duration_ms // len(source_cues)
+            asr_cues.append(
+                {
+                    "originalIndex": index + 1,
+                    "startMs": start_ms,
+                    "endMs": end_ms,
+                    "text": cue["text"],
+                }
+            )
+        asr_path = project.path(".work/asr-fixture.srt")
+        asr_path.parent.mkdir(parents=True, exist_ok=True)
+        asr_path.write_text(voice_module.serialize_srt(asr_cues), encoding="utf-8")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(
+                voice_main(
+                    [
+                        "publish-alignment",
+                        "--project",
+                        str(project.root),
+                        "--asr-srt",
+                        str(asr_path),
+                    ]
+                ),
+                0,
+            )
+        return next(
+            line.split("=", 1)[1]
+            for line in output.getvalue().splitlines()
+            if line.startswith("FULL_IDENTITY=")
+        )
+
     def test_sample_gate_identity_and_full_technical_validation_do_not_auto_approve(self) -> None:
         project = self.make_project()
         sample_adapter = FakeProviderAdapter(canonical_wav_bytes(), "audio/wav")
@@ -173,14 +216,17 @@ class VoiceoverCliTests(unittest.TestCase):
             voice_main(["approve-sample", "--project", str(project.root), "--identity-hash", identity]), 0
         )
         output = io.StringIO()
-        full_adapter = FakeProviderAdapter(canonical_wav_bytes(), "audio/wav")
+        full_adapter = FakeProviderAdapter(canonical_wav_bytes(400), "audio/wav")
         with redirect_stdout(output):
             self.assertEqual(voice_main(["full", "--project", str(project.root)], adapter=full_adapter), 0)
-        full_identity = next(line.split("=", 1)[1] for line in output.getvalue().splitlines() if line.startswith("FULL_IDENTITY="))
+        self.assertIn("ALIGNMENT_REQUIRED=1", output.getvalue())
+        self.assertFalse(project.path("audio/timeline.json").exists())
+        full_identity = self.publish_alignment(project)
         self.assertNotIn("NARRATION_REVIEW", output.getvalue())
         self.assertFalse(project.path("previews/narration-review.mp4").exists())
         self.assertFalse(project.path("previews/narration-review.ass").exists())
-        self.assertEqual(len(full_adapter.requests), 2)
+        self.assertEqual(len(full_adapter.requests), 1)
+        self.assertIn("\n\n", full_adapter.requests[0].text)
         manifest_before_validation = manifest_path.read_bytes()
         self.assertEqual(validate_main(["--project", str(project.root)]), 0)
         self.assertEqual(manifest_path.read_bytes(), manifest_before_validation)
@@ -226,6 +272,154 @@ class VoiceoverCliTests(unittest.TestCase):
             workspace_module.resolve_project_review_policy(project, "user_first")
         self.assertNotIn("reviewIdentityHash", manifest["fullApproval"])
 
+    def test_full_can_inject_local_asr_runner_and_publish_alignment_in_one_cli_action(self) -> None:
+        project = self.make_project()
+        self.sample_and_approve(project)
+
+        def asr_runner(current_project, narration_path: Path) -> Path:
+            self.assertEqual(current_project.root, project.root)
+            self.assertTrue(narration_path.is_file())
+            source_cues = voice_module.parse_srt(
+                project.path("source/source.srt").read_text(encoding="utf-8-sig")
+            )
+            asr_path = project.path(".work/injected-asr/result.srt")
+            asr_path.parent.mkdir(parents=True, exist_ok=True)
+            asr_path.write_text(
+                voice_module.serialize_srt(
+                    [
+                        {
+                            "originalIndex": index,
+                            "startMs": (index - 1) * 200,
+                            "endMs": index * 200,
+                            "text": cue["text"],
+                        }
+                        for index, cue in enumerate(source_cues, start=1)
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            return asr_path
+
+        adapter = FakeProviderAdapter(canonical_wav_bytes(400), "audio/wav")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(
+                voice_main(
+                    ["full", "--project", str(project.root)],
+                    adapter=adapter,
+                    asr_runner=asr_runner,
+                ),
+                0,
+            )
+        self.assertEqual(len(adapter.requests), 1)
+        self.assertIn("FULL_IDENTITY=", output.getvalue())
+        self.assertNotIn("ALIGNMENT_REQUIRED=1", output.getvalue())
+        manifest = json.loads(
+            project.path("manifests/voice-manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["alignment"]["status"], "validated")
+        self.assertFalse(manifest["fullApproval"]["approved"])
+
+    def test_internal_asr_runner_uses_project_work_evidence_and_structured_result(self) -> None:
+        project = self.make_project()
+        narration = project.path("audio/narration.wav")
+        narration.parent.mkdir(parents=True, exist_ok=True)
+        narration.write_bytes(canonical_wav_bytes(400))
+
+        def fake_transcribe(audio_path: Path, output_dir: Path) -> dict:
+            self.assertEqual(audio_path, narration.resolve())
+            self.assertFalse(output_dir.exists())
+            self.assertEqual(output_dir.parent, project.path(".work").resolve())
+            self.assertTrue(output_dir.name.startswith("voice-align-"))
+            output_dir.mkdir(parents=True)
+            raw_srt = output_dir / "transcript.sentence.srt"
+            raw_srt.write_text(
+                "1\n00:00:00,000 --> 00:00:00,400\n本地旁白。\n",
+                encoding="utf-8",
+            )
+            return {
+                "ok": True,
+                "outputDirectory": str(output_dir),
+                "rawSrtPath": str(raw_srt),
+                "rawJsonPath": str(output_dir / "transcript.paraformer.json"),
+                "receiptPath": str(output_dir / "receipt.json"),
+                "audioInputPath": str(audio_path),
+                "durationMs": 400,
+                "sentenceCount": 1,
+                "timingValidation": {"invalidRanges": 0, "overlaps": 0},
+            }
+
+        with mock.patch.object(
+            voice_module, "transcribe_narration", side_effect=fake_transcribe
+        ):
+            raw_srt = voice_module._run_local_asr(project, narration)
+        self.assertTrue(raw_srt.is_file())
+        self.assertTrue(raw_srt.is_relative_to(project.path(".work").resolve()))
+
+    def test_asr_failure_keeps_canonical_wav_and_retry_reuses_tts_then_publishes(self) -> None:
+        project = self.make_project()
+        self.sample_and_approve(project)
+        adapter = FakeProviderAdapter(canonical_wav_bytes(400), "audio/wav")
+
+        def failed_asr(_project, _narration):
+            raise voice_module.VoiceoverStateError("fixture ASR failure")
+
+        self.assertEqual(
+            voice_main(
+                ["full", "--project", str(project.root)],
+                adapter=adapter,
+                asr_runner=failed_asr,
+            ),
+            2,
+        )
+        self.assertEqual(len(adapter.requests), 1)
+        self.assertTrue(project.path("audio/narration.wav").is_file())
+        manifest = json.loads(
+            project.path("manifests/voice-manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["alignment"]["status"], "waiting_alignment")
+        self.assertEqual(manifest["runs"][-1]["status"], "waiting_alignment")
+
+        no_call = FakeProviderAdapter(
+            outcomes=[PermanentProviderError("provider must not rerun")]
+        )
+
+        def recovered_asr(_project, narration_path: Path) -> Path:
+            self.assertEqual(narration_path, project.path("audio/narration.wav"))
+            source_cues = voice_module.parse_srt(
+                project.path("source/source.srt").read_text(encoding="utf-8-sig")
+            )
+            path = project.path(".work/recovered-asr/result.srt")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                voice_module.serialize_srt(
+                    [
+                        {
+                            "originalIndex": index,
+                            "startMs": (index - 1) * 200,
+                            "endMs": index * 200,
+                            "text": cue["text"],
+                        }
+                        for index, cue in enumerate(source_cues, start=1)
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            return path
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(
+                voice_main(
+                    ["full", "--project", str(project.root), "--retry-failed"],
+                    adapter=no_call,
+                    asr_runner=recovered_asr,
+                ),
+                0,
+            )
+        self.assertEqual(no_call.requests, [])
+        self.assertIn("FULL_IDENTITY=", output.getvalue())
+
     def test_agent_approval_approve_full_derives_only_agent_first(self) -> None:
         project = self.make_project(agent_approval_enabled=True)
         self.sample_and_approve(project)
@@ -234,15 +428,11 @@ class VoiceoverCliTests(unittest.TestCase):
             self.assertEqual(
                 voice_main(
                     ["full", "--project", str(project.root)],
-                    adapter=FakeProviderAdapter(canonical_wav_bytes(), "audio/wav"),
+                    adapter=FakeProviderAdapter(canonical_wav_bytes(400), "audio/wav"),
                 ),
                 0,
             )
-        full_identity = next(
-            line.split("=", 1)[1]
-            for line in output.getvalue().splitlines()
-            if line.startswith("FULL_IDENTITY=")
-        )
+        full_identity = self.publish_alignment(project)
         manifest_path = project.path("manifests/voice-manifest.json")
         timing_before = project.timing_plan_path.read_bytes()
         manifest_before = manifest_path.read_bytes()
@@ -288,8 +478,11 @@ class VoiceoverCliTests(unittest.TestCase):
         self.assertEqual(voice_main(["approve-sample", "--project", str(project.root), "--identity-hash", sample_identity]), 0)
         output = io.StringIO()
         with redirect_stdout(output):
-            self.assertEqual(voice_main(["full", "--project", str(project.root)], adapter=adapter), 0)
-        full_identity = next(line.split("=", 1)[1] for line in output.getvalue().splitlines() if line.startswith("FULL_IDENTITY="))
+            self.assertEqual(voice_main(
+                ["full", "--project", str(project.root)],
+                adapter=FakeProviderAdapter(canonical_wav_bytes(400), "audio/wav"),
+            ), 0)
+        full_identity = self.publish_alignment(project)
         self.assertEqual(voice_main([
             "approve-full", "--project", str(project.root), "--identity-hash", full_identity,
             "--review-policy", "user_first",
@@ -298,6 +491,88 @@ class VoiceoverCliTests(unittest.TestCase):
         timing = json.loads(project.path("planning/timing-plan.json").read_text(encoding="utf-8"))
         self.assertEqual(plan["mode"], "minimax")
         self.assertEqual(timing["activeTimeline"]["kind"], "audio-authoritative-timeline")
+
+    def test_doubao_mode_uses_shared_sample_full_timeline_gate_with_fake_adapter(self) -> None:
+        project = self.make_project(voiceover_mode="doubao")
+        adapter = FakeProviderAdapter(canonical_wav_bytes(), "audio/wav")
+        provider_config = {
+            "id": "doubao",
+            "protocol": "Doubao",
+            "contractVersion": "doubao-seed-audio-http-v1",
+            "voice": "speaker-fixture",
+            "language": "zh-CN",
+            "rate": "+0%",
+            "pitch": "+0Hz",
+            "volume": "+0%",
+            "outputFormat": "audio-24khz-mono-wav",
+            "model": "seed-audio-1.0",
+        }
+        output = io.StringIO()
+        with (
+            mock.patch.object(voice_module, "active_provider_id", return_value="doubao"),
+            mock.patch.object(
+                voice_module,
+                "load_voice_provider_config",
+                return_value=provider_config,
+            ),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(
+                voice_main(["sample", "--project", str(project.root)], adapter=adapter),
+                0,
+            )
+        sample_identity = next(
+            line.split("=", 1)[1]
+            for line in output.getvalue().splitlines()
+            if line.startswith("SAMPLE_IDENTITY=")
+        )
+        self.assertEqual(
+            voice_main(
+                [
+                    "approve-sample",
+                    "--project",
+                    str(project.root),
+                    "--identity-hash",
+                    sample_identity,
+                ]
+            ),
+            0,
+        )
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(
+                voice_main(
+                    ["full", "--project", str(project.root)],
+                    adapter=FakeProviderAdapter(canonical_wav_bytes(400), "audio/wav"),
+                ),
+                0,
+            )
+        full_identity = self.publish_alignment(project)
+        self.assertEqual(
+            voice_main(
+                [
+                    "approve-full",
+                    "--project",
+                    str(project.root),
+                    "--identity-hash",
+                    full_identity,
+                    "--review-policy",
+                    "user_first",
+                ]
+            ),
+            0,
+        )
+        plan = json.loads(
+            project.path("planning/voice-plan.json").read_text(encoding="utf-8")
+        )
+        timing = json.loads(
+            project.path("planning/timing-plan.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(plan["mode"], "doubao")
+        self.assertEqual(plan["provider"]["protocol"], "Doubao")
+        self.assertEqual(
+            timing["activeTimeline"]["kind"], "audio-authoritative-timeline"
+        )
 
     def test_sample_without_provider_uses_active_provider_but_respects_project_mode(self) -> None:
         project = self.make_project(voiceover_mode="minimax")
@@ -318,15 +593,10 @@ class VoiceoverCliTests(unittest.TestCase):
     def test_retry_failed_only_requests_unfinished_segment_and_classifies_failures(self) -> None:
         project = self.make_project()
         self.sample_and_approve(project)
-        first = FakeProviderAdapter(
-            outcomes=[
-                lambda request: FakeProviderAdapter(canonical_wav_bytes(), "audio/wav").synthesize(request),
-                RetryableProviderError("timeout exhausted"),
-            ]
-        )
+        first = FakeProviderAdapter(outcomes=[RetryableProviderError("timeout exhausted")])
         self.assertEqual(voice_main(["full", "--project", str(project.root)], adapter=first), 3)
         manifest = json.loads(project.path("manifests/voice-manifest.json").read_text(encoding="utf-8"))
-        self.assertEqual([item["status"] for item in manifest["segments"]], ["validated", "failed"])
+        self.assertEqual([item["status"] for item in manifest["segments"]], ["failed"])
         retry = FakeProviderAdapter(canonical_wav_bytes(), "audio/wav")
         self.assertEqual(
             voice_main(["full", "--project", str(project.root), "--retry-failed"], adapter=retry), 0
@@ -387,11 +657,11 @@ class VoiceoverCliTests(unittest.TestCase):
             workspace_config=self.execution_config(project, voice_generation=2),
         )
         self.assertEqual(code, 3)
-        self.assertEqual(len(adapter.requests), 2)
+        self.assertEqual(len(adapter.requests), 1)
         manifest = json.loads(project.path("manifests/voice-manifest.json").read_text(encoding="utf-8"))
-        self.assertEqual([item["status"] for item in manifest["segments"]], ["failed", "validated", "pending", "pending"])
+        self.assertEqual([item["status"] for item in manifest["segments"]], ["failed"])
         self.assertEqual(manifest["runs"][-1]["configuredConcurrency"], 2)
-        self.assertEqual(manifest["runs"][-1]["effectiveConcurrency"], 2)
+        self.assertEqual(manifest["runs"][-1]["effectiveConcurrency"], 1)
 
     def test_voice_generation_four_way_completion_order_keeps_unit_timeline_order(self) -> None:
         project = self.make_project(cue_count=4)
@@ -423,13 +693,12 @@ class VoiceoverCliTests(unittest.TestCase):
             ),
             0,
         )
-        self.assertGreaterEqual(peak, 2)
-        self.assertLessEqual(peak, 4)
-        timeline = json.loads(project.path("audio/timeline.json").read_text(encoding="utf-8"))
-        self.assertEqual([unit["index"] for unit in timeline["units"]], [1, 2, 3, 4])
-        self.assertEqual([scene["sceneId"] for scene in timeline["scenes"]], [f"scene-{index:02d}" for index in range(1, 5)])
+        self.assertEqual(peak, 1)
+        self.assertEqual(len(adapter.requests), 1)
+        self.assertFalse(project.path("audio/timeline.json").exists())
         manifest = json.loads(project.path("manifests/voice-manifest.json").read_text(encoding="utf-8"))
-        self.assertEqual(manifest["runs"][-1]["effectiveConcurrency"], 4)
+        self.assertEqual(manifest["runs"][-1]["effectiveConcurrency"], 1)
+        self.assertEqual(manifest["runs"][-1]["status"], "waiting_alignment")
 
     def test_candidate_ready_and_publishing_recover_without_provider_calls(self) -> None:
         for state in ("candidate_ready", "publishing"):
@@ -494,6 +763,7 @@ class VoiceoverCliTests(unittest.TestCase):
             ),
             0,
         )
+        self.publish_alignment(project)
         manifest_path = project.path("manifests/voice-manifest.json")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         sample_identity = manifest["sample"]["identityHash"]
@@ -508,7 +778,7 @@ class VoiceoverCliTests(unittest.TestCase):
             voice_module.validate_current_voiceover(
                 project, force_deep=True, persist_deep=True
             )
-            self.assertEqual(deep.call_count, 3)  # two segments plus composite
+            self.assertEqual(deep.call_count, 2)  # one full-track segment plus composite
 
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertTrue(all(

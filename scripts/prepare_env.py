@@ -12,7 +12,18 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from project_workspace import WorkspaceError, load_workspace_config, probe_workspace_access
+try:
+    from .project_workspace import (
+        WorkspaceError,
+        load_workspace_config,
+        probe_workspace_access,
+    )
+except ImportError:  # pragma: no cover - 兼容直接执行 scripts/prepare_env.py
+    from project_workspace import (
+        WorkspaceError,
+        load_workspace_config,
+        probe_workspace_access,
+    )
 
 
 BASE_DEPS: dict[str, str] = {
@@ -22,13 +33,42 @@ BASE_DEPS: dict[str, str] = {
     "PIL": "Pillow",
 }
 EDGE_TTS_VERSION = "7.2.8"
+FUNASR_VERSION = "1.4.3"
+MODELSCOPE_VERSION = "1.39.1"
+TORCH_VERSION = "2.13.0"
+NARRATION_ASR_CONTRACT = "narration-asr-models-v1"
+NARRATION_ASR_RECEIPT_NAME = "narration-asr-models.json"
+NARRATION_ASR_DEPS: dict[str, str] = {
+    "funasr": f"funasr=={FUNASR_VERSION}",
+    "modelscope": f"modelscope=={MODELSCOPE_VERSION}",
+    "torch": f"torch=={TORCH_VERSION}",
+}
+NARRATION_ASR_MODELS: tuple[dict[str, str], ...] = (
+    {
+        "alias": "paraformer-zh",
+        "modelId": "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+        "requestedRevision": "master",
+    },
+    {
+        "alias": "fsmn-vad",
+        "modelId": "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
+        "requestedRevision": "master",
+    },
+    {
+        "alias": "ct-punc",
+        "modelId": "iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
+        "requestedRevision": "master",
+    },
+)
 FEATURE_DEPS: dict[str, dict[str, str]] = {
     "edge-tts": {"edge_tts": f"edge-tts=={EDGE_TTS_VERSION}"},
+    "narration-asr": NARRATION_ASR_DEPS,
 }
 # 保留旧名称，供只关心基础渲染依赖的调用方使用。
 DEPS = BASE_DEPS
 
 _PROBE_RESULT_PREFIX = "ENV_DEPENDENCY_PROBE="
+_MODEL_PREPARE_RESULT_PREFIX = "NARRATION_ASR_MODEL_PREPARE="
 _DEPENDENCY_PROBE_CODE = r"""
 import importlib
 import importlib.metadata
@@ -53,12 +93,116 @@ for specification in specifications:
     results.append({"importName": specification["importName"], "available": available})
 print("ENV_DEPENDENCY_PROBE=" + json.dumps(results, separators=(",", ":")))
 """
+_MODEL_PREPARE_CODE = r"""
+import json
+import sys
+from pathlib import Path
+
+from modelscope.hub.snapshot_download import snapshot_download
+
+cache_root = Path(sys.argv[1]).resolve()
+models = json.loads(sys.argv[2])
+resolved = []
+for model in models:
+    path = Path(
+        snapshot_download(
+            model["modelId"],
+            revision=model["requestedRevision"],
+            cache_dir=str(cache_root),
+        )
+    ).resolve()
+    resolved.append({**model, "path": str(path)})
+print("NARRATION_ASR_MODEL_PREPARE=" + json.dumps(resolved, separators=(",", ":")))
+"""
+
+
+class NarrationAsrBlockedError(RuntimeError):
+    """narration-asr 首次准备需要的依赖或模型当前无法取得。"""
 
 
 def runtime_paths(config_path: str | Path | None = None) -> tuple[Path, Path, Path]:
     workspace = load_workspace_config(config_path)
     runtime = workspace.runtime_dir
     return runtime / ".venv", runtime / "cache" / "pip", runtime / "tmp"
+
+
+def narration_asr_paths(
+    config_path: str | Path | None = None,
+) -> tuple[Path, Path]:
+    """返回当前白板工作区独占的 FunASR 模型缓存与 receipt 路径。"""
+    workspace = load_workspace_config(config_path)
+    cache_root = workspace.runtime_dir / "cache" / "funasr-models"
+    return cache_root, cache_root / NARRATION_ASR_RECEIPT_NAME
+
+
+def _is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return path != parent
+
+
+def load_narration_asr_model_paths(
+    config_path: str | Path | None = None,
+    *,
+    receipt_path: str | Path | None = None,
+) -> dict[str, Path]:
+    """严格读取当前 workspace receipt；只返回已缓存的本地模型目录。"""
+    cache_root, default_receipt = narration_asr_paths(config_path)
+    receipt = default_receipt if receipt_path is None else Path(receipt_path)
+    try:
+        payload = json.loads(receipt.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"narration-asr 模型 receipt 不存在: {receipt}") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"narration-asr 模型 receipt 无法读取: {receipt}") from exc
+
+    expected_cache = cache_root.resolve()
+    if not isinstance(payload, dict):
+        raise RuntimeError("narration-asr 模型 receipt 必须是 JSON 对象")
+    if payload.get("schemaVersion") != 1 or payload.get("contract") != NARRATION_ASR_CONTRACT:
+        raise RuntimeError("narration-asr 模型 receipt 合同不匹配")
+    try:
+        recorded_cache = Path(payload["cacheRoot"]).resolve()
+    except (KeyError, TypeError, OSError) as exc:
+        raise RuntimeError("narration-asr 模型 receipt cacheRoot 无效") from exc
+    if recorded_cache != expected_cache:
+        raise RuntimeError("narration-asr 模型 receipt 不属于当前白板工作区")
+
+    raw_models = payload.get("models")
+    if not isinstance(raw_models, list):
+        raise RuntimeError("narration-asr 模型 receipt models 必须是数组")
+    expected_by_alias = {model["alias"]: model for model in NARRATION_ASR_MODELS}
+    resolved: dict[str, Path] = {}
+    for item in raw_models:
+        if not isinstance(item, dict) or not isinstance(item.get("alias"), str):
+            raise RuntimeError("narration-asr 模型 receipt 包含无效模型项")
+        alias = item["alias"]
+        expected = expected_by_alias.get(alias)
+        if expected is None or alias in resolved:
+            raise RuntimeError("narration-asr 模型 receipt 包含未知或重复 alias")
+        if (
+            item.get("modelId") != expected["modelId"]
+            or item.get("requestedRevision") != expected["requestedRevision"]
+        ):
+            raise RuntimeError(f"narration-asr 模型合同不匹配: {alias}")
+        try:
+            local_path = Path(item["path"]).resolve()
+        except (KeyError, TypeError, OSError) as exc:
+            raise RuntimeError(f"narration-asr 模型路径无效: {alias}") from exc
+        if not _is_within(local_path, expected_cache):
+            raise RuntimeError(f"narration-asr 模型路径越出当前 workspace 缓存: {alias}")
+        try:
+            populated = local_path.is_dir() and next(local_path.iterdir(), None) is not None
+        except OSError as exc:
+            raise RuntimeError(f"narration-asr 模型目录无法读取: {alias}") from exc
+        if not populated:
+            raise RuntimeError(f"narration-asr 模型目录缺失或为空: {alias}")
+        resolved[alias] = local_path
+    if set(resolved) != set(expected_by_alias):
+        raise RuntimeError("narration-asr 模型 receipt 未完整覆盖固定三模型合同")
+    return resolved
 
 
 def interpreter_path(venv_root: Path) -> Path:
@@ -195,6 +339,137 @@ def install(py: Path, packages: list[str], env: dict[str, str]) -> bool:
     return True
 
 
+def _narration_asr_environment(
+    env: dict[str, str],
+    cache_root: Path,
+) -> dict[str, str]:
+    prepared = env.copy()
+    prepared["MODELSCOPE_CACHE"] = str(cache_root)
+    prepared["FUNASR_HOME"] = str(cache_root)
+    return prepared
+
+
+def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def prepare_narration_asr_models(
+    py: Path,
+    cache_root: Path,
+    receipt_path: Path,
+    env: dict[str, str],
+    *,
+    config_path: str | Path | None = None,
+) -> dict[str, Path]:
+    """首次准备固定三模型；已有合法 receipt 时严格复用，不触发更新。"""
+    try:
+        return load_narration_asr_model_paths(
+            config_path,
+            receipt_path=receipt_path,
+        )
+    except RuntimeError:
+        pass
+
+    cache_root.mkdir(parents=True, exist_ok=True)
+    print(f"[..] 准备 narration-asr 固定模型缓存: {cache_root}")
+    prepared_env = _narration_asr_environment(env, cache_root)
+    result = subprocess.run(
+        [
+            str(py),
+            "-c",
+            _MODEL_PREPARE_CODE,
+            str(cache_root),
+            json.dumps(NARRATION_ASR_MODELS, ensure_ascii=True, separators=(",", ":")),
+        ],
+        capture_output=True,
+        text=True,
+        env=prepared_env,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        if len(detail) > 2000:
+            detail = detail[-2000:]
+        suffix = f": {detail}" if detail else ""
+        raise NarrationAsrBlockedError(
+            "narration-asr 模型尚未缓存，且本次下载未完成；"
+            f"请恢复网络后重试 --feature narration-asr{suffix}"
+        )
+    payload_line = next(
+        (
+            line[len(_MODEL_PREPARE_RESULT_PREFIX) :]
+            for line in reversed(result.stdout.splitlines())
+            if line.startswith(_MODEL_PREPARE_RESULT_PREFIX)
+        ),
+        None,
+    )
+    if payload_line is None:
+        raise NarrationAsrBlockedError("narration-asr 模型准备未返回结构化结果")
+    try:
+        models = json.loads(payload_line)
+    except json.JSONDecodeError as exc:
+        raise NarrationAsrBlockedError("narration-asr 模型准备返回了无效 JSON") from exc
+    if not isinstance(models, list):
+        raise NarrationAsrBlockedError("narration-asr 模型准备结果必须是数组")
+    receipt_payload: dict[str, object] = {
+        "schemaVersion": 1,
+        "contract": NARRATION_ASR_CONTRACT,
+        "cacheRoot": str(cache_root.resolve()),
+        "dependencyRequirements": list(NARRATION_ASR_DEPS.values()),
+        "models": models,
+    }
+    _write_json_atomic(receipt_path, receipt_payload)
+    try:
+        resolved = load_narration_asr_model_paths(
+            config_path,
+            receipt_path=receipt_path,
+        )
+    except RuntimeError as exc:
+        raise NarrationAsrBlockedError(
+            f"narration-asr 模型下载结果未通过本地路径合同校验: {exc}"
+        ) from exc
+    print("[ok] narration-asr 固定三模型缓存就绪")
+    return resolved
+
+
+def _print_narration_asr_status(
+    status: str,
+    cache_root: Path,
+    receipt_path: Path,
+    *,
+    reason: str | None = None,
+    model_paths: dict[str, Path] | None = None,
+) -> None:
+    payload: dict[str, object] = {
+        "status": status,
+        "contract": NARRATION_ASR_CONTRACT,
+        "cacheRoot": str(cache_root.resolve()),
+        "receiptPath": str(receipt_path.resolve()),
+        "models": {
+            alias: str(path.resolve()) for alias, path in sorted((model_paths or {}).items())
+        },
+    }
+    if reason is not None:
+        payload["reason"] = reason
+    print(
+        "NARRATION_ASR_ENV="
+        + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
+
+
 def _parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="准备基础白板渲染环境；语音 provider 依赖仅在显式 feature 下安装。"
@@ -203,7 +478,10 @@ def _parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--feature",
         choices=sorted(FEATURE_DEPS),
-        help="可选能力；Edge TTS 需要显式 edge-tts，MiniMax 使用 Python 标准库",
+        help=(
+            "可选能力；edge-tts 准备 Edge，narration-asr 准备当前 workspace "
+            "自有的 FunASR CPU 依赖与固定模型缓存"
+        ),
     )
     parser.add_argument("--config", help="workspace.local.json 路径")
     parser.add_argument(
@@ -251,13 +529,74 @@ def main(argv: list[str] | None = None) -> int:
                 missing.append(pip_requirement)
         if missing:
             if args.check:
+                if args.feature == "narration-asr":
+                    cache_root, receipt_path = narration_asr_paths(args.config)
+                    _print_narration_asr_status(
+                        "BLOCKED",
+                        cache_root,
+                        receipt_path,
+                        reason="dependency_missing",
+                    )
                 print(f"[err] 缺少 {len(missing)} 个依赖: {', '.join(missing)}", file=sys.stderr)
                 return 1
             if not install(py, missing, env):
+                if args.feature == "narration-asr":
+                    cache_root, receipt_path = narration_asr_paths(args.config)
+                    _print_narration_asr_status(
+                        "BLOCKED",
+                        cache_root,
+                        receipt_path,
+                        reason="dependency_install_failed",
+                    )
                 return 1
+
+        if args.feature == "narration-asr":
+            cache_root, receipt_path = narration_asr_paths(args.config)
+            if args.check:
+                try:
+                    model_paths = load_narration_asr_model_paths(
+                        args.config,
+                        receipt_path=receipt_path,
+                    )
+                except RuntimeError as exc:
+                    _print_narration_asr_status(
+                        "BLOCKED",
+                        cache_root,
+                        receipt_path,
+                        reason=str(exc),
+                    )
+                    print(f"[err] {exc}", file=sys.stderr)
+                    return 1
+            else:
+                model_paths = prepare_narration_asr_models(
+                    py,
+                    cache_root,
+                    receipt_path,
+                    env,
+                    config_path=args.config,
+                )
+            _print_narration_asr_status(
+                "READY",
+                cache_root,
+                receipt_path,
+                model_paths=model_paths,
+            )
     except WorkspaceError as exc:
         print(f"[err] {exc}", file=sys.stderr)
         return 2
+    except NarrationAsrBlockedError as exc:
+        try:
+            cache_root, receipt_path = narration_asr_paths(args.config)
+            _print_narration_asr_status(
+                "BLOCKED",
+                cache_root,
+                receipt_path,
+                reason=str(exc),
+            )
+        except (WorkspaceError, RuntimeError, OSError):
+            pass
+        print(f"[blocked] {exc}", file=sys.stderr)
+        return 1
     except (RuntimeError, OSError) as exc:
         print(f"[err] {exc}", file=sys.stderr)
         return 1

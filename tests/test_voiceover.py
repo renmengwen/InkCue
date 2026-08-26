@@ -23,6 +23,7 @@ from scripts.voiceover import (
     normalize_pitch,
     normalize_rate,
     normalize_volume,
+    plan_full_track_unit,
     plan_speech_units,
     validate_voice_manifest,
     validate_voice_plan,
@@ -138,6 +139,18 @@ class ProviderProtocolTests(unittest.TestCase):
 
 
 class SpeechUnitPlannerTests(unittest.TestCase):
+    def test_full_track_planner_preserves_scene_paragraphs_in_one_request(self) -> None:
+        cues = [cue(1, "第一幕第一句。"), cue(2, "第一幕第二句。"), cue(3, "第二幕一句。")]
+        scenes = [
+            {"sceneId": "scene-01", "sourceCueRange": [1, 2]},
+            {"sceneId": "scene-02", "sourceCueRange": [3, 3]},
+        ]
+        units = plan_full_track_unit(cues, scenes)
+        self.assertEqual(len(units), 1)
+        self.assertEqual(units[0]["speechText"], "第一幕第一句。第一幕第二句。\n\n第二幕一句。")
+        self.assertEqual(units[0]["sourceCueRange"], [1, 3])
+        self.assertEqual(units[0]["sceneCueRanges"], scenes)
+
     def test_sentence_end_secondary_break_short_merge_and_punctuation_only(self) -> None:
         cues = [
             cue(1, "第一句很短。第二句也不长！"),

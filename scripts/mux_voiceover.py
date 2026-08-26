@@ -129,7 +129,7 @@ def _load_delivery(project: Project) -> tuple[Path, dict[str, Any]]:
     if (
         manifest.get("schemaVersion") != 1
         or manifest.get("projectId") != project.project_id
-        or manifest.get("voiceoverMode") not in {"edge-tts", "minimax"}
+        or manifest.get("voiceoverMode") not in {"edge-tts", "minimax", "doubao"}
     ):
         raise MuxStaleError("delivery manifest 项目或 mode 身份 stale")
     return path, manifest
@@ -352,7 +352,7 @@ def mux_project(
     force_deep: bool = False,
 ) -> dict[str, Any]:
     project = load_project(project_root)
-    if project.voiceover_mode not in {"edge-tts", "minimax"}:
+    if project.voiceover_mode not in {"edge-tts", "minimax", "doubao"}:
         raise MuxStaleError("mux_voiceover.py 只允许带音频的旁白项目")
     background_music = load_background_music_plan(project)
     manifest_path, manifest = _load_delivery(project)
