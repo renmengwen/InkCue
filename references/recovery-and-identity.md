@@ -29,22 +29,21 @@ stale、checkpoint 与 approval。candidate/旧 attempt 失败时保留诊断证
 
 ### 1.1 Gate 决策模式
 
-`project.json.agentApprovalEnabled` 缺失或为 `false` 时保持现有人工批准；为 `true` 时，阶段 0
-之后的常规 Gate 由 coordinator 代理审阅和决策。该字段只切换审阅主体，不跳过任何技术
-validator、current/identity/stale 复核、真实图像/音频/视频审阅或既有批准脚本，也不新增
-identity、manifest、状态机、恢复协议或 CLI。批准主体不进入作品 identity；项目的已冻结开关和
-阶段摘要即是决策模式证据。
+新项目先以 `project.json.initialApproval.status=pending` 创建。项目 loader 将其投影为 `pending_initial_approval=true` / `initial_approval_completed=false`；旧正式项目缺少 `initialApproval` 时兼容为已完成。pending 项目只允许阶段 0 review、current 样音及修订、联合批准；完整旁白、图片、annotation、render、merge、burn、mux、final 的每个入口都必须硬拒绝。该 marker 是最小持久化边界，不引入第二套状态机。
+
+阶段 0 的一次用户回复必须绑定 current content identity 与旁白项目 current `SAMPLE_IDENTITY`。原子动作重验 pending、identity、完整句选项和能力条件，成功时一次写入 BGM、agent 模式、生图方式、sample approval 与 `initialApproval.status=approved`；失败不留部分状态。审计 basis 固定区分 `user_joint_content_and_sample`、`user_joint_initial_approval` 与静音 `user_joint_silent_plan`。
+
+`project.json.agentApprovalEnabled` 缺失或为 `false` 时保持人工批准。为 `true` 时，用户已用 current 样音完成唯一声音主观 Gate；full/final 在严格技术证据 current 后用最小 `approvalBasis/reviewBasis` 记录“用户样音授权后的技术推进”。视觉 Gate 仍需要真实查看。该字段不跳过技术 validator、current/identity/stale、既有批准脚本，也不新增 identity、manifest、状态机或恢复协议；basis 不进入作品 identity。
 
 - 人工模式：coordinator 交付 current artifact/identity，等待用户完成所需真实审阅并明确确认。
-- AI 代理模式：coordinator 必须证明实际完成了本 Gate 要求的完整听音、查看图像或观看视频，对
+- 自主视觉模式：coordinator 必须证明实际完成了本 Gate 要求的查看图像或观看视频，对
   current identity 作出独立明确决定；具备所需媒体能力的 child 可完成冻结 scope 内的真实检查，但
   child 始终 `approvalWritesAllowed:false`，coordinator 仍须重验其 scope、result、current binding 和具体 findings 后
   自行决策并调用原批准脚本。`completed`、无 findings、技术 PASS 或关键帧/contact sheet 都不能单独成为批准。
 - AI 决定驳回时，只使受影响阶段及下游 stale，按既有 attempt/恢复语义返工并重审，不因普通返工
   等待用户。若修复必须实质改变阶段 0 已冻结的内容、target、cue/scene、图片提示词、BGM 选择
   或其他用户意图，必须回到阶段 0 取得用户新的明确确认。
-- 审阅宿主缺少实际查图、完整听音或完整观看视频的能力时必须 `BLOCKED`，不得降级为 metadata、
-  SHA、ffprobe、完整解码、固定测试、关键帧或 contact sheet 后冒充真实审阅。
+- 视觉宿主缺少实际查图/观看视频能力时必须 `BLOCKED`。自主 full/final 不因缺听音能力阻塞，但必须只报告技术推进；metadata、SHA、ffprobe、完整解码和固定测试都不能冒充真实听审。
 
 ## 2. Identity 组成与 current binding
 
@@ -69,6 +68,7 @@ identity 是规范化业务输入与合同版本的 SHA-256，不包含创建时
 | source 仅改时间或 narration WAV 改变 | 时长决定、full approval、timeline、SRT、annotation 与视频下游 | 未受影响的图片/合成段 |
 | timing plan、render profile、字幕源/样式/字体或编码 contract 改变 | 受影响 annotation、scene/video、subtitle/final 与批准 | 未绑定输入的上游候选，需重新 binding |
 | `backgroundMusic.enabled`、内置 BGM 字节或固定混音参数改变 | final 与最终批准 | current 旁白、timeline、画面和字幕 |
+| pending 预项目的 content identity、voice/rate 或 sample identity 改变 | 初始联合 choice、sample approval 及受影响下游 | 不受影响的历史候选仅作证据 |
 
 stale 文件可留作历史证据，但不得作为 current 输入；批准必须重新绑定新 identity。
 

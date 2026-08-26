@@ -17,7 +17,7 @@
 
 ## 工作区与项目边界
 
-正式项目只能在用户确认传统 SRT 模式/分镜策略，或完成 topic/text 内容与制作方案联合确认并生成 source package 后创建。topic/text 的确定性派生与已确认方案一致时不再设置第二次策略确认。默认工作区由 `config/workspace.local.json` 指向 `D:\SRTWhiteboard`，项目位于 `D:\SRTWhiteboard\projects\<项目名>`。配置缺失、D 盘不可用或目录不可写时必须停止，不得回退 C 盘、当前目录或系统临时目录。
+阶段 0 可以创建 `initialApproval.status=pending` 的受限预项目，以承载 current 草案、source/voice plan、真实样音与联合批准。正式图片生成在任何 provider client、attempt 或候选创建前必须调用 pending guard；只有原子联合动作把预项目提升为 approved 后才可继续。不能仅凭 coordinator 记忆或 review Markdown 越过该边界。默认工作区由 `config/workspace.local.json` 指向 `D:\SRTWhiteboard`，项目位于 `D:\SRTWhiteboard\projects\<项目名>`。
 
 项目中的关键文件为：
 
@@ -38,7 +38,7 @@ output/final.mp4
 
 ```powershell
 <ENV_PY> scripts/create_project.py --name <项目名> --srt <字幕.srt> `
-  --plan <已确认策略.json> --voiceover-mode disabled
+  --plan <阶段0候选策略.json> --voiceover-mode disabled --pending-initial-approval
 ```
 
 `--plan` 指向已经确认的 generation plan。未提供时只创建空场景的计划骨架，必须补全并校验计划后才能生图。
@@ -74,7 +74,7 @@ output/final.mp4
 
 ## Generation plan
 
-`planning/generation-plan.json` 冻结本次画布、全局视觉提示和场景顺序。第一版固定要求：
+`planning/generation-plan.json` 在 pending 预项目中可作为阶段 0 审阅证据冻结，但批准前不得被图片 provider 消费。第一版固定要求：
 
 - topic/text 内容草案使用 `imagePrompt`，formal generation plan 的 scene 字段固定为 `prompt`；用户批准 current 草案后，只能由 coordinator 做 `imagePrompt` → formal `prompt` 的确定性映射，文本与 scene 顺序保持不变。正式 plan 不接受 `imagePrompt`，provider 也不直接消费内容草案。
 
@@ -129,6 +129,8 @@ provider 消费与发布行为；该规范不增加 schema 字段，也不改变
 字段缺失时从 worker pool 的 `default` 继承，整个 pool 缺失时为 `1`。worker pool 与 `execution.agents` 独立且不做乘法；agent task 不得再启动 provider worker。配置只决定本机执行策略，不进入图片 identity。每次生成/验证摘要都记录 `configuredConcurrency`、`effectiveConcurrency` 与 `taskCount`；无论 worker 完成顺序如何，manifest 与校验摘要始终按 generation plan 场景顺序提交。
 
 ## 生成、覆盖与失败重试
+
+所有图片生成/消费验证入口首先拒绝 `pending_initial_approval`；该拒绝使用 current 项目字段，不依赖调用顺序。联合批准后，`imageGenerationMode` 已由用户完整句原子冻结；运行时不得展示或采用联合选项中未合法枚举的方式。
 
 跨阶段状态、identity、stale、attempt 恢复、自动重试与
 `unknown_external_outcome` 的权威规则见

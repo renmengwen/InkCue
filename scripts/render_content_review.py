@@ -19,6 +19,10 @@ try:  # direct CLI execution
         content_draft_identity,
         validate_content_draft,
     )
+    from initial_approval_options import (
+        InitialApprovalOptionError,
+        build_initial_approval_options,
+    )
     from project_workspace import WorkspaceError, load_workspace_config
 except ImportError:  # imported as scripts.render_content_review
     from scripts.content_source import (
@@ -26,6 +30,10 @@ except ImportError:  # imported as scripts.render_content_review
         PROVISIONAL_TIMING_VERSION,
         content_draft_identity,
         validate_content_draft,
+    )
+    from scripts.initial_approval_options import (
+        InitialApprovalOptionError,
+        build_initial_approval_options,
     )
     from scripts.project_workspace import WorkspaceError, load_workspace_config
 
@@ -185,7 +193,10 @@ def render_review_markdown(draft: Mapping[str, Any]) -> str:
             f"- provisional SRT 使用 `{PROVISIONAL_TIMING_VERSION}`，按旁白字符与停顿权重在目标时长内确定性分配。",
             f"- 当前目标时长只用于内容预算与 provisional source SRT；{provider_label} 获批后的真实音频时间轴才是权威时钟。",
             "- 正式字幕将来自获批真实音频时间轴派生的 narration SRT。",
-            "- 当前状态为待“内容与制作方案联合确认”；尚未批准、尚未运行 prepare_source.py、尚未创建正式项目。",
+            "- 当前仍待用户完成“内容与制作方案联合确认”；在新流程中，这次确认还必须包含对 pending 预项目 current 样音的试听与联合批准。",
+            "- 当前草案只允许进入标记为 `pending_initial_approval` 的预项目，用于阶段 0 审阅、current 样音、修订与联合批准；不得生成完整旁白、生图、annotation、render 或 final。",
+            "- coordinator 必须在预项目内生成并技术验证绑定 current 草案/voice plan 的真实样音，再按当前真实生图能力展示完整自然语言选项；active voice provider 只是“当前已采用”，不是用户选择项。",
+            "- 用户的一次合法回复必须绑定 current content identity 与 current `SAMPLE_IDENTITY`，并由项目层重验后原子批准/冻结；本 Markdown 与技术 PASS 都不会自行写批准。",
             "",
         ]
     )
@@ -230,6 +241,12 @@ def create_review_artifact(args: argparse.Namespace) -> dict[str, Any]:
     review_path = draft_root.joinpath(*review_relative.parts)
     payload = render_review_markdown(draft).encode("utf-8")
     _write_bytes_atomic_once(review_path, payload)
+    options = build_initial_approval_options(
+        voiceover_mode=draft["voiceoverMode"],
+        gpt_login_image_generation_available=args.gpt_login_image_generation_available,
+        configured_image_provider_available=args.configured_image_provider_available,
+        fixed_image_generation_mode=args.fixed_image_generation_mode,
+    )
     return {
         "contractVersion": REVIEW_ARTIFACT_CONTRACT_VERSION,
         "ok": True,
@@ -240,6 +257,7 @@ def create_review_artifact(args: argparse.Namespace) -> dict[str, Any]:
         "reviewSha256": _sha256_bytes(payload),
         "cueCount": len(draft["narrationCues"]),
         "sceneCount": len(draft["scenes"]),
+        "initialApprovalOptions": list(options),
         "userConfirmationRequired": True,
         "approvalWritten": False,
         "formalPublished": False,
@@ -253,6 +271,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--draft-root", required=True, help="workspace/drafts/<draft-id>")
     parser.add_argument("--candidate", required=True, help="attempt 的 candidate.content-draft.json")
     parser.add_argument("--workspace-config", help="工作区配置；默认 config/workspace.local.json")
+    parser.add_argument(
+        "--gpt-login-image-generation-available",
+        action="store_true",
+        help="coordinator 已确认当前登录态 image_gen 可用",
+    )
+    provider_group = parser.add_mutually_exclusive_group()
+    provider_group.add_argument(
+        "--configured-image-provider-available",
+        dest="configured_image_provider_available",
+        action="store_true",
+        help="coordinator 已确认图片供应商已配置可用（默认）",
+    )
+    provider_group.add_argument(
+        "--configured-image-provider-unavailable",
+        dest="configured_image_provider_available",
+        action="store_false",
+        help="coordinator 已确认当前没有可用的已配置图片供应商",
+    )
+    parser.set_defaults(configured_image_provider_available=True)
+    parser.add_argument(
+        "--fixed-image-generation-mode",
+        choices=("provider", "gpt-login"),
+        help="阶段 0 已提前固定且当前可用的生图方式；固定后不再作为选项轴",
+    )
     return parser
 
 
@@ -269,7 +311,14 @@ def main(argv: list[str] | None = None) -> int:
         result = create_review_artifact(args)
     except SystemExit as exc:
         return int(exc.code)
-    except (ReviewError, ContentSourceError, WorkspaceError, OSError, ValueError):
+    except (
+        ReviewError,
+        InitialApprovalOptionError,
+        ContentSourceError,
+        WorkspaceError,
+        OSError,
+        ValueError,
+    ):
         _emit(
             {
                 "contractVersion": REVIEW_ARTIFACT_CONTRACT_VERSION,

@@ -21,34 +21,38 @@ description: 将主题、正文或 SRT 制作成暖米黄纸张底、按叙事�
 
 `topic + preserve/polish`、`text + generate` 非法。非 SRT 必须有 15–600 秒 `targetDurationSeconds`；缺失时可建议 60 秒，但要与其他缺失配置一次性展示并等待确认。`voiceoverMode` 不属于用户选择项：除非用户明确要求静音，否则必须通过 `voice_provider_config.py status` 的脱敏接口读取 active provider，规范化为 `edge-tts`、`minimax` 或 `doubao` 后自动冻结；禁止用 shell、文件读取工具或临时代码直接读取、打印、转述任何 `config/*.local.json` 原文。不得询问用户在 Edge TTS、MiniMax 与豆包语音之间选择，也不得从项目目录、旧项目 manifest、命令行 provider 参数或对话回复读取旁白 provider。
 
-topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经只读校验后，coordinator 生成审阅 artifact。内容、target、rewritePolicy、由 activeProvider 派生的 voiceoverMode、cue→scene、分镜、图片提示词、是否加入 BGM、阶段 0 后是否委托 AI 代理批准，以及 `imageGenerationMode`，必须通过一次“内容与制作方案联合确认”同时冻结；确认前不得运行 `prepare_source.py`、创建正式项目或写批准。review 中可以展示“当前已采用：豆包语音/MiniMax/Edge TTS”供用户知情查看，但不把旁白 provider 变成待选择问题。`backgroundMusic.enabled` 与 `agentApprovalEnabled` 是两个独立布尔选择：BGM 只询问“加入/不加入”，加入时固定使用内置 CC0 轻音乐和 `-15 dB` 预设；代理批准只询问“逐阶段由我确认/委托 AI 自动判断并推进”，二者都不增加独立 Gate。
+topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经只读校验后，coordinator 生成审阅 artifact，再确定性派生 source 并创建明确标记为 `pending_initial_approval` 的预项目。预项目只允许阶段 0 审阅、current 样音生成/技术验证、草案或样音修订与联合批准；完整旁白、正式生图、annotation、render、merge、burn、mux、final 必须在各自入口重验并硬拒绝 pending 项目。review 可以展示“当前已采用：豆包语音/MiniMax/Edge TTS”，但 active voice provider 不是用户选择项。
+
+旁白项目在预项目内生成绑定 current 草案/voice plan 的真实样音。用户一次检查草案、制作方案并试听 current 样音，然后从 coordinator 按当前能力生成的完整自然语言句子中复制一句或回复编号。合法通过句原子完成 content 与 sample 批准、冻结 `backgroundMusic.enabled`、`agentApprovalEnabled`、`imageGenerationMode`，把 `project.json.initialApproval` 从 pending 提升为 approved；任一 current identity、pending 状态、选项或能力重验失败不得留下半批准状态。旧项目缺少 `initialApproval` 时按已完成初始批准读取，缺少 `agentApprovalEnabled` 时仍按 `false`。草案或 voice/rate 修改只使受影响 identity/样音及下游 stale，不静默复用旧样音批准。用户明确要求新任务时总是创建新预项目，不 resume 旧项目。
 
 `imageGenerationMode = provider | gpt-login` 是正式项目字段。只有当前 Codex/ChatGPT 确实使用 GPT 账号登录且宿主内置 `image_gen` 可用时，才在上述联合确认中询问“当前登录的 GPT 账号/已配置图片供应商”；否则不询问并直接冻结为 `provider`。用户已经明确指定时不重复询问，只展示当前已采用；若明确指定 `gpt-login` 但宿主能力不可用，则 `BLOCKED`，不得静默切换 provider 或需要 API Key 的 CLI。传统 SRT 在首次分镜确认时一并冻结 BGM、代理批准和生图方式，不新增 Gate。旧项目缺失字段按 `provider` 读取；仅对尚未生图的旧项目，若当前满足 GPT 登录态与 `image_gen` 能力条件，coordinator 可在首次生图前补问一次并持久化选择。详见 [references/phase-0-content.md](references/phase-0-content.md)、[references/content-input.md](references/content-input.md) 与 [references/image-generation.md](references/image-generation.md)。
 
-`agentApprovalEnabled` 写入正式项目；旧项目或字段缺失时等价于 `false`。`false` 保持现有人工 Gate；`true` 表示用户只把初次确认之后的常规质量 Gate 委托给 coordinator AI，后者必须实际审阅 current artifact，决定通过或返工，并在通过时调用现有批准动作。该字段不删除 Gate，不新增 identity、manifest、状态机或专用恢复协议，也不授权 child、CLI 或 runner 自行批准。
+`agentApprovalEnabled=false` 保持逐阶段人工 Gate。为 `true` 表示用户已经通过 current 样音授权声音主观方向，后续完整旁白与最终成片不再要求 AI 冒充完整听音：严格技术链通过后，coordinator 调用既有批准动作并把 `approvalBasis`/`reviewBasis` 记录为“用户样音授权后的技术推进”。完整旁白仍必须满足整轨单次 provider、canonical WAV、完整解码、本地 FunASR、原稿对齐、cue/scene/timeline/narration SRT、current identity 和时长偏差检查；超过 10% 时按该授权采用真实音频时钟，不再询问。最终交付仍必须满足 current full audio、字幕、AAC、流结构、完整解码、时长/帧数/尾部、BGM 固定混音和 `FINAL_IDENTITY` 技术证据。不得声称 AI 完整听过旁白或最终成片。视觉 Gate 在宿主能看图/视频时仍对 current artifact 实际检查；人工模式的完整旁白和最终看片听音 Gate 不变。
 
 权威时钟：`disabled` 使用 `source/source.srt` 原始全局时间轴；Edge/MiniMax/豆包语音使用获批 provider 生成的真实 audio timeline 与 `audio/narration.srt`。`targetDurationSeconds` 只作内容预算和 provisional SRT，不是成片时钟。
 
 ## 七个工作阶段与交付链
 
-1. **阶段 0：内容与制作方案联合确认**。冻结输入、旁白稿、cue、scene、target、rewritePolicy、voiceoverMode、generation plan、`backgroundMusic.enabled`、`agentApprovalEnabled` 和 `imageGenerationMode`；topic/text 由 `contentDrafting` 候选开始，确认前 fail-closed。
+1. **阶段 0：预项目、样音与一次联合确认**。先完成旁白稿、cue、scene、分镜和 generation plan 候选，创建 pending 预项目并生成 current 样音；用户以一条完整句或编号原子批准 current content/sample identity 并冻结 BGM、后续模式和生图方式。传统静音 SRT 不生成或要求样音，使用“字幕与分镜方案通过……”语义完成初始批准。
 2. **阶段 1：严格 SRT 与分镜确认**。传统 SRT 严格解析、时长约束和 `storyboardPlanning` candidate/result 交接；用户首次确认分镜并同时冻结 BGM、代理批准与生图方式后才可建项。
-3. **阶段 3：样音与 voice/rate 确认**。音频旁白 provider 生成 sample，由当前批准主体真实试听并绑定 current `SAMPLE_IDENTITY`；未批准时完整旁白以退出码 5 拒绝。
-4. **阶段 4：完整旁白、真实时长与 review policy 确认**。整篇旁白以单次 provider 请求生成 current WAV，再通过当前 skill 自带的本地 FunASR runner 与已确认原稿对齐后发布 timeline、narration SRT；当前批准主体完整试听并处理时长偏差，超过 10% 还须 `accept_actual`。人工模式由用户选择 review policy；代理批准模式确定性派生 `agent_first`，不再询问。
+3. **阶段 3：样音后语音执行**。current 样音已在初始联合批准中绑定；完整旁白仍以单次 provider 请求生成 current WAV，并完成本地 FunASR 与原稿对齐。人工模式完整试听并处理时长偏差；自主模式以用户样音授权为主观依据，仅在全部严格技术证据 current 后写技术推进批准，超过 10% 自动采用真实音频时钟。
+4. **阶段 4：真实时间轴与 review policy**。发布 timeline、narration SRT 和 `FULL_IDENTITY`；人工模式由用户选择 review policy，自主模式确定性派生 `agent_first`，但该值不表示 AI 完整试听。
 5. **阶段 5：统一线稿确认**。图片候选独立有界生成、技术校验和 global visual review；线稿保留独立质量 Gate，主窗口只交付 review 文件链接、identity、计数和异常摘要。
 6. **阶段 6：annotation、区域预览与 reveal 联合确认**。技术 current 后生成预览和项目 URL；当前批准主体一次检查 annotation、区域、`protectedRegions`、reveal 时序并绑定 current review identity。
 7. **阶段 7：正式 scene bundle 确认**。按 `sceneRender` 有界并行生成候选，coordinator 按 generation plan 顺序单写发布；当前批准主体一次检查有序 scene bundle 后才可合并。
 
-阶段 2（创建/升级项目）是阶段 0/1 Gate 之后的确定性建项，不单独增加 Gate。阶段 8–10 为连续交付：静音画面母版合并 → 字幕烧录 →（旁白模式）音频封装、技术验证和最终成片质量确认。clean master 只做技术验证，不能另设确认；`output/final.mp4` 必须由当前批准主体完整看片（旁白还须完整听音）后，才由 coordinator 调用 `approve_final_media.py` 绑定 `FINAL_IDENTITY`。
+阶段 2 是把已联合批准的 pending 预项目原子提升为正式可执行项目，不单独增加 Gate。阶段 8–10 为连续交付：静音画面母版合并 → 字幕烧录 →（旁白模式）音频封装和技术验证。clean master 不设确认；人工模式仍须用户完整看片听音后批准 `FINAL_IDENTITY`，自主模式则在严格 final 技术证据 current 后以 `reviewBasis=user_sample_authorization_technical_validation`（或项目实现的等价固定审计值）批准，不声称发生完整视听审阅。
 
 ## 质量 Gate（全部 fail-closed）
 
-- topic/text 的内容与制作方案联合确认，以及传统 SRT 的首次分镜确认，始终由用户亲自完成；这次确认同时冻结 `backgroundMusic.enabled`、`agentApprovalEnabled` 与 `imageGenerationMode`。生图方式只在 GPT 登录态及宿主 `image_gen` 确实可用时作为选择题，否则直接展示并冻结 `provider`。
-- `agentApprovalEnabled=false` 或缺失时，后续 Gate 仍由用户亲自批准；`true` 时，coordinator AI 代理用户审阅并批准阶段 0/首次分镜之后的常规质量 Gate。`agent_first` 本身只表示审阅顺序，不能在没有该布尔授权时跳过用户。
+- 初始联合确认始终由用户亲自完成并绑定 current content identity；旁白项目还必须绑定 current `SAMPLE_IDENTITY`。生图方式只有在 GPT 登录态 `image_gen` 与已配置图片供应商同时真实可用时才展开为 8 个通过句，否则冻结唯一合法方式并显示 4 个完整通过句。不可用组合不得展示。
+- 固定生图方式的四个旁白通过句逐字为：“草案和样音通过，使用 BGM，后续由 AI 自主推进至成片。”“草案和样音通过，不使用 BGM，后续由 AI 自主推进至成片。”“草案和样音通过，使用 BGM，后续由我逐阶段确认。”“草案和样音通过，不使用 BGM，后续由我逐阶段确认。”两种生图能力同时可用时，每句增加“使用当前登录的 GPT 账号生成图片”或“使用已配置图片供应商生成图片”，例如“草案和样音通过，使用 BGM，使用当前登录的 GPT 账号生成图片，后续由 AI 自主推进至成片。”
+- 三个返工句逐字为：“草案需要修改，当前样音暂不批准。修改意见：……”“草案通过，样音需要调整，其他方案保持不变。调整意见：……”“草案和样音都需要修改。修改意见：……”。不提供斜杠填空句，也不把 active voice provider 列成选项。
+- `agentApprovalEnabled=false` 或缺失时，后续声音与最终 Gate 仍由用户真实审阅；`true` 时只有视觉 Gate 继续要求实际媒体检查，声音/final 采用用户样音授权后的严格技术推进审计。技术推进不是听音 PASS。
 - 未回复、笼统授权、技术 `validated`、fixture PASS、child candidate、child findings 或“用户没有反对”都不是批准。代理批准模式下也只有 coordinator 在实际检查 current artifact 并作出通过判断后，才能调用原批准脚本；child 始终 `approvalWritesAllowed:false`，CLI/runner 始终不能自行批准。
-- 内容/制作方案联合确认、传统 SRT 分镜确认、样音批准、完整旁白与真实时长批准、线稿确认、annotation/区域/reveal 联合批准、scene bundle 批准、最终成片批准彼此独立。修改上一步只重做受影响步骤并重过对应 Gate；自动模式只是更换后续批准主体。
+- 初始 content/sample 联合批准是一个原子动作；线稿、annotation/区域/reveal、scene bundle 等视觉 Gate 仍独立。人工模式保留完整旁白与 final Gate；自主模式只用最小审计字段区分技术推进，不复制批准系统。修改上一步只重做受影响步骤。
 - 五类持久化 identity 必须绑定 current 字节和证据：`SAMPLE_IDENTITY`、`FULL_IDENTITY`、`annotationReviewIdentitySha256`、`sceneReviewIdentityHash`、`FINAL_IDENTITY`。批准脚本仅批准刚检查的 identity。
-- AI 代理批准必须真实查看图片、完整试听音频、完整观看视频；宿主缺少完成当前 Gate 所需的媒体审阅能力时报告 `BLOCKED`，不得用技术 PASS、波形、元数据、抽帧或 child 摘要冒充已看/已听。
+- AI 视觉批准必须真实查看 current 图片/视频；能力不足时 `BLOCKED`。自主声音/final 路径不得把技术 PASS、波形、元数据、抽帧或 child 摘要描述成已听，只能准确报告“用户样音授权后的技术推进”。
 - `unknown_external_outcome`（provider 请求后 candidate/receipt 不完整且不能按同一幂等键查询）不得普通重跑或 `--retry-failed` 自动重发；必须单独取得用户承担新外部调用的授权。新的费用、凭据或服务授权、版权授权，以及必须实质改变阶段 0/首次分镜已冻结用户意图的修改，也必须单独询问用户。冻结计划内的正常有界 provider 调用和常规返工不打断用户。
 
 本地 coordinator runner 支持 `annotation-preview` 与 `final-delivery`。前者串联 annotation 确定性校验、receipt、preview/contact sheet；后者只在 current scene bundle 已获批准后连续执行 merge/burn/可选 mux/final validation，并输出逐步耗时。两者到达质量 Gate 都必须停止并保持 `approvalWritten=false`；人工模式由 coordinator 等待用户，代理批准模式由 coordinator 在 runner 外真实审阅、决定返工或调用原批准脚本。runner 本身不读取 `agentApprovalEnabled` 来批准；逐步 CLI 始终保留为调试和恢复路径。字段、Gate 停止与恢复合同见 [references/phase-4-runner.md](references/phase-4-runner.md)。
@@ -57,14 +61,13 @@ topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经�
 
 | Gate | 必须检查者与内容 | 通过后允许 |
 |---|---|---|
-| 内容与制作方案 | 用户：完整旁白稿、cue/scene、分镜、图片提示词、target、配音策略、BGM、代理批准与生图方式 | 确定性派生 source、建项 |
+| 初始联合批准 | 用户：current 草案/字幕分镜、制作方案；旁白项目还须试听 current 样音 | 原子冻结 BGM/后续模式/生图方式并提升 pending 预项目 |
 | 传统 SRT 分镜 | 用户：严格 SRT 解析结果、分镜 candidate、BGM、代理批准与生图方式 | 建项 |
-| 样音 | 当前批准主体：current sample 的 voice/rate | 生成完整旁白 |
-| 完整旁白 | 当前批准主体：current WAV 全程、真实时长差值、narration SRT | 使用 canonical audio timeline |
+| 完整旁白 | 人工模式真实试听；自主模式重验严格技术证据并记录样音授权后的技术推进 | 使用 canonical audio timeline |
 | 线稿 | 当前批准主体：current 有序全量线稿 review artifact | annotation batch |
 | annotation 联合审阅 | 当前批准主体：annotation、区域预览、保护区和 reveal 时序 | 正式逐幕 render |
 | scene bundle | 当前批准主体：current 有序 scene review bundle | merge、字幕、mux、技术验证 |
-| 最终成片 | 当前批准主体：current `output/final.mp4` 全程画面与声音 | 写 final approval |
+| 最终成片 | 人工模式完整看片听音；自主模式重验 current final 全套技术证据 | 写入区分真实审阅/技术推进的 final approval |
 
 ## 核心不变量（实现和批准边界不得弱化）
 
@@ -150,7 +153,9 @@ python scripts/prepare_env.py
 <ENV_PY> scripts/validate_content_draft.py --stdin
 <ENV_PY> scripts/prepare_draft_agent_task.py storyboardPlanning --draft-root <draft-root> --source-srt <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 35
 <ENV_PY> scripts/parse_srt.py <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 35
-<ENV_PY> scripts/create_project.py --name <项目名> --srt <source.srt> --plan <generation-plan.json> --source-input <input.json> --source-manifest <manifest.json> --background-music <enabled|disabled> --agent-approval <enabled|disabled> --image-generation-mode <provider|gpt-login>
+<ENV_PY> scripts/create_project.py --name <项目名> --srt <source.srt> --plan <generation-plan.json> --source-input <input.json> --source-manifest <manifest.json> --pending-initial-approval
+# coordinator 将用户完整句/编号解析为绑定 current identities 的 selection.json 后：
+<ENV_PY> scripts/approve_initial_project.py --project <项目根目录> --selection <selection.json> --configured-image-provider-available [--gpt-login-capable]
 <ENV_PY> scripts/create_project.py --resume <项目根目录> --srt <原始字幕.srt>
 <ENV_PY> scripts/upgrade_project.py --project <项目根目录> --to-schema 2
 

@@ -578,7 +578,12 @@ def _sample(
         "identityHash": identity,
         "media": media,
         "providerReceipt": _provider_receipt(raw.providerRequestId),
-        "approval": {"approved": False, "identityHash": None, "approvedAt": None},
+        "approval": {
+            "approved": False,
+            "identityHash": None,
+            "approvalBasis": None,
+            "approvedAt": None,
+        },
     }
     manifest["runs"].append(
         {"kind": "sample", "status": "validated", "startedAt": _now(), "finishedAt": _now()}
@@ -722,6 +727,7 @@ def _approve_sample(project: Project, identity_hash: str) -> str:
     manifest["sample"]["approval"] = {
         "approved": True,
         "identityHash": current,
+        "approvalBasis": "user_sample_listening",
         "approvedAt": _now(),
     }
     _write_manifest(paths["manifest"], manifest, plan, units)
@@ -1511,6 +1517,8 @@ def _full(
         "identityHash": None,
         "durationDecision": None,
         "reviewPolicy": None,
+        "approvalBasis": None,
+        "reviewBasis": None,
         "approvedAt": None,
     }
     # Old projects may retain narration-review files and manifest fields as
@@ -1769,6 +1777,8 @@ def _publish_alignment(
         "identityHash": None,
         "durationDecision": None,
         "reviewPolicy": None,
+        "approvalBasis": None,
+        "reviewBasis": None,
         "approvedAt": None,
     }
     manifest["runs"].append(
@@ -1847,6 +1857,7 @@ def validate_current_voiceover(
         "voicePlanAuditHash": voice_plan_audit_hash(plan),
         "sampleIdentityHash": sample_identity,
         "sampleApproved": bool(manifest["sample"]["approval"]["approved"]),
+        "sampleApprovalBasis": manifest["sample"]["approval"].get("approvalBasis"),
     }
     if not require_full:
         return result
@@ -1989,13 +2000,17 @@ def _approve_full(
     current = validate_current_voiceover(project, require_full=True)
     if identity_hash != current["fullIdentityHash"]:
         raise ApprovalGateError("提交的完整旁白 identity 与 current WAV/timeline/SRT 不一致")
+    autonomous = _technical_audio_progress_authorized(project, current)
     review = current.get("durationReview")
     if not isinstance(review, Mapping):
         raise VoiceoverStateError("完整旁白缺少 duration review")
     if review.get("exceedsThreshold"):
-        if duration_decision != "accept_actual":
+        if autonomous:
+            recorded_decision = "accept_actual"
+        elif duration_decision != "accept_actual":
             raise ApprovalGateError("真实时长偏差超过 10%，必须显式 --duration-decision accept_actual")
-        recorded_decision = "accept_actual"
+        else:
+            recorded_decision = "accept_actual"
     else:
         if duration_decision is not None:
             raise VoiceoverStateError("时长偏差在阈值内时不得伪装为 accept_actual")
@@ -2041,6 +2056,14 @@ def _approve_full(
         "identityHash": identity_hash,
         "durationDecision": recorded_decision,
         "reviewPolicy": review_policy,
+        "approvalBasis": (
+            "technical_after_user_sample" if autonomous else "human_full_listening"
+        ),
+        "reviewBasis": (
+            "user_joint_initial_sample_authorization_and_current_technical_validation"
+            if autonomous
+            else "current_full_audio_listening"
+        ),
         "approvedAt": _now(),
     }
     # 两个候选先完成 schema/current 校验，再进入短事务。发布任一步失败时按原
@@ -2101,6 +2124,31 @@ def _resolve_full_approval_review_policy(
     return requested
 
 
+def _technical_audio_progress_authorized(
+    project: Project,
+    current: Mapping[str, Any],
+) -> bool:
+    """Validate the user-sample authorization required for audio-only autonomy."""
+
+    if not (project.initial_approval_completed and project.agent_approval_enabled):
+        return False
+    initial = project.metadata.get("initialApproval")
+    # Missing initialApproval is a legacy-formal-project compatibility view,
+    # not evidence that the user granted the new sample-based autonomy policy.
+    if initial is None:
+        return False
+    if not isinstance(initial, Mapping) or initial.get("status") != "approved":
+        raise ApprovalGateError("技术自主推进要求可审计的 current 初始联合批准")
+    sample_identity = current.get("sampleIdentityHash")
+    if (
+        current.get("sampleApproved") is not True
+        or current.get("sampleApprovalBasis") != "user_joint_initial_approval"
+        or initial.get("sampleIdentityHash") != sample_identity
+    ):
+        raise ApprovalGateError("技术自主推进要求用户联合批准的 current 样音 identity")
+    return True
+
+
 def _status(project: Project) -> dict[str, Any]:
     paths = _voice_paths(project)
     payload: dict[str, Any] = {
@@ -2133,6 +2181,8 @@ def _status(project: Project) -> dict[str, Any]:
         "approved": manifest.get("fullApproval", {}).get("approved", False),
         "durationDecision": manifest.get("fullApproval", {}).get("durationDecision"),
         "reviewPolicy": manifest.get("fullApproval", {}).get("reviewPolicy"),
+        "approvalBasis": manifest.get("fullApproval", {}).get("approvalBasis"),
+        "reviewBasis": manifest.get("fullApproval", {}).get("reviewBasis"),
     }
     return payload
 
@@ -2155,7 +2205,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     publish_alignment.add_argument("--project", required=True, type=Path)
     publish_alignment.add_argument("--asr-srt", required=True, type=Path)
-    approve_full = sub.add_parser("approve-full", help="持久化用户完整试听和真实时长批准")
+    approve_full = sub.add_parser(
+        "approve-full",
+        help="持久化完整旁白批准；自主模式基于用户样音授权和 current 技术证据推进",
+    )
     approve_full.add_argument("--project", required=True, type=Path)
     approve_full.add_argument("--identity-hash", required=True)
     approve_full.add_argument("--duration-decision", choices=("accept_actual",))
@@ -2187,6 +2240,7 @@ def main(
             args.project,
             allow_pending_audio_timeline=args.command
             in {"publish-alignment", "approve-full", "status"},
+            allow_pending_initial_approval=args.command in {"sample", "status"},
         )
         execution = workspace_config
         if execution is None and argv is None:

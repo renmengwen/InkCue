@@ -357,6 +357,7 @@ class ProjectWorkspaceTests(unittest.TestCase):
         self.assertIn("--source-manifest", help_text)
         self.assertIn("--agent-approval", help_text)
         self.assertIn("--image-generation-mode", help_text)
+        self.assertIn("--pending-initial-approval", help_text)
         upgrade_help = upgrade_project_cli._parser().format_help()
         self.assertIn("--to-schema", upgrade_help)
         self.assertIn("--voiceover-mode", upgrade_help)
@@ -380,6 +381,67 @@ class ProjectWorkspaceTests(unittest.TestCase):
         self.assertIs(project.metadata["agentApprovalEnabled"], False)
         self.assertEqual(project.image_generation_mode, "provider")
         self.assertEqual(project.metadata["imageGenerationMode"], "provider")
+
+    def test_pending_pre_project_is_explicit_and_default_loader_fails_closed(self) -> None:
+        project = self.workspace().create_project(
+            "待初始批准预项目",
+            self.source_srt,
+            voiceover_mode="edge-tts",
+            pending_initial_approval=True,
+        )
+        self.assertTrue(project.pending_initial_approval)
+        self.assertFalse(project.initial_approval_completed)
+        self.assertEqual(
+            project.metadata["initialApproval"],
+            {"status": "pending_initial_approval"},
+        )
+        for field in ("backgroundMusic", "agentApprovalEnabled", "imageGenerationMode"):
+            self.assertNotIn(field, project.metadata)
+        with self.assertRaisesRegex(ProjectValidationError, "pending_initial_approval"):
+            self.workspace().load_project(project.root)
+        allowed = self.workspace().load_project(
+            project.root,
+            allow_pending_initial_approval=True,
+        )
+        self.assertTrue(allowed.pending_initial_approval)
+
+    def test_pending_pre_project_rejects_premature_frozen_choices(self) -> None:
+        for kwargs in (
+            {"background_music_enabled": False},
+            {"agent_approval_enabled": False},
+            {"image_generation_mode": "provider"},
+        ):
+            with self.subTest(kwargs=kwargs), self.assertRaisesRegex(
+                ProjectValidationError,
+                "不得提前冻结",
+            ):
+                self.workspace().create_project(
+                    f"非法预项目-{uuid.uuid4().hex}",
+                    self.source_srt,
+                    pending_initial_approval=True,
+                    **kwargs,
+                )
+
+    def test_create_project_cli_can_create_pending_pre_project(self) -> None:
+        output = io.StringIO()
+        with (
+            mock.patch.object(create_project.ProjectWorkspace, "from_config", return_value=self.workspace()),
+            mock.patch.object(create_project, "active_provider_id", return_value="edge-tts"),
+            redirect_stdout(output),
+            redirect_stderr(io.StringIO()),
+        ):
+            result = create_project.main([
+                "--name", "CLI 待批准预项目",
+                "--srt", str(self.source_srt),
+                "--pending-initial-approval",
+            ])
+        self.assertEqual(result, 0)
+        self.assertIn("INITIAL_APPROVAL=pending_initial_approval", output.getvalue())
+        project = self.workspace().load_project(
+            self.workspace_root / "projects" / "CLI 待批准预项目",
+            allow_pending_initial_approval=True,
+        )
+        self.assertTrue(project.pending_initial_approval)
 
     def test_create_project_cli_records_enabled_background_music_choice(self) -> None:
         with (
@@ -846,6 +908,7 @@ class ProjectWorkspaceTests(unittest.TestCase):
         self.assertNotIn("contentSource", loaded.metadata)
         self.assertNotIn("agentApprovalEnabled", loaded.metadata)
         self.assertFalse(loaded.agent_approval_enabled)
+        self.assertTrue(loaded.initial_approval_completed)
         self.assertEqual(metadata_path.read_bytes(), before)
 
     def test_legacy_v2_without_image_generation_mode_defaults_without_rewrite(self) -> None:

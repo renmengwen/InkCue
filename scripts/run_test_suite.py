@@ -45,6 +45,8 @@ FAST_TEST_MODULES = (
     "tests.test_formal_validation_context",
     "tests.test_image_generation_cli",
     "tests.test_image_generation",
+    "tests.test_initial_approval",
+    "tests.test_initial_approval_options",
     "tests.test_media_validation_receipts",
     "tests.test_minimax_adapter",
     "tests.test_phase4_runner_contract",
@@ -121,12 +123,29 @@ def _bounded_child_output(output: str, *, max_lines: int = 20, max_chars: int = 
     return bounded
 
 
+def _console_safe_text(value: str, encoding: str | None) -> str:
+    """把任意子进程文本降级为当前控制台一定可写出的字符串。"""
+
+    target_encoding = encoding or "utf-8"
+    try:
+        return value.encode(target_encoding, errors="backslashreplace").decode(
+            target_encoding,
+            errors="strict",
+        )
+    except LookupError:
+        return value.encode("ascii", errors="backslashreplace").decode("ascii")
+
+
 def _run_child(invocation: TestInvocation, timeout_seconds: int) -> int:
     command = _unittest_command(invocation)
     print(f"[RUN] {invocation.label} timeout={timeout_seconds}s", flush=True)
+    child_env = os.environ.copy()
+    # stdout/stderr 都接到 PIPE；显式固定子解释器输出为 UTF-8，避免 Windows
+    # 本地代码页字节被父进程按 UTF-8 解码后变成替换字符。
+    child_env["PYTHONIOENCODING"] = "utf-8"
     popen_kwargs: dict[str, object] = {
         "cwd": SKILL_ROOT,
-        "env": os.environ.copy(),
+        "env": child_env,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
         "text": True,
@@ -151,7 +170,10 @@ def _run_child(invocation: TestInvocation, timeout_seconds: int) -> int:
     if return_code != 0:
         bounded_output = _bounded_child_output(output or "")
         if bounded_output:
-            print(bounded_output, flush=True)
+            print(
+                _console_safe_text(bounded_output, getattr(sys.stdout, "encoding", None)),
+                flush=True,
+            )
     return return_code
 
 

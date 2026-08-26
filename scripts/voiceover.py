@@ -41,6 +41,14 @@ SUPPORTED_PROVIDER_PROTOCOLS = {
 }
 SUPPORTED_AUDIO_PROVIDERS = set(SUPPORTED_PROVIDER_PROTOCOLS)
 REVIEW_POLICIES = frozenset({"user_first", "agent_first"})
+SAMPLE_APPROVAL_BASES = frozenset({"user_sample_listening", "user_joint_initial_approval"})
+FULL_APPROVAL_BASES = frozenset({"human_full_listening", "technical_after_user_sample"})
+FULL_REVIEW_BASES = frozenset(
+    {
+        "current_full_audio_listening",
+        "user_joint_initial_sample_authorization_and_current_technical_validation",
+    }
+)
 DEFAULT_OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3"
 DEFAULT_SEGMENTATION = {
     "contractVersion": SEGMENTATION_CONTRACT_VERSION,
@@ -923,7 +931,12 @@ def create_voice_manifest(
             "status": "pending",
             "identityHash": None,
             "media": None,
-            "approval": {"approved": False, "identityHash": None, "approvedAt": None},
+            "approval": {
+                "approved": False,
+                "identityHash": None,
+                "approvalBasis": None,
+                "approvedAt": None,
+            },
         },
         "runs": [],
         "segments": [
@@ -963,6 +976,8 @@ def create_voice_manifest(
             "identityHash": None,
             "durationDecision": None,
             "reviewPolicy": None,
+            "approvalBasis": None,
+            "reviewBasis": None,
             "approvedAt": None,
         },
         "createdAt": now,
@@ -1071,6 +1086,9 @@ def validate_voice_manifest(
         _require_sha256(identity, label="sample approval identity")
         if identity != sample.get("identityHash"):
             raise VoiceoverValidationError("sample approval identity 与 current sample 不一致")
+        sample_basis = sample["approval"].get("approvalBasis")
+        if sample_basis is not None and sample_basis not in SAMPLE_APPROVAL_BASES:
+            raise VoiceoverValidationError("sample approvalBasis 无效")
     if full_approval["approved"]:
         full_identity = full_approval.get("identityHash")
         _require_sha256(full_identity, label="full approval identity")
@@ -1079,6 +1097,16 @@ def validate_voice_manifest(
             raise VoiceoverValidationError(
                 "已批准的 fullApproval.reviewPolicy 必须是 user_first 或 agent_first"
             )
+        approval_basis = full_approval.get("approvalBasis")
+        review_basis = full_approval.get("reviewBasis")
+        if approval_basis is not None and approval_basis not in FULL_APPROVAL_BASES:
+            raise VoiceoverValidationError("fullApproval.approvalBasis 无效")
+        if review_basis is not None and review_basis not in FULL_REVIEW_BASES:
+            raise VoiceoverValidationError("fullApproval.reviewBasis 无效")
+        if approval_basis == "technical_after_user_sample" and review_basis != (
+            "user_joint_initial_sample_authorization_and_current_technical_validation"
+        ):
+            raise VoiceoverValidationError("技术自主 fullApproval 缺少对应 reviewBasis")
         if manifest.get("fullIdentityHash") is not None and full_identity != manifest.get("fullIdentityHash"):
             raise VoiceoverValidationError("full approval identity 与 current full identity 不一致")
 

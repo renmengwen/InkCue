@@ -21,40 +21,29 @@
 `voiceoverMode=disabled`。`targetDurationSeconds` 只用于内容预算和 provisional SRT；
 topic/text 的正式时钟由获批真实音频 timeline 接管。
 
-## 2. 阶段流程与初始人工 Gate
+## 2. 阶段 0 预项目、样音与一次联合 Gate
 
-1. coordinator 冻结输入模式、rewritePolicy、target，并在同一次确认中确定 BGM、后续批准方式与 `imageGenerationMode`；旁白 provider 不询问用户，始终
+1. coordinator 冻结输入模式、rewritePolicy、target；旁白 provider 不询问用户，始终
    读取 skill 根目录 `config/voice-providers.local.json` 的 `activeProvider`，规范化后自动
    冻结为 `voiceoverMode=edge-tts`、`voiceoverMode=minimax` 或 `voiceoverMode=doubao`。review 只展示当前已采用的
-   provider；只有用户明确要求静音时，传统 SRT 才允许显式使用 `disabled`。BGM 只询问
-   “加入/不加入”，不让用户配置曲目或混音参数；加入时固定使用内置 CC0 曲目、`-15 dB`、
-   1.2 秒淡入、1.8 秒淡出和必要循环。后续批准只询问“逐阶段由我确认/委托 AI 自动判断并推进”，
-   对应 `agentApprovalEnabled=false|true`；它与 `backgroundMusic.enabled` 是两个独立布尔值。`imageGenerationMode=provider|gpt-login`：只有当前 Codex/ChatGPT 确实使用 GPT 账号登录且宿主内置 `image_gen` 可用时，才询问用户使用当前登录账号还是已配置图片供应商；否则不询问并直接冻结 `provider`。用户已经明确指定时不重复询问，只在 review 展示当前已采用；若明确指定 `gpt-login` 但能力不可用，则 `BLOCKED`，不得静默切换。
+   provider；只有用户明确要求静音时，传统 SRT 才允许显式使用 `disabled`。BGM 只允许“加入/不加入”，加入时固定使用内置 CC0 曲目与固定混音参数；后续模式只允许“逐阶段由我确认/后续由 AI 自主推进至成片”。它们不在创建 pending 预项目时预写，而是在用户选择完整句后由联合动作原子冻结。只有当前登录态 `image_gen` 与已配置图片供应商同时真实可用时，才把两种生图方式并入 8 个通过句；只有一种可用或已固定时不把生图方式作为选择轴。不可用组合不得展示。
 2. 在允许真实派发时，由 `contentDrafting` child（或同合同 fallback）生成
    `whiteboard-content-draft-v1` candidate。child 不调用 provider、不写正式项目。
-3. coordinator 校验 candidate，确定性渲染 review Markdown，只交付链接、identity、
-   cue/scene 计数和短摘要，不把长正文回灌主上下文。
-4. **停止等待用户明确确认 current `contentDraftIdentitySha256`。** 此次确认同时
-   覆盖旁白内容、cue→scene、分镜策略、图片提示词、是否加入 BGM、后续由用户亲自批准还是
-   委托 AI 代理批准，以及已选择的生图方式；技术 PASS、打开文件或用户未反对都不是批准。
-5. 修改意见冻结为绑定 current identity 的 revision request，创建新 attempt；旧
+3. coordinator 校验 candidate，确定性渲染 review Markdown，确定性派生 source package，并创建 `project.json.initialApproval.status=pending` 的 `pending_initial_approval` 预项目。确认前创建的是受限预项目，不是可执行下游的正式项目。
+4. 预项目中只允许阶段 0 审阅、样音生成/技术验证、草案或 voice/rate 修订与联合批准。coordinator 生成绑定 current content identity、voice plan 与项目的真实样音，向用户交付 review 与不可变样音副本。完整旁白、正式生图、annotation、render、merge、burn、mux、final 必须在入口调用统一 pending guard，不能只依赖 coordinator 记忆。
+5. coordinator 调用 `build_initial_approval_options()` 按当前真实能力生成完整自然语言句子。固定生图方式时必须逐字列出四个旁白通过句；仅当登录态 `image_gen` 与已配置图片供应商同时可用时，才把生图方式并入每条通过句并枚举 BGM × 后续模式 × 生图方式共 8 项。不可用组合不展示，active voice provider 只显示“当前已采用”。另列三条草案/样音定向返工句。传统 `disabled` SRT 不生成样音，使用“字幕与分镜方案通过……”语义。
+6. **停止等待用户的一次合法联合回复。** 用户可复制完整句或回复编号；解析结果必须结构化绑定 current content identity 与 current `SAMPLE_IDENTITY`，不得从近义自由文本猜测。项目层重验 identity、pending、选项和能力条件后原子写入 `initialApproval.status=approved`、BGM、`agentApprovalEnabled`、`imageGenerationMode` 和 sample approval。审计值为 `initialApproval.approvalBasis=user_joint_content_and_sample`、`sampleApproval.approvalBasis=user_joint_initial_approval`；静音 SRT 使用 `initialApproval.approvalBasis=user_joint_silent_plan` 且没有 sample approval。任一校验失败不留下半批准状态。
+7. 修改意见冻结为绑定 current identity 的 revision request，创建新 attempt；旧
    candidate/review 保留为历史并 stale。新 attempt 是版本边界，不要求更换执行者：上一
    `contentDrafting` child 仍存在、idle、上一结果 completed 且 role contract 兼容时，
    coordinator 优先 followup 原 child，并只交付新 task/base/revision 的路径与 SHA。原 child
    不可用、失败、role 改变、修订升级为全面独立重写或用户明确要求换执行者时才 spawn
    新 child；同一冻结 attempt 的执行性缺漏也 followup 原 child。
-6. 确认后才运行 `prepare_source.py`，确定性复核 provisional SRT/plan 与已确认方案一致，
-   再创建正式项目；出现实质差异必须回到本 Gate。
+8. 修改内容、voice/rate 或 provider synthesis contract 时按 recovery 合同使受影响 content/sample/full/downstream identity stale；旧样音批准不得静默复用。用户明确要求新任务时总是新建预项目，不 resume 同名旧项目。
 
-传统 SRT 不新增阶段 0 Gate：在现有首次分镜确认中一并确定
-`backgroundMusic.enabled`、`agentApprovalEnabled` 与 `imageGenerationMode`，然后建项并冻结；生图方式的询问条件与 topic/text 相同。旧项目缺少 `imageGenerationMode` 时按 `provider` 读取且不因读取自动回写；旧项目尚未生图且当前具备 GPT 登录态和宿主 `image_gen` 时，可在首次生图前补问一次并持久化，除此以外直接使用 `provider`。旧项目缺失 `agentApprovalEnabled` 时仍等价于 `false`，维持人工 Gate。
+传统 SRT 复用同一 pending 预项目与联合动作；旁白 SRT 仍须 current 样音，`disabled` 静音 SRT 不要求样音且通过句使用字幕/分镜语义。旧项目缺少 `initialApproval` 时兼容为已批准，缺少 `imageGenerationMode` 时按 `provider`，缺少 `agentApprovalEnabled` 时按 `false`。
 
-`agentApprovalEnabled=true` 只把初始确认之后的常规质量 Gate 委托给 coordinator AI：
-coordinator 必须真实查看图片、完整试听音频或完整观看视频，决定通过或返工；通过时调用现有批准
-动作并继续，摘要明确写“AI 代理批准”，不得声称用户已看片听音。此模式的 `reviewPolicy` 确定性
-派生为 `agent_first`，完整旁白阶段不再询问 `user_first|agent_first`。Gate、current/stale、现有
-identity 和批准脚本全部保留；child 仍为 `approvalWritesAllowed:false`，runner 仍不自动批准。
-宿主缺少真实媒体审阅能力时必须 `BLOCKED`。
+`agentApprovalEnabled=true` 的声音主观依据是用户已试听并批准的 current 样音。后续 full/final 仍执行全部严格技术校验，但不再因宿主不能听音而 `BLOCKED`，也不得声称 AI 完整听过；批准记录以最小 `approvalBasis/reviewBasis` 区分真实听审与“用户样音授权后的技术推进”。超过 10% 的真实时长按授权采用真实音频时钟。视觉 Gate 仍要求实际查看 current artifact；人工模式的 full/final 真实试听/看片听音 Gate 不变。`reviewPolicy` 在自主模式确定性为 `agent_first`。
 
 以下事项仍须单独询问用户：`unknown_external_outcome` 后可能重复的新外部请求，阶段 0 冻结计划
 之外的新费用、凭据或服务授权，版权授权，以及必须实质改变已冻结用户意图的修订。冻结计划内的
@@ -106,13 +95,13 @@ identity 和批准脚本全部保留；child 仍为 `approvalWritesAllowed:false
 [`prompt-writing.md`](prompt-writing.md) 的唯一映射转换为正式 plan `scenes[].prompt`；
 child 不得改名、改写或直接调用 provider。
 
-阶段 0 不写正式 identity、manifest 或批准；两个布尔选择与 `imageGenerationMode` 在建项时直接写入现有项目配置。生图方式只路由现有图片阶段，不新增 Gate、identity、manifest 或状态机。命令细节、schema allowlist、revision request
+阶段 0 复用现有 project/source/voice/sample identity 与批准链，只新增一个 pending marker、统一下游 guard 和薄的原子联合批准动作；不建立第二套 sample manifest、preview identity、状态机或恢复协议。生图方式只路由现有图片阶段。命令细节、schema allowlist、revision request
 和只读校验见 [`content-input.md`](content-input.md)；child 最小上下文和 dispatch 边界见
 [`subagent-orchestration.md`](subagent-orchestration.md)。
 
 ## 6. 阶段 0 验收
 
 自动测试应覆盖三类输入路由、非法组合、rewritePolicy 保真、cue/scene 连续性、确定性
-candidate identity、“未确认不建项”、缺失 `agentApprovalEnabled` 时等价于 `false`，以及缺失 `imageGenerationMode` 时等价于 `provider`。fixture
+candidate identity、pending 下游拒绝、联合动作原子性、4/8 个完整句、静音无 sample、缺失 `initialApproval` 时兼容为 approved、缺失 `agentApprovalEnabled` 时等价于 `false`，以及缺失 `imageGenerationMode` 时等价于 `provider`。fixture
 PASS 不等于用户亲自批准、AI 代理批准、Edge 可用、真实声音接受或线稿审美通过；这些状态必须
 分别报告为待确认、BLOCKED 或 SKIP。

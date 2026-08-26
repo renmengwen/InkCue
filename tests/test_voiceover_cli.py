@@ -135,6 +135,22 @@ class VoiceoverCliTests(unittest.TestCase):
         )
         return identity, adapter
 
+    def mark_joint_initial_approval(self, project, sample_identity: str) -> None:
+        manifest_path = project.path("manifests/voice-manifest.json")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["sample"]["approval"]["approvalBasis"] = "user_joint_initial_approval"
+        workspace_module.write_json_atomic(manifest_path, manifest)
+        project_path = project.path("project.json")
+        metadata = json.loads(project_path.read_text(encoding="utf-8"))
+        metadata["initialApproval"] = {
+            "status": "approved",
+            "contentIdentitySha256": project.current_content_identity_sha256,
+            "sampleIdentityHash": sample_identity,
+            "approvalBasis": "user_joint_content_and_sample",
+            "approvedAt": "2026-08-27T10:00:00+08:00",
+        }
+        workspace_module.write_json_atomic(project_path, metadata)
+
     def publish_alignment(
         self,
         project,
@@ -413,6 +429,8 @@ class VoiceoverCliTests(unittest.TestCase):
         self.assertEqual(manifest["fullApproval"]["durationDecision"], "within_threshold")
         self.assertEqual(manifest["fullApproval"]["identityHash"], full_identity)
         self.assertEqual(manifest["fullApproval"]["reviewPolicy"], "agent_first")
+        self.assertEqual(manifest["fullApproval"]["approvalBasis"], "human_full_listening")
+        self.assertEqual(manifest["fullApproval"]["reviewBasis"], "current_full_audio_listening")
         self.assertEqual(
             workspace_module.resolve_project_review_policy(project), "agent_first"
         )
@@ -598,7 +616,8 @@ class VoiceoverCliTests(unittest.TestCase):
 
     def test_agent_approval_approve_full_derives_only_agent_first(self) -> None:
         project = self.make_project(agent_approval_enabled=True)
-        self.sample_and_approve(project)
+        sample_identity, _ = self.sample_and_approve(project)
+        self.mark_joint_initial_approval(project, sample_identity)
         output = io.StringIO()
         with redirect_stdout(output):
             self.assertEqual(
@@ -635,12 +654,80 @@ class VoiceoverCliTests(unittest.TestCase):
             )
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         self.assertEqual(manifest["fullApproval"]["reviewPolicy"], "agent_first")
+        self.assertEqual(
+            manifest["fullApproval"]["approvalBasis"], "technical_after_user_sample"
+        )
+        self.assertEqual(
+            manifest["fullApproval"]["reviewBasis"],
+            "user_joint_initial_sample_authorization_and_current_technical_validation",
+        )
         self.assertIn("REVIEW_POLICY=agent_first", approval_output.getvalue())
         self.assertEqual(
             workspace_module.resolve_project_review_policy(project), "agent_first"
         )
         with self.assertRaisesRegex(workspace_module.ProjectValidationError, "冲突"):
             workspace_module.resolve_project_review_policy(project, "user_first")
+
+    def test_agent_autonomy_accepts_actual_duration_only_with_joint_sample_basis(self) -> None:
+        project = self.make_project(agent_approval_enabled=True)
+        sample_identity, _ = self.sample_and_approve(project)
+        self.mark_joint_initial_approval(project, sample_identity)
+        self.assertEqual(
+            voice_main(
+                ["full", "--project", str(project.root)],
+                adapter=FakeProviderAdapter(canonical_wav_bytes(800), "audio/wav"),
+            ),
+            0,
+        )
+        full_identity = self.publish_alignment(project)
+        self.assertEqual(
+            voice_main(
+                [
+                    "approve-full",
+                    "--project",
+                    str(project.root),
+                    "--identity-hash",
+                    full_identity,
+                ]
+            ),
+            0,
+        )
+        manifest = json.loads(
+            project.path("manifests/voice-manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertTrue(manifest["durationReview"]["exceedsThreshold"])
+        self.assertEqual(manifest["fullApproval"]["durationDecision"], "accept_actual")
+        self.assertEqual(
+            manifest["fullApproval"]["approvalBasis"], "technical_after_user_sample"
+        )
+
+    def test_legacy_agent_project_retains_human_review_basis(self) -> None:
+        project = self.make_project(agent_approval_enabled=True)
+        self.sample_and_approve(project)
+        self.assertEqual(
+            voice_main(
+                ["full", "--project", str(project.root)],
+                adapter=FakeProviderAdapter(canonical_wav_bytes(400), "audio/wav"),
+            ),
+            0,
+        )
+        full_identity = self.publish_alignment(project)
+        self.assertEqual(
+            voice_main(
+                [
+                    "approve-full",
+                    "--project",
+                    str(project.root),
+                    "--identity-hash",
+                    full_identity,
+                ]
+            ),
+            0,
+        )
+        manifest = json.loads(
+            project.path("manifests/voice-manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["fullApproval"]["approvalBasis"], "human_full_listening")
 
     def test_minimax_mode_uses_shared_sample_full_timeline_gate_with_fake_adapter(self) -> None:
         project = self.make_project(voiceover_mode="minimax")

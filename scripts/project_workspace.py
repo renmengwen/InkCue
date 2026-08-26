@@ -21,6 +21,8 @@ DEFAULT_WORKSPACE_ROOT = Path(r"D:\SRTWhiteboard")
 PROJECT_SCHEMA_VERSION = 2
 SUPPORTED_PROJECT_SCHEMA_VERSIONS = {1, 2}
 IMAGE_GENERATION_MODES = {"provider", "gpt-login"}
+INITIAL_APPROVAL_PENDING = "pending_initial_approval"
+INITIAL_APPROVAL_APPROVED = "approved"
 PLAN_SCHEMA_VERSION = 1
 PROJECT_PATHS_V1 = {
     "planning": "planning",
@@ -268,6 +270,29 @@ class Project:
     @property
     def image_generation_mode(self) -> str:
         return self.metadata.get("imageGenerationMode", "provider")
+
+    @property
+    def initial_approval_completed(self) -> bool:
+        """旧项目缺少该字段时，兼容视为已经完成初始批准。"""
+        approval = self.metadata.get("initialApproval")
+        return approval is None or approval.get("status") == INITIAL_APPROVAL_APPROVED
+
+    @property
+    def pending_initial_approval(self) -> bool:
+        return not self.initial_approval_completed
+
+    @property
+    def current_content_identity_sha256(self) -> str:
+        content_source = self.metadata.get("contentSource")
+        if isinstance(content_source, Mapping):
+            return str(content_source["inputIdentitySha256"])
+        return sha256_json(
+            {
+                "contractVersion": "whiteboard-initial-content-identity-v1",
+                "sourceSrtSha256": self.metadata["source"]["sha256"],
+                "generationPlan": self.plan,
+            }
+        )
 
     @property
     def render_profile(self) -> dict[str, Any]:
@@ -1048,6 +1073,68 @@ def validate_project_metadata_data(root: Path, metadata: Any) -> dict[str, Any]:
         raise ProjectValidationError(
             "project.json imageGenerationMode 只允许 provider 或 gpt-login"
         )
+    initial_approval = metadata.get("initialApproval")
+    if initial_approval is not None:
+        if schema_version != 2 or not isinstance(initial_approval, dict):
+            raise ProjectValidationError("project.json initialApproval 只允许 schema v2 对象")
+        status = initial_approval.get("status")
+        if status == INITIAL_APPROVAL_PENDING:
+            if set(initial_approval) != {"status"}:
+                raise ProjectValidationError(
+                    "pending initialApproval 只能包含 status"
+                )
+            if any(
+                field in metadata
+                for field in (
+                    "backgroundMusic",
+                    "agentApprovalEnabled",
+                    "imageGenerationMode",
+                )
+            ):
+                raise ProjectValidationError(
+                    "pending 初始批准前不得冻结 BGM、代理批准或生图方式"
+                )
+        elif status == INITIAL_APPROVAL_APPROVED:
+            expected_fields = {
+                "status",
+                "contentIdentitySha256",
+                "sampleIdentityHash",
+                "approvalBasis",
+                "approvedAt",
+            }
+            if set(initial_approval) != expected_fields:
+                raise ProjectValidationError("approved initialApproval 字段集合无效")
+            if not _is_sha256(initial_approval.get("contentIdentitySha256")):
+                raise ProjectValidationError(
+                    "initialApproval.contentIdentitySha256 无效"
+                )
+            sample_identity = initial_approval.get("sampleIdentityHash")
+            if sample_identity is not None and not _is_sha256(sample_identity):
+                raise ProjectValidationError("initialApproval.sampleIdentityHash 无效")
+            expected_basis = (
+                "user_joint_silent_plan"
+                if sample_identity is None
+                else "user_joint_content_and_sample"
+            )
+            if initial_approval.get("approvalBasis") != expected_basis:
+                raise ProjectValidationError("initialApproval.approvalBasis 无效")
+            approved_at = initial_approval.get("approvedAt")
+            if not isinstance(approved_at, str):
+                raise ProjectValidationError("initialApproval.approvedAt 无效")
+            try:
+                parsed_approved_at = datetime.fromisoformat(approved_at)
+            except ValueError as exc:
+                raise ProjectValidationError(
+                    "initialApproval.approvedAt 不是 ISO 8601 时间"
+                ) from exc
+            if parsed_approved_at.tzinfo is None:
+                raise ProjectValidationError(
+                    "initialApproval.approvedAt 必须包含时区"
+                )
+        else:
+            raise ProjectValidationError(
+                "initialApproval.status 只允许 pending_initial_approval 或 approved"
+            )
     _validate_uuid4(metadata.get("projectId"))
     project_name = metadata.get("projectName")
     if not isinstance(project_name, str) or sanitize_project_name(project_name) != project_name:
@@ -1264,6 +1351,7 @@ def load_project(
     project_root: str | Path,
     *,
     allow_pending_audio_timeline: bool = False,
+    allow_pending_initial_approval: bool = False,
 ) -> Project:
     root = _resolved(Path(project_root))
     if not root.is_dir():
@@ -1295,13 +1383,54 @@ def load_project(
             generation_plan=plan,
             allow_pending_audio_timeline=allow_pending_audio_timeline,
         )
-    return Project(
+    project = Project(
         root=root,
         metadata=metadata,
         plan=plan,
         timing_plan=timing_plan,
         pending_audio_timeline=pending_audio_timeline,
     )
+    initial_approval = metadata.get("initialApproval")
+    if (
+        isinstance(initial_approval, dict)
+        and initial_approval.get("status") == INITIAL_APPROVAL_APPROVED
+    ):
+        if (
+            initial_approval.get("contentIdentitySha256")
+            != project.current_content_identity_sha256
+        ):
+            raise ProjectValidationError(
+                "initialApproval 绑定的 content identity 已 stale"
+            )
+        sample_identity = initial_approval.get("sampleIdentityHash")
+        if project.voiceover_mode in AUDIO_VOICEOVER_MODES:
+            manifest_path = safe_project_path(root, "manifests/voice-manifest.json")
+            try:
+                voice_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise ProjectValidationError(
+                    "已初始批准的旁白项目缺少可读 voice manifest"
+                ) from exc
+            sample = voice_manifest.get("sample") if isinstance(voice_manifest, dict) else None
+            approval = sample.get("approval") if isinstance(sample, dict) else None
+            if (
+                not _is_sha256(sample_identity)
+                or sample.get("identityHash") != sample_identity
+                or not isinstance(approval, dict)
+                or approval.get("approved") is not True
+                or approval.get("identityHash") != sample_identity
+                or approval.get("approvalBasis") != "user_joint_initial_approval"
+            ):
+                raise ProjectValidationError(
+                    "initialApproval 未绑定 current 已联合批准样音"
+                )
+        elif sample_identity is not None:
+            raise ProjectValidationError("静音项目 initialApproval 不得绑定样音")
+    if project.pending_initial_approval and not allow_pending_initial_approval:
+        raise ProjectValidationError(
+            "项目仍为 pending_initial_approval；当前操作不允许越过初始联合批准"
+        )
+    return project
 
 
 def upgrade_project(
@@ -1416,26 +1545,48 @@ class ProjectWorkspace:
         *,
         confirmed_plan: Mapping[str, Any] | None = None,
         voiceover_mode: str = "disabled",
-        background_music_enabled: bool = False,
-        agent_approval_enabled: bool = False,
-        image_generation_mode: str = "provider",
+        background_music_enabled: bool | None = None,
+        agent_approval_enabled: bool | None = None,
+        image_generation_mode: str | None = None,
+        pending_initial_approval: bool = False,
         source_input: str | Path | None = None,
         source_manifest: str | Path | None = None,
         source_plan: str | Path | None = None,
     ) -> Project:
         if voiceover_mode not in VOICEOVER_MODES:
             raise ProjectValidationError("voiceoverMode 只允许 disabled、edge-tts、minimax 或 doubao")
-        if not isinstance(background_music_enabled, bool):
-            raise ProjectValidationError("backgroundMusic.enabled 必须是布尔值")
-        if not isinstance(agent_approval_enabled, bool):
-            raise ProjectValidationError("agentApprovalEnabled 必须是布尔值")
-        if (
-            not isinstance(image_generation_mode, str)
-            or image_generation_mode not in IMAGE_GENERATION_MODES
+        if not isinstance(pending_initial_approval, bool):
+            raise ProjectValidationError("pending_initial_approval 必须是布尔值")
+        if pending_initial_approval and any(
+            value is not None
+            for value in (
+                background_music_enabled,
+                agent_approval_enabled,
+                image_generation_mode,
+            )
         ):
             raise ProjectValidationError(
-                "imageGenerationMode 只允许 provider 或 gpt-login"
+                "pending 预项目不得提前冻结 BGM、代理批准或生图方式"
             )
+        if not pending_initial_approval:
+            background_music_enabled = (
+                False if background_music_enabled is None else background_music_enabled
+            )
+            agent_approval_enabled = (
+                False if agent_approval_enabled is None else agent_approval_enabled
+            )
+            image_generation_mode = image_generation_mode or "provider"
+            if not isinstance(background_music_enabled, bool):
+                raise ProjectValidationError("backgroundMusic.enabled 必须是布尔值")
+            if not isinstance(agent_approval_enabled, bool):
+                raise ProjectValidationError("agentApprovalEnabled 必须是布尔值")
+            if (
+                not isinstance(image_generation_mode, str)
+                or image_generation_mode not in IMAGE_GENERATION_MODES
+            ):
+                raise ProjectValidationError(
+                    "imageGenerationMode 只允许 provider 或 gpt-login"
+                )
         if background_music_enabled and voiceover_mode not in AUDIO_VOICEOVER_MODES:
             raise ProjectValidationError("当前 BGM 功能只允许用于旁白项目")
         project_name = sanitize_project_name(name)
@@ -1479,13 +1630,20 @@ class ProjectWorkspace:
             "projectName": project_name,
             "createdAt": datetime.now().astimezone().isoformat(timespec="seconds"),
             "voiceoverMode": voiceover_mode,
-            "backgroundMusic": {"enabled": background_music_enabled},
-            "agentApprovalEnabled": agent_approval_enabled,
-            "imageGenerationMode": image_generation_mode,
             "renderProfile": dict(FIXED_RENDER_PROFILE),
             "source": {"file": "source/source.srt", "sha256": source_hash},
             "paths": dict(PROJECT_PATHS_V2),
         }
+        if pending_initial_approval:
+            metadata["initialApproval"] = {"status": INITIAL_APPROVAL_PENDING}
+        else:
+            metadata.update(
+                {
+                    "backgroundMusic": {"enabled": background_music_enabled},
+                    "agentApprovalEnabled": agent_approval_enabled,
+                    "imageGenerationMode": image_generation_mode,
+                }
+            )
         if source_package is not None:
             metadata["contentSource"] = {
                 "contractVersion": source_package.manifest["contractVersion"],
@@ -1541,7 +1699,10 @@ class ProjectWorkspace:
             _write_json(safe_project_path(project_root, "planning/timing-plan.json"), timing_plan)
             # project.json 是新项目的提交点；生成/时序快照先落盘。
             _write_json(safe_project_path(project_root, "project.json"), metadata)
-            return load_project(project_root)
+            return load_project(
+                project_root,
+                allow_pending_initial_approval=pending_initial_approval,
+            )
         except Exception:
             # 只回滚本次尚未成功创建的、已解析且位于 projects 下的唯一目录。
             if project_root.exists():
@@ -1549,9 +1710,19 @@ class ProjectWorkspace:
                 shutil.rmtree(project_root)
             raise
 
-    def load_project(self, project_root: str | Path) -> Project:
+    def load_project(
+        self,
+        project_root: str | Path,
+        *,
+        allow_pending_audio_timeline: bool = False,
+        allow_pending_initial_approval: bool = False,
+    ) -> Project:
         """从当前工作区加载项目，并先约束其必须是 projects 的直接子目录。"""
-        return load_project(self._assert_project_location(project_root))
+        return load_project(
+            self._assert_project_location(project_root),
+            allow_pending_audio_timeline=allow_pending_audio_timeline,
+            allow_pending_initial_approval=allow_pending_initial_approval,
+        )
 
     def upgrade_project(
         self,

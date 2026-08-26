@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""在用户明确完整看片听音后，批准仍 current 的最终成片 identity。"""
+"""按项目冻结的审阅模式批准仍 current 的最终成片 identity。"""
 from __future__ import annotations
 
 import argparse
@@ -37,6 +37,43 @@ def _mapping(value: Any, label: str) -> Mapping[str, Any]:
     return value
 
 
+def _approval_audit(inspection: Mapping[str, Any]) -> tuple[str, str]:
+    project = inspection["project"]
+    initial = project.metadata.get("initialApproval")
+    autonomous = (
+        project.initial_approval_completed
+        and project.agent_approval_enabled
+        and isinstance(initial, Mapping)
+        and initial.get("status") == "approved"
+    )
+    if not autonomous:
+        return "human_full_media_review", "current_final_full_playback"
+    if project.voiceover_mode == "disabled":
+        return "technical_after_initial_approval", "current_final_technical_validation"
+
+    voice_manifest_path = project.path("manifests/voice-manifest.json")
+    try:
+        voice_manifest = json.loads(voice_manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise FinalApprovalGateError(f"无法读取 current voice manifest: {exc}") from exc
+    full_approval = _mapping(voice_manifest.get("fullApproval"), "fullApproval")
+    sample = _mapping(voice_manifest.get("sample"), "sample")
+    sample_approval = _mapping(sample.get("approval"), "sample.approval")
+    if (
+        sample_approval.get("approved") is not True
+        or sample_approval.get("identityHash") != sample.get("identityHash")
+        or sample_approval.get("approvalBasis") != "user_joint_initial_approval"
+        or initial.get("sampleIdentityHash") != sample.get("identityHash")
+        or full_approval.get("approved") is not True
+        or full_approval.get("identityHash") != voice_manifest.get("fullIdentityHash")
+        or full_approval.get("approvalBasis") != "technical_after_user_sample"
+        or full_approval.get("reviewBasis")
+        != "user_joint_initial_sample_authorization_and_current_technical_validation"
+    ):
+        raise FinalApprovalGateError("自主最终批准要求 current 用户样音与技术 fullApproval 授权链")
+    return "technical_after_user_sample", "current_final_technical_validation"
+
+
 def approve_final(project_root: str | Path, identity_hash: str) -> dict[str, Any]:
     if not isinstance(identity_hash, str) or len(identity_hash) != 64:
         raise FinalApprovalGateError("--identity-hash 必须是 64 位 current final identity")
@@ -59,10 +96,13 @@ def approve_final(project_root: str | Path, identity_hash: str) -> dict[str, Any
     if dict(outputs) != inspection["outputs"]:
         raise FinalApprovalGateError("技术验证证据未绑定 current 三层输出")
 
+    approval_basis, review_basis = _approval_audit(inspection)
     approval = {
         "approved": True,
         "identityHash": current_identity,
         "finalMediaSha256": inspection["finalMedia"]["sha256"],
+        "approvalBasis": approval_basis,
+        "reviewBasis": review_basis,
         "approvedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     manifest["finalApproval"] = approval
@@ -76,9 +116,11 @@ def approve_final(project_root: str | Path, identity_hash: str) -> dict[str, Any
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="批准已技术验证且仍 current 的最终成片")
+    parser = argparse.ArgumentParser(
+        description="按冻结模式批准已技术验证且仍 current 的最终成片"
+    )
     parser.add_argument("--project", required=True, help="项目根目录")
-    parser.add_argument("--identity-hash", required=True, help="用户刚完整确认的 current final identity")
+    parser.add_argument("--identity-hash", required=True, help="刚复核的 current final identity")
     return parser
 
 

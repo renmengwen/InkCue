@@ -45,6 +45,15 @@ class TestSuiteRunnerTests(unittest.TestCase):
         self.assertIn("line-29", bounded)
         self.assertLessEqual(len(bounded), 120)
 
+    def test_failure_output_is_safe_for_legacy_windows_console_encoding(self) -> None:
+        value = "断言失败：\ufffd / emoji: \U0001f642"
+
+        safe = run_test_suite._console_safe_text(value, "gbk")
+
+        self.assertEqual(safe.encode("gbk").decode("gbk"), safe)
+        self.assertIn(r"\ufffd", safe)
+        self.assertIn(r"\U0001f642", safe)
+
     @mock.patch.object(run_test_suite, "_terminate_process_tree")
     @mock.patch.object(run_test_suite.subprocess, "Popen")
     def test_timeout_terminates_child_tree_and_returns_bounded_failure(
@@ -66,6 +75,10 @@ class TestSuiteRunnerTests(unittest.TestCase):
         self.assertEqual(command[-1], run_test_suite.FAST_TEST_MODULES[0])
         self.assertEqual(popen.call_args.kwargs["stdout"], subprocess.PIPE)
         self.assertEqual(popen.call_args.kwargs["stderr"], subprocess.STDOUT)
+        self.assertEqual(
+            popen.call_args.kwargs["env"]["PYTHONIOENCODING"],
+            "utf-8",
+        )
 
     @mock.patch.object(run_test_suite, "_run_child", return_value=0)
     def test_main_runs_plan_one_child_at_a_time(self, run_child: mock.Mock) -> None:

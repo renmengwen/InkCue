@@ -141,7 +141,9 @@ def _projected_summary(
     if "previewUrl" not in result:
         result["previewUrl"] = result.get("artifact")
     result["approvalWritten"] = False
-    result["userConfirmationRequired"] = True
+    result["userConfirmationRequired"] = bool(
+        raw.get("userConfirmationRequired", True)
+    )
     result["failures"] = list(raw.get("failures") or [])
     if "deepValidation" not in result:
         reused = bool(raw.get("deepValidationReused") or raw.get("formalValidationMode") == "binding")
@@ -151,14 +153,22 @@ def _projected_summary(
             "reason": raw.get("deepValidationBasis"),
         }
     result.setdefault("deepValidationSkipReason", raw.get("deepValidationBasis"))
-    if result.get("status") == "PASS" and result.get("nextGate"):
+    if (
+        result.get("status") == "PASS"
+        and result.get("nextGate")
+        and result.get("userConfirmationRequired")
+    ):
         result["status"] = "WAITING_HUMAN_GATE"
     if result.get("status") == "WAITING_HUMAN_GATE":
         result["technicalStatus"] = "PASS"
         result["processOutcome"] = "completed_waiting_for_user"
     elif result.get("status") == "PASS":
         result["technicalStatus"] = "PASS"
-        result["processOutcome"] = "completed"
+        result["processOutcome"] = (
+            "completed_waiting_for_coordinator_approval"
+            if result.get("approvalActionRequired")
+            else "completed"
+        )
     else:
         result["technicalStatus"] = "FAIL"
         result["processOutcome"] = "technical_failure"

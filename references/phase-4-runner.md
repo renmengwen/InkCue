@@ -34,7 +34,7 @@ runner 不接受自动批准参数，不读取聊天记录或项目开关推断�
 - current `FINAL_IDENTITY`、`output/final.mp4` 与 `nextGate=final_media_review`。
 
 任一步失败即停止后续步骤，保留正式 current 文件及失败工作目录供诊断；成功后状态仍投影为
-`WAITING_HUMAN_GATE`，进程退出码为 0。这些旧有状态名和字段不因 `agentApprovalEnabled` 新增或改名：`status=WAITING_HUMAN_GATE`、`technicalStatus=PASS`、`processOutcome=completed_waiting_for_user`、`approvalWritten=false`、`userConfirmationRequired=true` 与 `nextGate`。退出码 0 只表示本次技术链成功完成，不表示 Gate 批准。人工模式必须等待用户完整看片，旁白模式还须完整听音；AI 代理模式则必须交回 coordinator，由具备真实视听能力的审阅者完整看片/听音、核对 current identity、决策并调用原批准脚本。这样 PowerShell/桌面命令包装层不会把预期 Gate 显示成技术失败，同时独立批准脚本和 current identity 校验仍保持 fail-closed。
+`WAITING_HUMAN_GATE`，进程退出码为 0。退出码 0 只表示技术链完成。人工模式等待用户完整看片听音；`agentApprovalEnabled=true` 时 runner 仍不自行批准，而是交回 coordinator 重验 current full audio、字幕、AAC、流结构、完整解码、时长/帧数/尾部、BGM 固定混音与 `FINAL_IDENTITY`，再以用户样音授权后的技术推进 `reviewBasis` 调用原批准脚本。不得因宿主没有听音能力而再次阻塞，也不得声称 AI 完整听过 final。
 
 ## 逐步调试与恢复
 
@@ -54,8 +54,8 @@ runner 中断或失败后不要从头重做：保留已 current 的 receipt，�
 
 ## Gate 与恢复语义
 
-- runner 在 annotation 联合确认处停止，输出 artifact、identity、状态和 Gate 审阅要求；不会写 approval。人工模式交付用户，AI 代理模式立即交回 coordinator。
-- 自动化不得仅凭进程退出码 0 继续需要批准的下游；必须同时读取结构化 `status` 与 `approvalWritten`。`WAITING_HUMAN_GATE` 时 runner 本身不能自动调用批准脚本；人工模式等待用户，AI 代理模式由 coordinator 接回并在完成真实审阅后调用既有批准脚本。
+- runner 在 annotation 联合确认处停止，输出 artifact、identity、状态和 Gate 审阅要求；不会写 approval。视觉自主模式仍由 coordinator/具备能力的 child 实际查看 current artifact。
+- 自动化不得仅凭进程退出码 0 继续需要批准的下游；必须同时读取结构化 `status` 与 `approvalWritten`。`WAITING_HUMAN_GATE` 时 runner 不能自动调用批准脚本；人工模式等待用户，自主 final 模式由 coordinator 接回并完成严格技术证据复核，视觉 Gate 则仍完成真实查看。
 - 确定性失败只重做受影响阶段；已验证且 binding current 的阶段不得重复执行。
 - provider `unknown_external_outcome` 不得普通重跑或自动重发；必须等待用户单独授权新的外部调用。
 - 旧批准不能跨 identity、manifest、timeline、SRT 或 receipt 变化复用。

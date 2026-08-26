@@ -19,8 +19,8 @@ from voice_provider_config import VoiceProviderConfigError, active_provider_id
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "在第 1 步配图策略已获用户确认后创建 D 盘项目。未提供 --plan 时，"
-            "创建固定画布与约束、scenes 为空的有效计划骨架。"
+            "创建 pending_initial_approval 预项目，或兼容创建已完成初始确认的项目。"
+            "未提供 --plan 时创建固定画布与约束、scenes 为空的有效计划骨架。"
         )
     )
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -40,8 +40,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--background-music",
         choices=("enabled", "disabled"),
-        default="disabled",
-        help="阶段 0 已确认的 BGM 选择；默认 disabled 仅用于旧调用兼容",
+        help="已确认的 BGM 选择；pending 预项目必须省略，留待联合批准冻结",
     )
     parser.add_argument(
         "--agent-approval",
@@ -52,6 +51,11 @@ def _parser() -> argparse.ArgumentParser:
         "--image-generation-mode",
         choices=("provider", "gpt-login"),
         help="阶段 0 已确认的生图方式；新建时省略按 provider 兼容旧调用",
+    )
+    parser.add_argument(
+        "--pending-initial-approval",
+        action="store_true",
+        help="创建仅允许阶段 0 草案/样音操作的待初始联合批准预项目",
     )
     parser.add_argument(
         "--source-input",
@@ -102,13 +106,17 @@ def main(argv: list[str] | None = None) -> int:
                 raise ProjectValidationError("--plan 仅用于创建新项目，续接时校验项目内现有计划")
             if args.voiceover_mode is not None:
                 raise ProjectValidationError("--voiceover-mode 仅用于创建新项目，续接时读取已冻结模式")
-            if args.background_music != "disabled":
+            if args.background_music is not None:
                 raise ProjectValidationError("--background-music 仅用于创建新项目，续接时读取已冻结选择")
             if args.agent_approval is not None:
                 raise ProjectValidationError("--agent-approval 仅用于创建新项目，续接时读取已冻结选择")
             if args.image_generation_mode is not None:
                 raise ProjectValidationError(
                     "--image-generation-mode 仅用于创建新项目，续接时读取已冻结选择"
+                )
+            if args.pending_initial_approval:
+                raise ProjectValidationError(
+                    "--pending-initial-approval 只用于新建预项目，不能用于 --resume"
                 )
             if has_source_input:
                 raise ProjectValidationError("content source 证据仅用于新建项目，续接时读取项目内冻结证据")
@@ -119,6 +127,17 @@ def main(argv: list[str] | None = None) -> int:
             # Provider selection has one source of truth for the CLI.  The
             # explicit disabled mode is only the silent-project escape hatch.
             voiceover_mode = args.voiceover_mode or active_provider_id()
+            if args.pending_initial_approval and any(
+                value is not None
+                for value in (
+                    args.background_music,
+                    args.agent_approval,
+                    args.image_generation_mode,
+                )
+            ):
+                raise ProjectValidationError(
+                    "pending 预项目不得提前指定 BGM、代理批准或生图方式"
+                )
             project = workspace.create_project(
                 args.name,
                 args.srt,
@@ -128,9 +147,22 @@ def main(argv: list[str] | None = None) -> int:
                     voiceover_mode=voiceover_mode,
                 ),
                 voiceover_mode=voiceover_mode,
-                background_music_enabled=args.background_music == "enabled",
-                agent_approval_enabled=args.agent_approval == "enabled",
-                image_generation_mode=args.image_generation_mode or "provider",
+                background_music_enabled=(
+                    None
+                    if args.pending_initial_approval
+                    else args.background_music == "enabled"
+                ),
+                agent_approval_enabled=(
+                    None
+                    if args.pending_initial_approval
+                    else args.agent_approval == "enabled"
+                ),
+                image_generation_mode=(
+                    None
+                    if args.pending_initial_approval
+                    else args.image_generation_mode or "provider"
+                ),
+                pending_initial_approval=args.pending_initial_approval,
                 source_input=args.source_input,
                 source_manifest=args.source_manifest,
                 source_plan=args.plan if has_source_input else None,
@@ -146,6 +178,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"BACKGROUND_MUSIC={'enabled' if project.background_music_enabled else 'disabled'}")
     print(f"AGENT_APPROVAL={'enabled' if project.agent_approval_enabled else 'disabled'}")
     print(f"IMAGE_GENERATION_MODE={project.image_generation_mode}")
+    print(
+        "INITIAL_APPROVAL="
+        + ("pending_initial_approval" if project.pending_initial_approval else "approved")
+    )
     print(f"SCENES_DIR={project.scenes_dir}")
     return 0
 

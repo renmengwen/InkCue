@@ -257,7 +257,7 @@ def run_final_delivery(
     run_id: str | None = None,
     force_deep: bool = False,
 ) -> dict[str, Any]:
-    """连续执行 merge/burn/mux/validate，并停在最终人工看片听音 Gate。"""
+    """连续执行 merge/burn/mux/validate，并交回冻结模式对应的最终批准动作。"""
 
     requested_run_id = (
         _safe_run_id(run_id)
@@ -350,6 +350,13 @@ def run_final_delivery(
         else None
     )
     artifact = project.path("output/final.mp4")
+    initial = project.metadata.get("initialApproval")
+    autonomous = (
+        project.initial_approval_completed
+        and project.agent_approval_enabled
+        and isinstance(initial, Mapping)
+        and initial.get("status") == "approved"
+    )
     return {
         "contractVersion": PHASE_ADAPTER_CONTRACT,
         "phaseContractVersion": FINAL_DELIVERY_CONTRACT,
@@ -362,8 +369,19 @@ def run_final_delivery(
         "partialSuccess": bool(last_completed and not ok),
         "currentIdentity": final_identity,
         "approvalWritten": False,
-        "userConfirmationRequired": True,
-        "nextGate": "final_media_review" if ok else None,
+        "approvalActionRequired": bool(ok),
+        "userConfirmationRequired": bool(ok and not autonomous),
+        "nextGate": (
+            "final_technical_approval" if ok and autonomous else
+            "final_media_review" if ok else None
+        ),
+        "approvalBasis": (
+            "technical_after_initial_approval"
+            if autonomous and project.voiceover_mode == "disabled"
+            else "technical_after_user_sample"
+            if autonomous
+            else "human_full_media_review"
+        ),
         "failures": failures,
         "artifact": str(artifact) if ok else None,
         "artifactPaths": [str(artifact)] if ok else [],
@@ -371,7 +389,20 @@ def run_final_delivery(
         "lastCompletedStep": last_completed,
         "outputs": outputs,
         "confirmationRequest": (
-            f"请完整看片并听音后确认 final identity {final_identity}；确认前不得写入 finalApproval。"
+            (
+                f"current final identity {final_identity} 已通过技术链；"
+                "coordinator 可按用户样音授权调用 approve_final_media，"
+                "不得表述为已完整听审。"
+                if project.voiceover_mode != "disabled"
+                else f"current final identity {final_identity} 已通过技术链；"
+                "coordinator 可按初始静音方案授权调用 approve_final_media。"
+            )
+            if ok and autonomous
+            else (
+                f"请完整看片后确认 final identity {final_identity}；确认前不得写入 finalApproval。"
+                if project.voiceover_mode == "disabled"
+                else f"请完整看片并听音后确认 final identity {final_identity}；确认前不得写入 finalApproval。"
+            )
             if ok
             else "最终技术链未完成，不能进入成片人工批准。"
         ),

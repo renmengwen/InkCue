@@ -32,7 +32,7 @@ Disabled 的画面与字幕从全局 0 开始，以 source SRT 最后一条 cue 
 
 ## 旁白阶段与正式字幕的边界
 
-Edge `generate_voiceover.py full` 生成 current `audio/narration.srt`，但此时尚未生图，也没有真实线稿画面。流程因此不再把该 SRT 烧录到 1920×1080 空背景视频；`approve-full` 只在当前批准主体完整试听 narration WAV、决定通过后绑定 current `FULL_IDENTITY` 和真实时长决定。`agentApprovalEnabled` 缺失或为 `false` 时批准主体是用户；为 `true` 时由 coordinator AI 真实试听、决定通过或返工，并在通过时调用同一 `approve-full` 动作。
+Edge/MiniMax/豆包 `full` 生成 current `audio/narration.srt`，但此时尚未生图。人工模式只有用户完整试听后才绑定 `FULL_IDENTITY`；自主模式以阶段 0 用户批准的 current 样音为声音主观依据，在 canonical WAV 完整解码、FunASR、原稿对齐、timeline/narration SRT/current identity 与时长偏差等严格技术证据通过后写“用户样音授权后的技术推进” basis，不声称 AI 完整试听。
 
 字幕文本/时序由技术 binding 保证，视觉判断统一留给下列有真实画面的步骤：
 
@@ -169,7 +169,7 @@ contact sheet 和正式字幕流程都不需要浏览器、预览台、文件选
 
 Disabled 验收要求 clean/captioned/final 都恰好 1 路视频、0 音频；captioned/final 为 H.264、1920×1080、yuv420p、项目 fps，烧录前后帧数和时长保持。Edge 的字幕仍先独立烧录为 0 音频的 captioned video，最终 AAC 封装由 `mux_voiceover.py` 完成。
 
-最终技术验证和完整旁白批准通过后仍未获得最终质量批准。`agentApprovalEnabled` 缺失或为 `false` 时，只有用户完整看片（Edge 还需完整听音）并明确确认后，才允许执行 `approve_final_media.py`；为 `true` 时，coordinator AI 必须完整看片听音、决定通过或返工，并仅在通过时调用同一脚本。该脚本绑定 current final identity；任何字幕源、timeline、样式、字体、ASS、clean video、render profile、`subtitlePreset`、encoding contract 或 final SHA 变化都会使旧批准 stale。
+最终技术验证和完整旁白批准通过后，人工模式仍只有用户完整看片听音并明确确认才允许执行 `approve_final_media.py`。自主模式重验 current full audio、字幕/ASS、AAC、流结构、完整解码、帧数/时长/尾部、BGM 固定混音与 `FINAL_IDENTITY` 后调用同一脚本，并写区分技术推进的 `reviewBasis`；不得因 AI 无法听音而阻塞，也不得写成完整听审通过。任何输入变化仍使旧批准 stale。
 
 `burn_subtitles.py` 成功输出 captioned `OUTPUT` 和 `VOICEOVER_MODE`。Disabled 会同时原子发布相同已验证字节的 `final.mp4`；Edge 只发布 captioned master，之后必须由 `mux_voiceover.py` 封装 current、approved WAV。`validate_final_media.py` 会独立重验三层输出并把 `technicalValidation` 证据写入 delivery manifest，但不会写人工批准；`approve_final_media.py` 成功输出 `FINAL_APPROVED=<identity>`。
 
@@ -184,4 +184,4 @@ Disabled 没有 mux 阶段，因此用于最终批准的 identity 从 `validate_
 | 4 | FFmpeg、ffprobe、libass、字体、ASS 编译或媒体验证失败 |
 | 5 | 字幕/媒体 stale、identity 不匹配或缺少批准 |
 
-烧录和发布始终先在本次 ASCII `.work/subtitle-<runId>/` 生成候选。候选失败不得覆盖已有 `subtitles/final.ass`、captioned master 或 final；新候选经 ffprobe 和一次完整解码后才使用 `os.replace` 原子发布，正式路径只复用该 receipt 做 SHA/bytes binding。已发布但 manifest 更新失败时保留工作目录并报错，不伪造成功状态。任何真实外部 Edge 不可用与字幕技术验收是两个不同结果，不能把 fixture 或 Disabled 字幕 PASS 写成真实 Edge PASS。未实际执行的真实 Edge、真实图片 provider、NVENC/QSV/AMF 和当前批准主体的视觉/声音验收必须写为 SKIP、BLOCK 或待确认，不能声称 PASS。
+烧录和发布始终先在本次 ASCII `.work/subtitle-<runId>/` 生成候选。候选失败不得覆盖已有 `subtitles/final.ass`、captioned master 或 final；新候选经 ffprobe 和一次完整解码后才使用 `os.replace` 原子发布，正式路径只复用该 receipt 做 SHA/bytes binding。已发布但 manifest 更新失败时保留工作目录并报错。真实 provider 不可用与字幕技术验收是两个不同结果；未执行的真实 provider/媒体必须写为 SKIP、BLOCK 或待确认，自主技术推进也不得改写为真实声音验收 PASS。
