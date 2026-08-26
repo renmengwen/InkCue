@@ -23,20 +23,20 @@ topic/text 的正式时钟由获批真实音频 timeline 接管。
 
 ## 2. 阶段流程与初始人工 Gate
 
-1. coordinator 冻结输入模式、rewritePolicy、target，并在同一次确认中让用户分别选择 BGM 与后续批准方式；旁白 provider 不询问用户，始终
+1. coordinator 冻结输入模式、rewritePolicy、target，并在同一次确认中确定 BGM、后续批准方式与 `imageGenerationMode`；旁白 provider 不询问用户，始终
    读取 skill 根目录 `config/voice-providers.local.json` 的 `activeProvider`，规范化后自动
    冻结为 `voiceoverMode=edge-tts` 或 `voiceoverMode=minimax`。review 只展示当前已采用的
    provider；只有用户明确要求静音时，传统 SRT 才允许显式使用 `disabled`。BGM 只询问
    “加入/不加入”，不让用户配置曲目或混音参数；加入时固定使用内置 CC0 曲目、`-15 dB`、
    1.2 秒淡入、1.8 秒淡出和必要循环。后续批准只询问“逐阶段由我确认/委托 AI 自动判断并推进”，
-   对应 `agentApprovalEnabled=false|true`；它与 `backgroundMusic.enabled` 是两个独立布尔值。
+   对应 `agentApprovalEnabled=false|true`；它与 `backgroundMusic.enabled` 是两个独立布尔值。`imageGenerationMode=provider|gpt-login`：只有当前 Codex/ChatGPT 确实使用 GPT 账号登录且宿主内置 `image_gen` 可用时，才询问用户使用当前登录账号还是已配置图片供应商；否则不询问并直接冻结 `provider`。用户已经明确指定时不重复询问，只在 review 展示当前已采用；若明确指定 `gpt-login` 但能力不可用，则 `BLOCKED`，不得静默切换。
 2. 在允许真实派发时，由 `contentDrafting` child（或同合同 fallback）生成
    `whiteboard-content-draft-v1` candidate。child 不调用 provider、不写正式项目。
 3. coordinator 校验 candidate，确定性渲染 review Markdown，只交付链接、identity、
    cue/scene 计数和短摘要，不把长正文回灌主上下文。
 4. **停止等待用户明确确认 current `contentDraftIdentitySha256`。** 此次确认同时
-   覆盖旁白内容、cue→scene、分镜策略、图片提示词、是否加入 BGM，以及后续由用户亲自批准还是
-   委托 AI 代理批准；技术 PASS、打开文件或用户未反对都不是批准。
+   覆盖旁白内容、cue→scene、分镜策略、图片提示词、是否加入 BGM、后续由用户亲自批准还是
+   委托 AI 代理批准，以及已选择的生图方式；技术 PASS、打开文件或用户未反对都不是批准。
 5. 修改意见冻结为绑定 current identity 的 revision request，创建新 attempt；旧
    candidate/review 保留为历史并 stale。新 attempt 是版本边界，不要求更换执行者：上一
    `contentDrafting` child 仍存在、idle、上一结果 completed 且 role contract 兼容时，
@@ -46,9 +46,8 @@ topic/text 的正式时钟由获批真实音频 timeline 接管。
 6. 确认后才运行 `prepare_source.py`，确定性复核 provisional SRT/plan 与已确认方案一致，
    再创建正式项目；出现实质差异必须回到本 Gate。
 
-传统 SRT 不新增阶段 0 Gate：在现有首次分镜确认中一并让用户确定
-`backgroundMusic.enabled` 与 `agentApprovalEnabled`，然后建项并冻结。旧项目或字段缺失时
-`agentApprovalEnabled=false`，维持人工 Gate。
+传统 SRT 不新增阶段 0 Gate：在现有首次分镜确认中一并确定
+`backgroundMusic.enabled`、`agentApprovalEnabled` 与 `imageGenerationMode`，然后建项并冻结；生图方式的询问条件与 topic/text 相同。旧项目缺少 `imageGenerationMode` 时按 `provider` 读取且不因读取自动回写；旧项目尚未生图且当前具备 GPT 登录态和宿主 `image_gen` 时，可在首次生图前补问一次并持久化，除此以外直接使用 `provider`。旧项目缺失 `agentApprovalEnabled` 时仍等价于 `false`，维持人工 Gate。
 
 `agentApprovalEnabled=true` 只把初始确认之后的常规质量 Gate 委托给 coordinator AI：
 coordinator 必须真实查看图片、完整试听音频或完整观看视频，决定通过或返工；通过时调用现有批准
@@ -107,13 +106,13 @@ identity 和批准脚本全部保留；child 仍为 `approvalWritesAllowed:false
 [`prompt-writing.md`](prompt-writing.md) 的唯一映射转换为正式 plan `scenes[].prompt`；
 child 不得改名、改写或直接调用 provider。
 
-阶段 0 不写正式 identity、manifest 或批准；两个布尔选择在建项时直接写入现有项目配置。命令细节、schema allowlist、revision request
+阶段 0 不写正式 identity、manifest 或批准；两个布尔选择与 `imageGenerationMode` 在建项时直接写入现有项目配置。生图方式只路由现有图片阶段，不新增 Gate、identity、manifest 或状态机。命令细节、schema allowlist、revision request
 和只读校验见 [`content-input.md`](content-input.md)；child 最小上下文和 dispatch 边界见
 [`subagent-orchestration.md`](subagent-orchestration.md)。
 
 ## 6. 阶段 0 验收
 
 自动测试应覆盖三类输入路由、非法组合、rewritePolicy 保真、cue/scene 连续性、确定性
-candidate identity、“未确认不建项”与缺失 `agentApprovalEnabled` 时等价于 `false`。fixture
+candidate identity、“未确认不建项”、缺失 `agentApprovalEnabled` 时等价于 `false`，以及缺失 `imageGenerationMode` 时等价于 `provider`。fixture
 PASS 不等于用户亲自批准、AI 代理批准、Edge 可用、真实声音接受或线稿审美通过；这些状态必须
 分别报告为待确认、BLOCKED 或 SKIP。

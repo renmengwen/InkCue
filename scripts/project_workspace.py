@@ -20,6 +20,7 @@ DEFAULT_WORKSPACE_ROOT = Path(r"D:\SRTWhiteboard")
 
 PROJECT_SCHEMA_VERSION = 2
 SUPPORTED_PROJECT_SCHEMA_VERSIONS = {1, 2}
+IMAGE_GENERATION_MODES = {"provider", "gpt-login"}
 PLAN_SCHEMA_VERSION = 1
 PROJECT_PATHS_V1 = {
     "planning": "planning",
@@ -262,6 +263,10 @@ class Project:
         if self.schema_version == 1:
             return False
         return self.metadata.get("agentApprovalEnabled", False)
+
+    @property
+    def image_generation_mode(self) -> str:
+        return self.metadata.get("imageGenerationMode", "provider")
 
     @property
     def render_profile(self) -> dict[str, Any]:
@@ -1034,6 +1039,14 @@ def validate_project_metadata_data(root: Path, metadata: Any) -> dict[str, Any]:
         metadata["agentApprovalEnabled"], bool
     ):
         raise ProjectValidationError("project.json agentApprovalEnabled 必须是布尔值")
+    image_generation_mode = metadata.get("imageGenerationMode", "provider")
+    if (
+        not isinstance(image_generation_mode, str)
+        or image_generation_mode not in IMAGE_GENERATION_MODES
+    ):
+        raise ProjectValidationError(
+            "project.json imageGenerationMode 只允许 provider 或 gpt-login"
+        )
     _validate_uuid4(metadata.get("projectId"))
     project_name = metadata.get("projectName")
     if not isinstance(project_name, str) or sanitize_project_name(project_name) != project_name:
@@ -1316,6 +1329,7 @@ class ProjectWorkspace:
         voiceover_mode: str = "disabled",
         background_music_enabled: bool = False,
         agent_approval_enabled: bool = False,
+        image_generation_mode: str = "provider",
         source_input: str | Path | None = None,
         source_manifest: str | Path | None = None,
         source_plan: str | Path | None = None,
@@ -1326,6 +1340,13 @@ class ProjectWorkspace:
             raise ProjectValidationError("backgroundMusic.enabled 必须是布尔值")
         if not isinstance(agent_approval_enabled, bool):
             raise ProjectValidationError("agentApprovalEnabled 必须是布尔值")
+        if (
+            not isinstance(image_generation_mode, str)
+            or image_generation_mode not in IMAGE_GENERATION_MODES
+        ):
+            raise ProjectValidationError(
+                "imageGenerationMode 只允许 provider 或 gpt-login"
+            )
         if background_music_enabled and voiceover_mode not in AUDIO_VOICEOVER_MODES:
             raise ProjectValidationError("当前 BGM 功能只允许用于旁白项目")
         project_name = sanitize_project_name(name)
@@ -1371,6 +1392,7 @@ class ProjectWorkspace:
             "voiceoverMode": voiceover_mode,
             "backgroundMusic": {"enabled": background_music_enabled},
             "agentApprovalEnabled": agent_approval_enabled,
+            "imageGenerationMode": image_generation_mode,
             "renderProfile": dict(FIXED_RENDER_PROFILE),
             "source": {"file": "source/source.srt", "sha256": source_hash},
             "paths": dict(PROJECT_PATHS_V2),

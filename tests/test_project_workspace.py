@@ -135,6 +135,7 @@ class ProjectWorkspaceTests(unittest.TestCase):
         metadata["paths"] = dict(PROJECT_PATHS_V1)
         metadata.pop("voiceoverMode", None)
         metadata.pop("agentApprovalEnabled", None)
+        metadata.pop("imageGenerationMode", None)
         metadata.pop("renderProfile", None)
         metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
         timing_path = project.path("planning/timing-plan.json")
@@ -355,6 +356,7 @@ class ProjectWorkspaceTests(unittest.TestCase):
         self.assertIn("--source-input", help_text)
         self.assertIn("--source-manifest", help_text)
         self.assertIn("--agent-approval", help_text)
+        self.assertIn("--image-generation-mode", help_text)
         upgrade_help = upgrade_project_cli._parser().format_help()
         self.assertIn("--to-schema", upgrade_help)
         self.assertIn("--voiceover-mode", upgrade_help)
@@ -376,6 +378,8 @@ class ProjectWorkspaceTests(unittest.TestCase):
         self.assertFalse(project.background_music_enabled)
         self.assertFalse(project.agent_approval_enabled)
         self.assertIs(project.metadata["agentApprovalEnabled"], False)
+        self.assertEqual(project.image_generation_mode, "provider")
+        self.assertEqual(project.metadata["imageGenerationMode"], "provider")
 
     def test_create_project_cli_records_enabled_background_music_choice(self) -> None:
         with (
@@ -413,6 +417,74 @@ class ProjectWorkspaceTests(unittest.TestCase):
         self.assertTrue(project.agent_approval_enabled)
         self.assertIs(project.metadata["agentApprovalEnabled"], True)
         self.assertIn("AGENT_APPROVAL=enabled", output.getvalue())
+
+    def test_create_project_cli_records_gpt_login_image_generation_mode(self) -> None:
+        output = io.StringIO()
+        with (
+            mock.patch.object(create_project.ProjectWorkspace, "from_config", return_value=self.workspace()),
+            mock.patch.object(create_project, "active_provider_id", return_value="edge-tts"),
+            redirect_stdout(output),
+            redirect_stderr(io.StringIO()),
+        ):
+            result = create_project.main([
+                "--name", "GPT 登录态生图项目",
+                "--srt", str(self.source_srt),
+                "--image-generation-mode", "gpt-login",
+            ])
+        self.assertEqual(result, 0)
+        project = self.workspace().load_project(self.workspace_root / "projects" / "GPT 登录态生图项目")
+        self.assertEqual(project.image_generation_mode, "gpt-login")
+        self.assertEqual(project.metadata["imageGenerationMode"], "gpt-login")
+        self.assertIn("IMAGE_GENERATION_MODE=gpt-login", output.getvalue())
+
+    def test_create_project_cli_resume_rejects_explicit_image_generation_mode(self) -> None:
+        project = self.workspace().create_project(
+            "续接冻结生图方式项目",
+            self.source_srt,
+            image_generation_mode="gpt-login",
+        )
+        metadata_path = project.path("project.json")
+        before = metadata_path.read_bytes()
+
+        for choice in ("provider", "gpt-login"):
+            stderr = io.StringIO()
+            with (
+                self.subTest(choice=choice),
+                mock.patch.object(
+                    create_project.ProjectWorkspace,
+                    "from_config",
+                    return_value=self.workspace(),
+                ),
+                redirect_stdout(io.StringIO()),
+                redirect_stderr(stderr),
+            ):
+                result = create_project.main([
+                    "--resume", str(project.root),
+                    "--srt", str(self.source_srt),
+                    "--image-generation-mode", choice,
+                ])
+            self.assertEqual(result, 2)
+            self.assertIn("--image-generation-mode 仅用于创建新项目", stderr.getvalue())
+            self.assertEqual(metadata_path.read_bytes(), before)
+
+        loaded = self.workspace().load_project(project.root)
+        self.assertEqual(loaded.image_generation_mode, "gpt-login")
+
+    def test_image_generation_mode_rejects_invalid_api_and_persisted_values(self) -> None:
+        with self.assertRaisesRegex(ProjectValidationError, "imageGenerationMode"):
+            self.workspace().create_project(
+                "非法生图方式参数",
+                self.source_srt,
+                image_generation_mode="browser",  # type: ignore[arg-type]
+            )
+
+        project = self.new_project("非法生图方式元数据")
+        metadata_path = project.path("project.json")
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["imageGenerationMode"] = "browser"
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+        with self.assertRaisesRegex(ProjectValidationError, "imageGenerationMode"):
+            self.workspace().load_project(project.root)
 
     def test_create_project_cli_resume_rejects_any_explicit_agent_approval_choice(self) -> None:
         project = self.workspace().create_project(
@@ -583,6 +655,8 @@ class ProjectWorkspaceTests(unittest.TestCase):
         self.assertEqual(project.metadata["schemaVersion"], 2)
         self.assertIs(project.metadata["agentApprovalEnabled"], False)
         self.assertFalse(project.agent_approval_enabled)
+        self.assertEqual(project.metadata["imageGenerationMode"], "provider")
+        self.assertEqual(project.image_generation_mode, "provider")
         self.assertEqual(project.voiceover_mode, "disabled")
         self.assertEqual(project.render_profile, FIXED_RENDER_PROFILE)
         self.assertTrue(project.timing_plan_persisted)
@@ -774,6 +848,20 @@ class ProjectWorkspaceTests(unittest.TestCase):
         self.assertFalse(loaded.agent_approval_enabled)
         self.assertEqual(metadata_path.read_bytes(), before)
 
+    def test_legacy_v2_without_image_generation_mode_defaults_without_rewrite(self) -> None:
+        project = self.new_project("传统 v2 生图方式兼容")
+        metadata_path = project.path("project.json")
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata.pop("imageGenerationMode")
+        metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+        before = metadata_path.read_bytes()
+
+        loaded = self.workspace().load_project(project.root)
+
+        self.assertNotIn("imageGenerationMode", loaded.metadata)
+        self.assertEqual(loaded.image_generation_mode, "provider")
+        self.assertEqual(metadata_path.read_bytes(), before)
+
     def test_v1_loader_exposes_disabled_compatibility_view_without_rewrite(self) -> None:
         project = self.new_project("v1 兼容")
         metadata_path = self.downgrade_to_v1(project)
@@ -785,6 +873,7 @@ class ProjectWorkspaceTests(unittest.TestCase):
         self.assertEqual(loaded.schema_version, 1)
         self.assertEqual(loaded.voiceover_mode, "disabled")
         self.assertFalse(loaded.agent_approval_enabled)
+        self.assertEqual(loaded.image_generation_mode, "provider")
         self.assertEqual(loaded.render_profile, FIXED_RENDER_PROFILE)
         self.assertFalse(loaded.timing_plan_persisted)
         self.assertEqual(loaded.timing_plan["voiceoverMode"], "disabled")

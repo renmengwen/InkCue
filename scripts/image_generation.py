@@ -62,6 +62,7 @@ ATTEMPT_STATUSES = frozenset(
 )
 CANDIDATE_RECEIPT_VERSION = "whiteboard-image-candidate-receipt-v1"
 IMAGE_VALIDATOR_CONTRACT_VERSION = "whiteboard-image-candidate-validator-v2"
+IMAGE_SOURCES = frozenset({"b64_json", "url", "host_tool"})
 
 
 class ImageGenerationError(RuntimeError):
@@ -195,10 +196,13 @@ def image_input_identity(
     *,
     scene_id: str,
     prompt: str,
-    provider: ProviderConfig,
+    provider: ProviderConfig | None = None,
+    backend: Mapping[str, Any] | None = None,
 ) -> str:
-    return canonical_json_sha256(
-        {
+    if (provider is None) == (backend is None):
+        raise ValueError("provider 与 backend 必须且只能提供一个")
+    if provider is not None:
+        payload: dict[str, Any] = {
             "contractVersion": "whiteboard-image-input-v1",
             "sceneId": scene_id,
             "promptSha256": sha256_bytes(prompt.encode("utf-8")),
@@ -209,7 +213,21 @@ def image_input_identity(
             "responseFormat": provider.response_format,
             "extraBody": dict(provider.extra_body),
         }
-    )
+    else:
+        assert backend is not None
+        required = {"provider", "protocol", "model", "toolContractVersion"}
+        if set(backend) != required or any(
+            not isinstance(backend.get(field), str) or not backend[field]
+            for field in required
+        ):
+            raise ValueError("宿主图片 backend identity 无效")
+        payload = {
+            "contractVersion": "whiteboard-image-input-v1",
+            "sceneId": scene_id,
+            "promptSha256": sha256_bytes(prompt.encode("utf-8")),
+            **dict(backend),
+        }
+    return canonical_json_sha256(payload)
 
 
 def utc_now() -> str:
@@ -595,7 +613,7 @@ def normalize_image_candidate(
         raise ImageValidationError("图片字节为空")
     if not isinstance(input_identity_sha256, str) or len(input_identity_sha256) != 64:
         raise ImageValidationError("input identity 无效")
-    if source not in {"b64_json", "url"}:
+    if source not in IMAGE_SOURCES:
         raise ImageValidationError("图片来源无效")
     if isinstance(provider_attempts, bool) or not isinstance(provider_attempts, int) or provider_attempts < 1:
         raise ImageValidationError("provider attempts 无效")
@@ -877,7 +895,7 @@ def load_image_candidate(
         raise ImageValidationError("candidate metadata SHA 不匹配")
     source = evidence.get("source")
     provider_attempts = evidence.get("providerAttempts")
-    if source not in {"b64_json", "url"}:
+    if source not in IMAGE_SOURCES:
         raise ImageValidationError("candidate receipt source 无效")
     if isinstance(provider_attempts, bool) or not isinstance(provider_attempts, int) or provider_attempts < 1:
         raise ImageValidationError("candidate receipt providerAttempts 无效")
@@ -1158,6 +1176,16 @@ class ManifestStore:
         self._touch()
         return record
 
+    def resume_run(self, run_id: str) -> dict[str, Any]:
+        """恢复一个等待宿主结果的既有 run，不创建平行运行记录。"""
+
+        run = self._find_run(run_id)
+        if run.get("status") != "running" or run.get("completedAt") is not None:
+            raise ManifestError("host results 绑定的 run 已完成或不可恢复")
+        self._active_run_id = run_id
+        self._touch()
+        return run
+
     def current_attempt(self, scene_id: str) -> dict[str, Any] | None:
         scene = self._find_scene(scene_id)
         attempt_id = scene.get("currentAttemptId")
@@ -1182,6 +1210,7 @@ class ManifestStore:
         provider: str,
         model: str,
         prompt: str,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         scene = self._find_scene(scene_id)
         if any(
@@ -1202,6 +1231,7 @@ class ManifestStore:
             raise ManifestError("formalFile 与 generation plan 不一致")
         record = {
             "attemptId": attempt_id,
+            "runId": run_id,
             "status": "prepared",
             "inputIdentitySha256": input_identity_sha256,
             "candidateFile": candidate_file,
@@ -1324,7 +1354,7 @@ class ManifestStore:
     ) -> dict[str, Any]:
         if status not in SCENE_STATUSES:
             raise ManifestError(f"无效场景状态：{status}")
-        if source is not None and source not in {"b64_json", "url"}:
+        if source is not None and source not in IMAGE_SOURCES:
             raise ManifestError(f"无效图片来源：{source}")
         if attempts is not None and (
             isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 0
@@ -1332,7 +1362,7 @@ class ManifestStore:
             raise ManifestError("attempts 必须是非负整数")
         if status == "validated" and (
             image_metadata is None
-            or source not in {"b64_json", "url"}
+            or source not in IMAGE_SOURCES
             or prompt is None
             or provider is None
             or model is None

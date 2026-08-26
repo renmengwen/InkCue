@@ -47,6 +47,14 @@ SKILL_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PROVIDER_CONFIG = SKILL_ROOT / "config" / "image-providers.local.json"
 RECOVERABLE_STATUSES = frozenset({"prepared", "requesting", "candidate_ready", "publishing"})
 IMAGE_GENERATION_LOCK_NAME = "image-generation.lock"
+HOST_IMAGE_TASK_CONTRACT_VERSION = "whiteboard-host-image-generation-tasks-v1"
+HOST_IMAGE_RESULTS_CONTRACT_VERSION = "whiteboard-host-image-results-v1"
+HOST_IMAGE_BACKEND_IDENTITY = {
+    "provider": "gpt-login",
+    "protocol": "codex-image-gen",
+    "model": "host-managed",
+    "toolContractVersion": "codex-image-gen-v1",
+}
 
 
 class CliArgumentError(ValueError):
@@ -67,6 +75,17 @@ class GenerationTask:
     attempt_root: Path
     candidate_path: Path
     formal_file: str
+
+
+@dataclass(frozen=True)
+class HostImageBackend:
+    name: str = "gpt-login"
+    protocol: str = "codex-image-gen"
+    model: str = "host-managed"
+    api_key: str = ""
+
+
+HOST_IMAGE_BACKEND = HostImageBackend()
 
 
 def _process_is_alive(pid: int) -> bool:
@@ -159,6 +178,8 @@ def _summary(
     warnings: list[str] | None = None,
     error: str | None = None,
     cover: dict[str, Any] | None = None,
+    status: str | None = None,
+    host_image_generation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     value: dict[str, Any] = {
         "ok": ok,
@@ -184,6 +205,10 @@ def _summary(
         value["error"] = error
     if cover is not None:
         value["cover"] = cover
+    if status is not None:
+        value["status"] = status
+    if host_image_generation is not None:
+        value["hostImageGeneration"] = host_image_generation
     return value
 
 
@@ -350,6 +375,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--overwrite", action="store_true", help="允许原子替换已有图片")
     parser.add_argument("--retry-failed", action="store_true", help="只处理明确 failed 的场景")
     parser.add_argument(
+        "--host-results",
+        help="gpt-login 宿主生图结果 JSON 的绝对路径",
+    )
+    parser.add_argument(
         "--cover",
         action="store_true",
         help="场景生图成功后，根据全片内容生成 previews/social-cover.png（独立于 scene contract）",
@@ -371,6 +400,488 @@ def _generate_cover_if_requested(project_root: Path, *, requested: bool, overwri
         return {"error": str(exc), "semanticSource": "whole_video"}
 
 
+def _host_task_descriptor(task: GenerationTask, *, run_id: str) -> dict[str, str]:
+    return {
+        "sceneId": task.scene_id,
+        "prompt": task.prompt,
+        "runId": run_id,
+        "attemptId": task.attempt_id,
+        "inputIdentitySha256": task.input_identity_sha256,
+    }
+
+
+def _host_task_package(tasks: list[GenerationTask], *, run_id: str) -> dict[str, Any]:
+    return {
+        "contractVersion": HOST_IMAGE_TASK_CONTRACT_VERSION,
+        "resultsContractVersion": HOST_IMAGE_RESULTS_CONTRACT_VERSION,
+        "runId": run_id,
+        "tasks": [_host_task_descriptor(task, run_id=run_id) for task in tasks],
+    }
+
+
+def _load_host_results(path_value: str) -> dict[str, Any]:
+    path = Path(path_value).expanduser()
+    if not path.is_absolute():
+        raise CliArgumentError("--host-results 必须是绝对路径")
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise CliArgumentError("--host-results 不存在或不是有效 JSON") from exc
+    if not isinstance(document, dict) or document.get("contractVersion") != HOST_IMAGE_RESULTS_CONTRACT_VERSION:
+        raise CliArgumentError("host results contractVersion 无效")
+    run_id = document.get("runId")
+    results = document.get("results")
+    if not isinstance(run_id, str) or not run_id or not isinstance(results, list):
+        raise CliArgumentError("host results runId/results 无效")
+    seen: set[str] = set()
+    for index, result in enumerate(results):
+        if not isinstance(result, dict):
+            raise CliArgumentError(f"host results[{index}] 必须是对象")
+        scene_id = result.get("sceneId")
+        attempt_id = result.get("attemptId")
+        status = result.get("status")
+        if (
+            not isinstance(scene_id, str)
+            or not scene_id
+            or scene_id in seen
+            or not isinstance(attempt_id, str)
+            or not attempt_id
+            or status not in {"succeeded", "failed"}
+        ):
+            raise CliArgumentError(f"host results[{index}] identity/status 无效")
+        seen.add(scene_id)
+        if status == "succeeded":
+            if set(result) != {"sceneId", "attemptId", "status", "file"}:
+                raise CliArgumentError(f"host results[{index}] succeeded 字段无效")
+            source = result.get("file")
+            if not isinstance(source, str) or not Path(source).is_absolute():
+                raise CliArgumentError(f"host results[{index}].file 必须是绝对路径")
+        else:
+            if set(result) != {"sceneId", "attemptId", "status", "error"}:
+                raise CliArgumentError(f"host results[{index}] failed 字段无效")
+            error = result.get("error")
+            if (
+                not isinstance(error, str)
+                or not error.strip()
+                or len(error) > 1000
+                or "\n" in error
+                or "\r" in error
+            ):
+                raise CliArgumentError(f"host results[{index}].error 必须是去敏短文本")
+    return document
+
+
+def _generation_task_from_attempt(
+    project: Any,
+    scene: dict[str, Any],
+    prompt: str,
+    attempt: dict[str, Any],
+) -> GenerationTask:
+    candidate_path = (project.root / Path(attempt["candidateFile"])).resolve(strict=False)
+    return GenerationTask(
+        scene_id=scene["sceneId"],
+        prompt=prompt,
+        input_identity_sha256=attempt["inputIdentitySha256"],
+        attempt_id=attempt["attemptId"],
+        attempt_root=candidate_path.parent,
+        candidate_path=candidate_path,
+        formal_file=attempt["formalFile"],
+    )
+
+
+def _host_run_tasks(
+    project: Any,
+    plan_scenes: list[dict[str, Any]],
+    prompts: dict[str, str],
+    manifest: ManifestStore,
+    run_id: str,
+) -> list[GenerationTask]:
+    tasks: list[GenerationTask] = []
+    for scene in plan_scenes:
+        attempt = manifest.current_attempt(scene["sceneId"])
+        if attempt is None or attempt.get("runId") != run_id:
+            continue
+        if attempt.get("provider") != HOST_IMAGE_BACKEND.name:
+            raise ManifestError("host run attempt provider binding 无效")
+        tasks.append(_generation_task_from_attempt(project, scene, prompts[scene["sceneId"]], attempt))
+    if not tasks:
+        raise ManifestError("host run 没有绑定的 attempt")
+    return tasks
+
+
+def _waiting_host_run_id(manifest: ManifestStore) -> str | None:
+    run_ids: set[str] = set()
+    for scene in manifest.data.get("scenes", []):
+        if not isinstance(scene, dict):
+            continue
+        attempt = manifest.current_attempt(scene["sceneId"])
+        if (
+            attempt is not None
+            and attempt.get("provider") == HOST_IMAGE_BACKEND.name
+            and attempt.get("status") in {"prepared", "requesting", "candidate_ready", "publishing"}
+            and isinstance(attempt.get("runId"), str)
+        ):
+            run_ids.add(attempt["runId"])
+    if len(run_ids) > 1:
+        raise ManifestError("存在多个未完成 host run，拒绝猜测结果绑定")
+    return next(iter(run_ids), None)
+
+
+def _run_host_image_generation(
+    *,
+    args: argparse.Namespace,
+    project: Any,
+    plan_scenes: list[dict[str, Any]],
+    prompts: dict[str, str],
+    configured_concurrency: int,
+    host_results: dict[str, Any] | None,
+) -> int:
+    manifest = ManifestStore.open(project.root, project.project_id, project.plan_path, plan_scenes)
+    if args.provider is not None or args.config is not None:
+        raise CliArgumentError("gpt-login 模式不接受 --provider/--config")
+
+    if host_results is None:
+        existing_run_id = _waiting_host_run_id(manifest)
+        if existing_run_id is not None:
+            tasks = _host_run_tasks(project, plan_scenes, prompts, manifest, existing_run_id)
+            statuses = {
+                manifest.current_attempt(task.scene_id).get("status")  # type: ignore[union-attr]
+                for task in tasks
+            }
+            if statuses == {"prepared"}:
+                _emit(
+                    _summary(
+                        ok=True,
+                        exit_code=0,
+                        project=str(project.root),
+                        provider=HOST_IMAGE_BACKEND.name,
+                        run_id=existing_run_id,
+                        total=len(plan_scenes),
+                        targeted=len(tasks),
+                        configured_concurrency=configured_concurrency,
+                        effective_concurrency=0,
+                        task_count=len(tasks),
+                        status="WAITING_HOST_IMAGE_GENERATION",
+                        host_image_generation=_host_task_package(tasks, run_id=existing_run_id),
+                    )
+                )
+                return 0
+            # requesting 已是宿主调用提交点；没有结果合同就不能安全猜测成功或重发。
+            project_lock = _acquire_generation_lock(project.root)
+            try:
+                manifest.resume_run(existing_run_id)
+                failures: list[dict[str, str]] = []
+                unknown = 0
+                for task in tasks:
+                    attempt = manifest.current_attempt(task.scene_id)
+                    assert attempt is not None
+                    if attempt.get("status") == "requesting":
+                        manifest.mark_attempt(
+                            task.scene_id,
+                            status="unknown_external_outcome",
+                            external_outcome="unknown_external_outcome",
+                            error="宿主调用后未提供结果合同；禁止自动重试",
+                        )
+                        manifest.save()
+                        unknown += 1
+                        failures.append({"sceneId": task.scene_id, "error": "unknown_external_outcome"})
+                manifest.update_active_run_counts(
+                    adopted_candidate_count=0,
+                    unknown_external_outcome_count=unknown,
+                )
+                manifest.finish_run(existing_run_id, exit_result=1)
+                manifest.save()
+            finally:
+                _release_generation_lock(project_lock)
+            _emit(
+                _summary(
+                    ok=False,
+                    exit_code=1,
+                    project=str(project.root),
+                    provider=HOST_IMAGE_BACKEND.name,
+                    run_id=existing_run_id,
+                    total=len(plan_scenes),
+                    targeted=len(tasks),
+                    failed=len(failures),
+                    configured_concurrency=configured_concurrency,
+                    task_count=len(tasks),
+                    unknown_external_outcome_count=unknown,
+                    failures=failures,
+                )
+            )
+            return 1
+
+        targets = _selected_scenes(plan_scenes, manifest, retry_failed=args.retry_failed)
+        unknown = sum(
+            record.get("status") == "unknown_external_outcome"
+            for record in _scene_map(manifest).values()
+        )
+        if not targets:
+            _emit(
+                _summary(
+                    ok=unknown == 0,
+                    exit_code=1 if unknown else 0,
+                    project=str(project.root),
+                    provider=HOST_IMAGE_BACKEND.name,
+                    total=len(plan_scenes),
+                    skipped=len(plan_scenes),
+                    configured_concurrency=configured_concurrency,
+                    unknown_external_outcome_count=unknown,
+                )
+            )
+            return 1 if unknown else 0
+        conflicts: list[dict[str, str]] = []
+        for scene in targets:
+            attempt = manifest.current_attempt(scene["sceneId"])
+            recovering = attempt is not None and attempt.get("status") in RECOVERABLE_STATUSES
+            formal = project.scenes_dir / scene["outputFile"]
+            if formal.exists() and not args.overwrite and not recovering:
+                conflicts.append({"sceneId": scene["sceneId"], "error": "正式目标已存在且未授权覆盖"})
+        if conflicts:
+            _emit(
+                _summary(
+                    ok=False,
+                    exit_code=1,
+                    project=str(project.root),
+                    provider=HOST_IMAGE_BACKEND.name,
+                    total=len(plan_scenes),
+                    targeted=len(targets),
+                    failed=len(conflicts),
+                    configured_concurrency=configured_concurrency,
+                    task_count=len(targets),
+                    failures=conflicts,
+                )
+            )
+            return 1
+
+        run_id = f"img-{uuid.uuid4().hex[:12]}"
+        run_dir = project.create_run_dir(run_id)
+        project_lock = _acquire_generation_lock(project.root)
+        try:
+            manifest.begin_run(
+                run_id,
+                HOST_IMAGE_BACKEND,  # type: ignore[arg-type]
+                configured_concurrency=configured_concurrency,
+                effective_concurrency=0,
+                task_count=len(targets),
+            )
+            tasks: list[GenerationTask] = []
+            for scene in targets:
+                scene_id = scene["sceneId"]
+                ordinal = len(_scene_map(manifest)[scene_id].get("attemptRecords", [])) + 1
+                attempt_id = f"{scene_id}-attempt-{ordinal:04d}"
+                attempt_rel = Path(".work") / run_id / "external-tasks" / scene_id / f"a{ordinal:04d}"
+                prompt = prompts[scene_id]
+                identity = image_input_identity(
+                    scene_id=scene_id,
+                    prompt=prompt,
+                    backend=HOST_IMAGE_BACKEND_IDENTITY,
+                )
+                attempt = manifest.prepare_attempt(
+                    scene_id,
+                    attempt_id=attempt_id,
+                    input_identity_sha256=identity,
+                    candidate_file=(attempt_rel / "candidate.png").as_posix(),
+                    receipt_file=(attempt_rel / "candidate-receipt.json").as_posix(),
+                    formal_file=f"scenes/{scene['outputFile']}",
+                    overwrite=args.overwrite,
+                    provider=HOST_IMAGE_BACKEND.name,
+                    model=HOST_IMAGE_BACKEND.model,
+                    prompt=prompt,
+                    run_id=run_id,
+                )
+                manifest.save()
+                task = _generation_task_from_attempt(project, scene, prompt, attempt)
+                tasks.append(task)
+                _checkpoint_hook("after_prepared", scene_id)
+        finally:
+            _release_generation_lock(project_lock)
+        _emit(
+            _summary(
+                ok=True,
+                exit_code=0,
+                project=str(project.root),
+                provider=HOST_IMAGE_BACKEND.name,
+                run_id=run_id,
+                total=len(plan_scenes),
+                targeted=len(tasks),
+                configured_concurrency=configured_concurrency,
+                effective_concurrency=0,
+                task_count=len(tasks),
+                status="WAITING_HOST_IMAGE_GENERATION",
+                host_image_generation=_host_task_package(tasks, run_id=run_id),
+            )
+        )
+        return 0
+
+    run_id = host_results["runId"]
+    result_by_scene = {item["sceneId"]: item for item in host_results["results"]}
+    project_lock = _acquire_generation_lock(project.root)
+    failures: list[dict[str, str]] = []
+    ready_candidates: list[tuple[dict[str, Any], ImageCandidate]] = []
+    adopted = 0
+    unknown = 0
+    succeeded = 0
+    try:
+        run = manifest.resume_run(run_id)
+        if (
+            run.get("provider") != HOST_IMAGE_BACKEND.name
+            or run.get("protocol") != HOST_IMAGE_BACKEND.protocol
+            or run.get("model") != HOST_IMAGE_BACKEND.model
+        ):
+            raise ManifestError("host results 与 run backend binding 不一致")
+        tasks = _host_run_tasks(project, plan_scenes, prompts, manifest, run_id)
+        task_by_scene = {task.scene_id: task for task in tasks}
+        if set(result_by_scene) - set(task_by_scene):
+            raise CliArgumentError("host results 包含不属于该 run 的 sceneId")
+        for scene_id, result in result_by_scene.items():
+            if result["attemptId"] != task_by_scene[scene_id].attempt_id:
+                raise CliArgumentError(f"host result {scene_id} attemptId binding 不一致")
+
+        # 结果文件表示宿主调用已经结束；先把全部 task 写入 requesting 提交点。
+        for task in tasks:
+            attempt = manifest.current_attempt(task.scene_id)
+            assert attempt is not None
+            if attempt.get("status") == "prepared":
+                manifest.mark_attempt(task.scene_id, status="requesting", external_outcome="not_started")
+                manifest.save()
+                _checkpoint_hook("after_requesting", task.scene_id)
+
+        scene_by_id = {scene["sceneId"]: scene for scene in plan_scenes}
+        for task in tasks:
+            attempt = manifest.current_attempt(task.scene_id)
+            assert attempt is not None
+            candidate_receipt = task.candidate_path.with_name("candidate-receipt.json")
+            if task.candidate_path.is_file() and candidate_receipt.is_file():
+                candidate = _candidate_for_attempt(project.root, task.scene_id, attempt)
+                manifest.mark_attempt(
+                    task.scene_id,
+                    status="candidate_ready",
+                    candidate=candidate,
+                    external_outcome="succeeded",
+                )
+                manifest.save()
+                ready_candidates.append((scene_by_id[task.scene_id], candidate))
+                adopted += 1
+                continue
+            result = result_by_scene.get(task.scene_id)
+            if result is None:
+                manifest.mark_attempt(
+                    task.scene_id,
+                    status="unknown_external_outcome",
+                    external_outcome="unknown_external_outcome",
+                    error="宿主结果合同缺少该 scene；禁止自动重试",
+                )
+                manifest.save()
+                unknown += 1
+                failures.append({"sceneId": task.scene_id, "error": "unknown_external_outcome"})
+                continue
+            if result["status"] == "failed":
+                error = result["error"].strip()
+                manifest.mark_attempt(
+                    task.scene_id,
+                    status="failed",
+                    external_outcome="explicit_failed",
+                    error=error,
+                )
+                manifest.save()
+                failures.append({"sceneId": task.scene_id, "error": error})
+                continue
+            try:
+                source_path = Path(result["file"])
+                image_bytes = source_path.read_bytes()
+                candidate = normalize_image_candidate(
+                    image_bytes,
+                    task.candidate_path,
+                    task.attempt_root,
+                    task.scene_id,
+                    attempt_id=task.attempt_id,
+                    formal_file=task.formal_file,
+                    input_identity_sha256=task.input_identity_sha256,
+                    source="host_tool",
+                    provider_attempts=1,
+                )
+                _checkpoint_hook("after_candidate_persisted", task.scene_id)
+                manifest.mark_attempt(
+                    task.scene_id,
+                    status="candidate_ready",
+                    candidate=candidate,
+                    external_outcome="succeeded",
+                )
+                manifest.save()
+                _checkpoint_hook("after_candidate_ready", task.scene_id)
+                ready_candidates.append((scene_by_id[task.scene_id], candidate))
+            except (OSError, ImageValidationError) as exc:
+                error = f"host result import: {exc}"
+                manifest.mark_attempt(
+                    task.scene_id,
+                    status="failed",
+                    external_outcome="succeeded",
+                    error=error,
+                )
+                manifest.save()
+                failures.append({"sceneId": task.scene_id, "error": error})
+
+        by_ready = {scene["sceneId"]: (scene, candidate) for scene, candidate in ready_candidates}
+        for scene in plan_scenes:
+            ready = by_ready.get(scene["sceneId"])
+            if ready is None:
+                continue
+            candidate = ready[1]
+            attempt = manifest.current_attempt(scene["sceneId"])
+            assert attempt is not None
+            try:
+                _publish_candidate(
+                    manifest=manifest,
+                    scene_id=scene["sceneId"],
+                    candidate=candidate,
+                    formal_path=project.scenes_dir / scene["outputFile"],
+                    overwrite=bool(attempt["overwrite"]),
+                    run_dir=project.root / ".work" / run_id,
+                )
+                succeeded += 1
+            except (OSError, ImageValidationError, ManifestError) as exc:
+                failures.append({"sceneId": scene["sceneId"], "error": str(exc)})
+        manifest.update_active_run_counts(
+            adopted_candidate_count=adopted,
+            unknown_external_outcome_count=unknown,
+        )
+        exit_code = 1 if failures else 0
+        manifest.finish_run(run_id, exit_result=exit_code)
+        manifest.save()
+    finally:
+        _release_generation_lock(project_lock)
+
+    cover_result = _generate_cover_if_requested(
+        project.root,
+        requested=args.cover and not failures,
+        overwrite=args.overwrite,
+    )
+    exit_code = 1 if failures else 0
+    _emit(
+        _summary(
+            ok=not failures,
+            exit_code=exit_code,
+            project=str(project.root),
+            provider=HOST_IMAGE_BACKEND.name,
+            run_id=run_id,
+            total=len(plan_scenes),
+            targeted=len(tasks),
+            succeeded=succeeded,
+            failed=len(failures),
+            skipped=len(plan_scenes) - len(tasks),
+            configured_concurrency=configured_concurrency,
+            effective_concurrency=0,
+            task_count=len(tasks),
+            adopted_candidate_count=adopted,
+            unknown_external_outcome_count=unknown,
+            failures=failures,
+            cover=cover_result,
+        )
+    )
+    return exit_code
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     try:
@@ -382,6 +893,11 @@ def main(argv: list[str] | None = None) -> int:
         return int(exc.code)
 
     project_arg = str(Path(args.project).resolve(strict=False))
+    try:
+        host_results = _load_host_results(args.host_results) if args.host_results else None
+    except CliArgumentError as exc:
+        _emit(_summary(ok=False, exit_code=2, project=project_arg, error=str(exc)))
+        return 2
     config_path = Path(args.config).expanduser() if args.config else DEFAULT_PROVIDER_CONFIG
     if args.config and not config_path.is_absolute():
         _emit(_summary(ok=False, exit_code=2, project=project_arg, error="--config 必须是绝对路径"))
@@ -400,6 +916,18 @@ def main(argv: list[str] | None = None) -> int:
             scene["sceneId"]: build_final_prompt(project.plan["globalPrompt"], scene["prompt"])
             for scene in plan_scenes
         }
+        image_generation_mode = project.metadata.get("imageGenerationMode", "provider")
+        if image_generation_mode == "gpt-login":
+            return _run_host_image_generation(
+                args=args,
+                project=project,
+                plan_scenes=plan_scenes,
+                prompts=prompts,
+                configured_concurrency=configured_concurrency,
+                host_results=host_results,
+            )
+        if host_results is not None:
+            raise CliArgumentError("--host-results 只允许用于 gpt-login 项目")
         warnings = verify_config_git_safety(config_path)
         provider = load_provider_config(config_path, args.provider)
         manifest = ManifestStore.open(project.root, project.project_id, project.plan_path, plan_scenes)
@@ -407,7 +935,7 @@ def main(argv: list[str] | None = None) -> int:
     except CredentialSafetyError as exc:
         _emit(_summary(ok=False, exit_code=3, project=project_arg, provider=args.provider, error=str(exc)))
         return 3
-    except (OSError, WorkspaceError, ProjectValidationError, ConfigError, ManifestError) as exc:
+    except (OSError, WorkspaceError, ProjectValidationError, ConfigError, ManifestError, CliArgumentError) as exc:
         message = redact_secret(exc, provider.api_key) if provider is not None else str(exc)
         _emit(_summary(ok=False, exit_code=2, project=project_arg, provider=args.provider, error=message))
         return 2

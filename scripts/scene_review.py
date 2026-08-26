@@ -39,6 +39,10 @@ try:
         render_identity,
         resolve_formal_scenes,
     )
+    from .render_video_mosaic_scene import (
+        MosaicRenderError,
+        validate_current_render_options,
+    )
 except ImportError:  # pragma: no cover - direct script execution
     from cover_review import CoverReviewError, load_cover_review
     from agent_task_contract import (
@@ -67,6 +71,10 @@ except ImportError:  # pragma: no cover - direct script execution
         build_formal_validation_context,
         render_identity,
         resolve_formal_scenes,
+    )
+    from render_video_mosaic_scene import (
+        MosaicRenderError,
+        validate_current_render_options,
     )
 
 
@@ -201,6 +209,12 @@ def build_scene_review_bundle(
         if record.get("outputFile") != output_file or formal.output_path != expected_output:
             raise SceneReviewStaleError(f"{scene_id} outputFile stale")
         render_options = _mapping(record.get("renderOptions"), f"{scene_id}.renderOptions")
+        try:
+            validate_current_render_options(project, render_options)
+        except MosaicRenderError as exc:
+            raise SceneReviewStaleError(
+                f"{scene_id} video mosaic binding stale: {exc}"
+            ) from exc
         current_render_identity = render_identity(formal, render_options=render_options)
         recorded_render_identity = _sha256(
             record.get("renderIdentityHash"), f"{scene_id}.renderIdentityHash"

@@ -49,6 +49,11 @@ def _parser() -> argparse.ArgumentParser:
         help="阶段 0 已确认的后续批准主体；新建时省略按 disabled 兼容旧调用",
     )
     parser.add_argument(
+        "--image-generation-mode",
+        choices=("provider", "gpt-login"),
+        help="阶段 0 已确认的生图方式；新建时省略按 provider 兼容旧调用",
+    )
+    parser.add_argument(
         "--source-input",
         type=Path,
         help="可选：content source 准备包中的 input.json；必须与 --source-manifest 成对使用",
@@ -101,6 +106,10 @@ def main(argv: list[str] | None = None) -> int:
                 raise ProjectValidationError("--background-music 仅用于创建新项目，续接时读取已冻结选择")
             if args.agent_approval is not None:
                 raise ProjectValidationError("--agent-approval 仅用于创建新项目，续接时读取已冻结选择")
+            if args.image_generation_mode is not None:
+                raise ProjectValidationError(
+                    "--image-generation-mode 仅用于创建新项目，续接时读取已冻结选择"
+                )
             if has_source_input:
                 raise ProjectValidationError("content source 证据仅用于新建项目，续接时读取项目内冻结证据")
             project = workspace.resume_project(args.resume, args.srt)
@@ -121,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
                 voiceover_mode=voiceover_mode,
                 background_music_enabled=args.background_music == "enabled",
                 agent_approval_enabled=args.agent_approval == "enabled",
+                image_generation_mode=args.image_generation_mode or "provider",
                 source_input=args.source_input,
                 source_manifest=args.source_manifest,
                 source_plan=args.plan if has_source_input else None,
@@ -135,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"VOICEOVER_MODE={project.voiceover_mode}")
     print(f"BACKGROUND_MUSIC={'enabled' if project.background_music_enabled else 'disabled'}")
     print(f"AGENT_APPROVAL={'enabled' if project.agent_approval_enabled else 'disabled'}")
+    print(f"IMAGE_GENERATION_MODE={project.image_generation_mode}")
     print(f"SCENES_DIR={project.scenes_dir}")
     return 0
 
