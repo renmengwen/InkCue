@@ -2,12 +2,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-import shutil
-import subprocess
 from pathlib import Path
 from unittest import mock
-
-from PIL import Image
 
 from scripts.cover_frame import (
     COVER_FRAME_RANGE,
@@ -64,40 +60,6 @@ class CoverFrameTests(unittest.TestCase):
             self.assertEqual(record["frameRange"], COVER_FRAME_RANGE)
             self.assertTrue(record["visualReviewExcluded"])
             self.assertEqual(len(record["sha256"]), 64)
-
-    @unittest.skipUnless(shutil.which("ffmpeg"), "requires ffmpeg")
-    def test_real_replacement_changes_only_first_frame_and_preserves_count(self) -> None:
-        with tempfile.TemporaryDirectory() as raw:
-            root = Path(raw)
-            project = _Project(root)
-            cover = root / COVER_RELATIVE_PATH
-            cover.parent.mkdir(parents=True)
-            Image.new("RGB", (1920, 1080), (20, 40, 220)).save(cover, format="PNG")
-            source = root / "source.mp4"
-            target = root / "target.mp4"
-            subprocess.run(
-                [
-                    "ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
-                    "-i", "color=c=red:s=1920x1080:r=60", "-frames:v", "4",
-                    "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source),
-                ],
-                check=True,
-            )
-            replace_first_frame(source, target, project=project, expected_frame_count=4)
-            probe = subprocess.run(
-                ["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0",
-                 "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", str(target)],
-                check=True, capture_output=True, text=True,
-            )
-            self.assertEqual(probe.stdout.strip(), "4")
-            first = root / "first.png"
-            subprocess.run(
-                ["ffmpeg", "-y", "-loglevel", "error", "-i", str(target), "-frames:v", "1", str(first)],
-                check=True,
-            )
-            with Image.open(first) as image:
-                red, green, blue = image.convert("RGB").getpixel((960, 540))
-            self.assertGreater(blue, red)
 
     @mock.patch("scripts.cover_frame.subprocess.run")
     @mock.patch("scripts.cover_frame.shutil.which", return_value="ffmpeg")

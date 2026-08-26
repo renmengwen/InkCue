@@ -238,7 +238,10 @@ def _update_delivery_manifest(project: Project, media: dict[str, Any]) -> None:
         "frameRounding": project.render_profile["frameRounding"],
         "frameCount": frame_count,
     }
-    manifest["cleanVideo"] = _clean_video_entry(media)
+    manifest["cleanVideo"] = {
+        **_clean_video_entry(media),
+        "visualTimingPlanSha256": timing_hash,
+    }
     attach_cover_manifest(manifest, cover_record(project))
     attach_cover_review_manifest(manifest, project)
     write_json_atomic(project.path("manifests/delivery-manifest.json"), manifest)

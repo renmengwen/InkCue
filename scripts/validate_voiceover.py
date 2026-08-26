@@ -40,7 +40,7 @@ def main(
             execution = load_workspace_config()
         concurrency = execution.concurrency if execution is not None else ExecutionConcurrency()
         result = validate_current_voiceover(
-            load_project(args.project),
+            load_project(args.project, allow_pending_audio_timeline=True),
             require_full=True,
             voice_validation_concurrency=concurrency.for_stage("voiceValidation"),
             force_deep=args.force_deep,

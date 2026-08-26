@@ -107,12 +107,17 @@ class NarrationTranscriptionTests(unittest.TestCase):
         self.assertEqual(factory_kwargs["vad_model"], str(self.model_paths["fsmn-vad"].resolve()))
         self.assertEqual(factory_kwargs["punc_model"], str(self.model_paths["ct-punc"].resolve()))
         self.assertEqual(
+            factory_kwargs["vad_kwargs"],
+            {"max_single_segment_time": runner.MAX_VAD_SEGMENT_MS},
+        )
+        self.assertEqual(
             model.calls,
             [
                 {
                     "input": str((self.output / "asr-input.wav").resolve()),
                     "batch_size": 1,
                     "sentence_timestamp": True,
+                    "pred_timestamp": True,
                 }
             ],
         )
@@ -195,6 +200,69 @@ class NarrationTranscriptionTests(unittest.TestCase):
         with self.assertRaisesRegex(runner.NarrationTranscriptionError, "缺少中文标点"):
             self.run_with_result(
                 [{"sentence_info": [{"start": 10, "end": 1000, "text": "没有标点"}]}]
+            )
+
+    def test_recovers_unpunctuated_text_from_exact_token_timestamps(self) -> None:
+        payload, _model, _factory_kwargs = self.run_with_result(
+            [
+                {
+                    "text": "没有标点",
+                    "timestamp": [[10, 400], [450, 800], [850, 1200], [1250, 1600]],
+                    "sentence_info": [{"start": 10, "end": 1600, "text": "没有标点"}],
+                }
+            ]
+        )
+        self.assertEqual(payload["sentenceCount"], 4)
+        self.assertEqual(payload["timingValidation"]["evidenceKind"], "token_timestamp")
+        self.assertIn("没", Path(payload["rawSrtPath"]).read_text(encoding="utf-8"))
+
+    def test_prefers_token_timestamps_over_punctuated_vad_sentence_boundaries(self) -> None:
+        payload, _model, _factory_kwargs = self.run_with_result(
+            [
+                {
+                    "text": "第一句。第二句！",
+                    "timestamp": [
+                        [100, 400],
+                        [420, 700],
+                        [720, 1000],
+                        [1200, 1500],
+                        [1520, 1800],
+                        [1820, 2100],
+                    ],
+                    "sentence_info": [
+                        {"start": 100, "end": 1100, "text": "第一句。"},
+                        {"start": 1200, "end": 2200, "text": "第二句！"},
+                    ],
+                }
+            ]
+        )
+        self.assertEqual(payload["sentenceCount"], 6)
+        self.assertEqual(payload["timingValidation"]["evidenceKind"], "token_timestamp")
+
+    def test_unpunctuated_text_rejects_timestamp_count_mismatch(self) -> None:
+        with self.assertRaisesRegex(runner.NarrationTranscriptionError, "没有可一一对应"):
+            self.run_with_result(
+                [
+                    {
+                        "text": "没有标点",
+                        "timestamp": [[10, 400], [450, 800]],
+                        "sentence_info": [{"start": 10, "end": 1000, "text": "没有标点"}],
+                    }
+                ]
+            )
+
+    def test_rejects_overlong_vad_sentence_even_with_punctuation(self) -> None:
+        with self.assertRaisesRegex(runner.NarrationTranscriptionError, "超长 VAD"):
+            self.run_with_result(
+                [
+                    {
+                        "text": "这一句不应占据六十秒。",
+                        "sentence_info": [
+                            {"start": 0, "end": 60_000, "text": "这一句不应占据六十秒。"}
+                        ],
+                    }
+                ],
+                duration_ms=70_000,
             )
 
     def test_output_directory_must_be_new_and_inside_dot_work(self) -> None:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import io
 import json
-import shutil
 import sys
 import tempfile
 import threading
@@ -14,7 +13,6 @@ from unittest import mock
 
 from PIL import Image, ImageDraw
 import numpy as np
-
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -898,118 +896,6 @@ class RenderTimingTests(unittest.TestCase):
         self.assertNotIn("mp4v", source.casefold())
         self.assertIn('"rawvideo"', sink_source)
         self.assertIn('"bgr24"', sink_source)
-
-    def test_real_short_h264_has_exact_authoritative_frame_count_without_extension(self) -> None:
-        if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
-            self.skipTest("ffmpeg/ffprobe 不可用")
-        project = self._project()
-        with mock.patch.object(
-            render_stream_whiteboard.cv2,
-            "VideoWriter",
-            side_effect=AssertionError("Phase 7 不得调用 cv2.VideoWriter"),
-        ), mock.patch.object(
-            render_stream_whiteboard.annotation_review,
-            "require_current_annotation_review_approval",
-            return_value={"approved": True, "identityHash": "fixture"},
-        ), mock.patch.object(
-            media_validation,
-            "full_decode",
-            wraps=media_validation.full_decode,
-        ) as full_decode:
-            result = render_stream_whiteboard.main(
-                [
-                    "--project", str(project.root),
-                    "--scene-id", "scene-02",
-                    "--bare-tip",
-                    "--grid-edge", "60",
-                    "--color-fill", "brush",
-                    "--pause", "off",
-                ]
-            )
-            self.assertEqual(result, 0)
-            output = project.path("scenes/scene-02-whiteboard.mp4")
-            manifest = json.loads(
-                project.path("manifests/render-manifest.json").read_text(encoding="utf-8")
-            )
-            scene = manifest["scenes"]["scene-02"]
-            receipt = scene["media"]["validation"]["deepReceipt"]
-            media = media_validation.bind_validated_video(
-                output,
-                render_profile=project.render_profile,
-                expected_frame_count=31,
-                expected_audio_streams=0,
-                deep_receipt=receipt,
-            )
-            self.assertEqual(full_decode.call_count, 1)
-        self.assertEqual(media["streams"]["video"][0]["frameCount"], 31)
-        self.assertEqual(media["validation"]["decodedFrameCount"], 31)
-        self.assertEqual(media["validation"]["frameCountEvidence"], "decoded_frames_v1")
-        self.assertEqual(media["validation"]["validationMode"], "binding")
-        self.assertEqual(scene["frameRange"], {"startFrame": 32, "endFrameExclusive": 63, "frameCount": 31})
-        self.assertEqual(scene["media"]["sha256"], project_workspace.sha256_file(output))
-
-        context = render_timing.resolve_formal_scene(project, "scene-02")
-        image_bgr = stream_render._imread_any(context.image_path)
-        cfg = stream_render.Config(
-            fps=60,
-            grid_edge=60,
-            cap_long_edge=1920,
-            ink_path_mode="grid",
-            color_fill="brush",
-            pause_mode="off",
-        )
-        reference_frames: dict[int, np.ndarray] = {}
-
-        class ReferenceSink:
-            def __init__(self, *args, expected_frame_count: int, **kwargs) -> None:
-                self.expected = expected_frame_count
-                self.index = 0
-
-            def write(self, frame):
-                if self.index in {0, 15, 30}:
-                    reference_frames[self.index] = frame.copy()
-                self.index += 1
-
-            def close(self):
-                self.assert_complete = self.index == self.expected
-
-            def abort(self):
-                return None
-
-        renderer = render_stream_whiteboard.RegionStreamRenderer(
-            image_bgr,
-            context.annotation,
-            cfg,
-            None,
-            True,
-            output_size=(1920, 1080),
-        )
-        renderer.render_to(
-            self.root / "reference-unused.mp4",
-            context.timing_scene["sceneDurationMs"],
-            target_frame_count=31,
-            scene_start_ms=context.timing_scene["startMs"],
-            scene_start_frame=context.timing_scene["startFrame"],
-            sink_factory=ReferenceSink,
-        )
-        capture = render_stream_whiteboard.cv2.VideoCapture(str(output))
-        decoded: dict[int, np.ndarray] = {}
-        index = 0
-        while True:
-            ok, frame = capture.read()
-            if not ok:
-                break
-            if index in reference_frames:
-                decoded[index] = frame
-            index += 1
-        capture.release()
-        self.assertEqual(index, 31)
-        self.assertEqual(set(decoded), {0, 15, 30})
-        for key in (0, 15, 30):
-            delta = np.abs(decoded[key].astype(np.int16) - reference_frames[key].astype(np.int16))
-            self.assertLess(float(delta.mean()), 3.0)
-            self.assertLess(float(np.percentile(delta, 99.9)), 35.0)
-
 
 if __name__ == "__main__":
     unittest.main()

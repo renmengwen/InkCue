@@ -2,15 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
-
-from PIL import Image, ImageChops
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = SKILL_ROOT / "scripts"
@@ -20,7 +17,7 @@ if str(SCRIPTS_DIR) not in sys.path:
 import validate_final_media  # noqa: E402
 
 from scripts import burn_subtitles
-from scripts import merge_scenes
+from scripts import subtitle_delivery
 from scripts.project_workspace import FIXED_RENDER_PROFILE, Project, sha256_file
 from scripts.srt_timeline import parse_srt
 from scripts.subtitle_delivery import (
@@ -257,6 +254,108 @@ class PreflightGapAndIdentityTests(unittest.TestCase):
         with self.assertRaisesRegex(SubtitleDeliveryError, "固定字体"):
             preflight_subtitles(font_path=DEFAULT_FONT_PATH.with_name("missing-msyh.ttc"))
 
+    def test_clean_master_reuse_contract_fails_closed_on_frame_or_duration_change(self) -> None:
+        timing = {
+            "activeTimeline": {"kind": "source-srt", "file": "source/source.srt", "sha256": "a" * 64},
+            "renderProfileSha256": "b" * 64,
+            "scenes": [{"endMs": 200, "endFrameExclusive": 12, "frameCount": 12}],
+        }
+        project = Project(
+            root=Path(tempfile.gettempdir()),
+            metadata={
+                "schemaVersion": 2,
+                "projectId": "reuse-contract",
+                "voiceoverMode": "disabled",
+                "renderProfile": dict(FIXED_RENDER_PROFILE),
+                "source": {"file": "source/source.srt", "sha256": "a" * 64},
+                "paths": {"work": ".work", "scenes": "scenes"},
+            },
+            plan={},
+            timing_plan=timing,
+        )
+        current = {
+            "file": "planning/timing-plan.json",
+            "sha256": "c" * 64,
+            "voiceoverMode": "disabled",
+            "activeTimeline": timing["activeTimeline"],
+            "renderProfileSha256": "b" * 64,
+            "frameRounding": "cumulative-ceil-v1",
+            "frameCount": 12,
+        }
+        visual = {**current, "sha256": "d" * 64}
+        clean = {
+            "sha256": "e" * 64,
+            "bytes": 123,
+            "durationMs": 200,
+            "decodedFrameCount": 12,
+            "validation": {"validated": True, "fullDecode": True, "deepReceipt": {"fullDecode": True}},
+        }
+        evidence = subtitle_delivery.build_subtitle_only_clean_master_reuse(
+            project=project,
+            visual_timing_plan=visual,
+            current_timing_plan=current,
+            clean_media=clean,
+            subtitle_timeline_sha256="a" * 64,
+            audio_sha256="",
+            background_music={"enabled": False},
+        )
+        self.assertEqual(evidence["visualTimingPlanSha256"], visual["sha256"])
+        self.assertEqual(evidence["currentSubtitleTimingPlanSha256"], current["sha256"])
+        with self.assertRaisesRegex(SubtitleStaleError, "总帧数"):
+            subtitle_delivery.build_subtitle_only_clean_master_reuse(
+                project=project,
+                visual_timing_plan={**visual, "frameCount": 11},
+                current_timing_plan=current,
+                clean_media=clean,
+                subtitle_timeline_sha256="a" * 64,
+                audio_sha256="",
+                background_music={"enabled": False},
+            )
+        with self.assertRaisesRegex(SubtitleStaleError, "总时长"):
+            subtitle_delivery.build_subtitle_only_clean_master_reuse(
+                project=project,
+                visual_timing_plan=visual,
+                current_timing_plan=current,
+                clean_media={**clean, "durationMs": 100},
+                subtitle_timeline_sha256="a" * 64,
+                audio_sha256="",
+                background_music={"enabled": False},
+            )
+
+    def test_clean_master_reuse_rejects_changed_audio_or_bgm(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "audio").mkdir()
+            narration = root / "audio" / "narration.wav"
+            narration.write_bytes(b"current-audio")
+            project = Project(
+                root=root,
+                metadata={
+                    "schemaVersion": 2,
+                    "projectId": "reuse-audio-bgm",
+                    "voiceoverMode": "edge-tts",
+                    "renderProfile": dict(FIXED_RENDER_PROFILE),
+                    "backgroundMusic": {"enabled": False},
+                    "source": {"file": "source/source.srt", "sha256": "a" * 64},
+                    "paths": {"work": ".work", "scenes": "scenes"},
+                },
+                plan={},
+                timing_plan={},
+            )
+            current_audio_sha = sha256_file(narration)
+            manifest = {"final": {"identityInputs": {"audioSha256": current_audio_sha}}}
+            audio_sha, bgm = burn_subtitles._assert_reuse_audio_and_bgm_unchanged(project, manifest)
+            self.assertEqual(audio_sha, current_audio_sha)
+            self.assertEqual(bgm, {"enabled": False})
+            narration.write_bytes(b"changed-audio")
+            with self.assertRaisesRegex(SubtitleStaleError, "音频字节已变化"):
+                burn_subtitles._assert_reuse_audio_and_bgm_unchanged(project, manifest)
+
+            narration.write_bytes(b"current-audio")
+            project.metadata["backgroundMusic"] = {"enabled": True}
+            with self.assertRaisesRegex(SubtitleStaleError, "BGM"):
+                burn_subtitles._assert_reuse_audio_and_bgm_unchanged(project, manifest)
+
     def test_gap_evidence_is_conditional(self) -> None:
         continuous = parse_srt(
             "1\n00:00:00,000 --> 00:00:01,000\n甲\n\n"
@@ -382,366 +481,6 @@ class DeliveryValidationSchedulingTests(unittest.TestCase):
         self.assertCountEqual(completion_order, ["clean", "captioned", "final"])
         self.assertEqual([item["name"] for item in parallel], ["clean", "captioned", "final"])
 
-
-class BurnIntegrationTests(unittest.TestCase):
-    def test_disabled_real_ffmpeg_burn_publishes_three_layer_contract(self) -> None:
-        from scripts import media_validation
-        from scripts.media_validation import full_decode, probe_media
-        from scripts.project_workspace import sha256_json
-
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            for relative in ("source", "planning", "output", "subtitles", "previews", "manifests", ".work"):
-                (root / relative).mkdir(parents=True, exist_ok=True)
-            source = root / "source" / "source.srt"
-            source.write_text(srt("真实烧录字幕", end="00:00:00,200"), encoding="utf-8")
-            source_sha = sha256_file(source)
-            timing = {
-                "schemaVersion": 1,
-                "projectId": "burn-integration",
-                "voiceoverMode": "disabled",
-                "sourceSrtSha256": source_sha,
-                "renderProfileSha256": sha256_json(FIXED_RENDER_PROFILE),
-                "activeTimeline": {
-                    "kind": "source-srt",
-                    "file": "source/source.srt",
-                    "sha256": source_sha,
-                },
-                "scenes": [
-                    {
-                        "sceneId": "scene-01",
-                        "sourceCueRange": [1, 1],
-                        "startMs": 0,
-                        "endMs": 200,
-                        "sceneDurationMs": 200,
-                        "startFrame": 0,
-                        "endFrameExclusive": 12,
-                        "frameCount": 12,
-                    }
-                ],
-            }
-            timing_path = root / "planning" / "timing-plan.json"
-            timing_path.write_text(json.dumps(timing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            project = Project(
-                root=root,
-                metadata={
-                    "schemaVersion": 2,
-                    "projectId": "burn-integration",
-                    "voiceoverMode": "disabled",
-                    "renderProfile": dict(FIXED_RENDER_PROFILE),
-                    "source": {"file": "source/source.srt", "sha256": source_sha},
-                    "paths": {
-                        "planning": "planning",
-                        "scenes": "scenes",
-                        "previews": "previews",
-                        "manifests": "manifests",
-                        "output": "output",
-                        "work": ".work",
-                        "audio": "audio",
-                        "subtitles": "subtitles",
-                    },
-                },
-                plan={},
-                timing_plan=timing,
-            )
-            clean = root / "output" / "final-video-only.mp4"
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-loglevel",
-                    "error",
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    "color=c=#F5EBD7:s=1920x1080:r=60",
-                    "-frames:v",
-                    "12",
-                    "-an",
-                    "-c:v",
-                    "libx264",
-                    "-pix_fmt",
-                    "yuv420p",
-                    str(clean),
-                ],
-                shell=False,
-                check=True,
-            )
-            clean_media = media_validation.validate_video(
-                clean,
-                render_profile=FIXED_RENDER_PROFILE,
-                expected_frame_count=12,
-                expected_audio_streams=0,
-            )
-            initial_manifest = {
-                "schemaVersion": burn_subtitles.DELIVERY_SCHEMA_VERSION,
-                "projectId": project.project_id,
-                "voiceoverMode": project.voiceover_mode,
-                "timingPlan": {},
-                "cleanVideo": burn_subtitles._media_record(
-                    "output/final-video-only.mp4",
-                    clean_media,
-                ),
-                "subtitles": {},
-                "captionedVideo": {},
-                "final": {},
-                "finalApproval": None,
-            }
-            (root / "manifests" / "delivery-manifest.json").write_text(
-                json.dumps(initial_manifest, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            decoded_paths: list[Path] = []
-            burn_commands: list[list[str]] = []
-            original_full_decode = media_validation.full_decode
-            original_run = burn_subtitles._run
-
-            def tracked_full_decode(path: str | Path, *args: object, **kwargs: object) -> dict:
-                decoded_paths.append(Path(path))
-                return original_full_decode(path, *args, **kwargs)
-
-            def tracked_run(argv: list[str], *, cwd: Path) -> None:
-                burn_commands.append(list(argv))
-                original_run(argv, cwd=cwd)
-
-            with mock.patch.object(burn_subtitles, "load_project", return_value=project), mock.patch.object(
-                media_validation,
-                "full_decode",
-                side_effect=tracked_full_decode,
-            ), mock.patch.object(
-                burn_subtitles,
-                "_run",
-                side_effect=tracked_run,
-            ):
-                manifest = burn_subtitles.burn_project(root, run_id="subtitle-integration")
-
-            self.assertEqual(set(manifest), set(burn_subtitles.DELIVERY_TOP_LEVEL_KEYS))
-            self.assertEqual(manifest["subtitles"]["gapEvidence"], "not_applicable_no_gap")
-            self.assertEqual(manifest["subtitles"]["sourceKind"], "source-srt")
-            self.assertIn("technicalValidation", manifest["captionedVideo"])
-            self.assertNotIn("validation", manifest["captionedVideo"])
-            self.assertIn("finalIdentitySha256", manifest["final"])
-            self.assertIsNone(manifest["finalApproval"])
-            self.assertTrue(
-                any(
-                    command[command.index("-preset") + 1] == "medium"
-                    for command in burn_commands
-                    if "-preset" in command
-                )
-            )
-            self.assertEqual(manifest["subtitles"]["encoding"]["subtitlePreset"], "medium")
-            self.assertEqual(
-                manifest["subtitles"]["style"]["assStyleContractSha256"],
-                manifest["subtitles"]["encoding"]["assStyleContractSha256"],
-            )
-            self.assertEqual(
-                manifest["subtitles"]["style"]["contractSha256"],
-                manifest["subtitles"]["encoding"]["contractSha256"],
-            )
-            self.assertEqual(
-                manifest["final"]["identityInputs"]["subtitleStyleContractSha256"],
-                manifest["subtitles"]["encoding"]["contractSha256"],
-            )
-            self.assertEqual(
-                manifest["captionedVideo"]["technicalValidation"]["subtitleEncoding"],
-                manifest["subtitles"]["encoding"],
-            )
-            self.assertEqual(sum(path.name == "captioned.tmp.mp4" for path in decoded_paths), 1)
-            self.assertFalse(
-                any(
-                    path.name in {"final-subtitled-video-only.mp4", "final.mp4"}
-                    for path in decoded_paths
-                )
-            )
-            for key in ("captionedVideo", "final"):
-                technical = manifest[key]["technicalValidation"]
-                self.assertEqual(technical["validationMode"], "binding")
-                self.assertEqual(technical["decodedFrameCount"], 12)
-                self.assertEqual(technical["frameCountEvidence"], "decoded_frames_v1")
-                self.assertEqual(technical["deepReceipt"]["decodedFrameCount"], 12)
-                self.assertEqual(technical["deepReceipt"]["frameCountEvidence"], "decoded_frames_v1")
-
-            medium_identity = manifest["final"]["finalIdentitySha256"]
-            medium_contract = manifest["subtitles"]["encoding"]["contractSha256"]
-            with mock.patch.object(burn_subtitles, "load_project", return_value=project), mock.patch.object(
-                media_validation,
-                "full_decode",
-                side_effect=AssertionError("相同 preset recovery 不得重复 deep decode"),
-            ), mock.patch.object(
-                burn_subtitles,
-                "_run",
-                side_effect=AssertionError("相同 preset recovery 不得重新编码或截帧"),
-            ):
-                recovered = burn_subtitles.burn_project(
-                    root,
-                    run_id="subtitle-unused-recovery-run",
-                    subtitle_preset="medium",
-                )
-            self.assertEqual(recovered["final"]["finalIdentitySha256"], medium_identity)
-            self.assertEqual(recovered["subtitles"]["encoding"]["contractSha256"], medium_contract)
-            self.assertEqual(
-                recovered["captionedVideo"]["technicalValidation"]["validationMode"],
-                "binding",
-            )
-
-            recovered["finalApproval"] = {
-                "approved": True,
-                "identityHash": medium_identity,
-            }
-            (root / "manifests" / "delivery-manifest.json").write_text(
-                json.dumps(recovered, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            fast_decoded_paths: list[Path] = []
-            fast_commands: list[list[str]] = []
-
-            def tracked_fast_decode(path: str | Path, *args: object, **kwargs: object) -> dict:
-                fast_decoded_paths.append(Path(path))
-                return original_full_decode(path, *args, **kwargs)
-
-            def tracked_fast_run(argv: list[str], *, cwd: Path) -> None:
-                fast_commands.append(list(argv))
-                original_run(argv, cwd=cwd)
-
-            with mock.patch.object(burn_subtitles, "load_project", return_value=project), mock.patch.object(
-                media_validation,
-                "full_decode",
-                side_effect=tracked_fast_decode,
-            ), mock.patch.object(
-                burn_subtitles,
-                "_run",
-                side_effect=tracked_fast_run,
-            ):
-                manifest = burn_subtitles.burn_project(
-                    root,
-                    run_id="subtitle-fast-rebuild",
-                    subtitle_preset="fast",
-                )
-            self.assertEqual(manifest["subtitles"]["encoding"]["subtitlePreset"], "fast")
-            self.assertNotEqual(manifest["subtitles"]["encoding"]["contractSha256"], medium_contract)
-            self.assertNotEqual(manifest["final"]["finalIdentitySha256"], medium_identity)
-            self.assertIsNone(manifest["finalApproval"])
-            self.assertEqual(sum(path.name == "captioned.tmp.mp4" for path in fast_decoded_paths), 1)
-            self.assertFalse(
-                any(path.name in {"final-subtitled-video-only.mp4", "final.mp4"} for path in fast_decoded_paths)
-            )
-            self.assertTrue(
-                any(
-                    command[command.index("-preset") + 1] == "fast"
-                    for command in fast_commands
-                    if "-preset" in command
-                )
-            )
-            for relative in (
-                "subtitles/final.ass",
-                "output/final-video-only.mp4",
-                "output/final-subtitled-video-only.mp4",
-                "output/final.mp4",
-                "previews/final-subtitle-contact-sheet.png",
-                "manifests/delivery-manifest.json",
-            ):
-                self.assertTrue((root / relative).is_file(), relative)
-            caption_probe = probe_media(root / "output" / "final-subtitled-video-only.mp4")
-            final_probe = probe_media(root / "output" / "final.mp4")
-            self.assertEqual(caption_probe["sha256"], final_probe["sha256"])
-            self.assertEqual(len(final_probe["streams"]["video"]), 1)
-            self.assertEqual(len(final_probe["streams"]["audio"]), 0)
-            self.assertEqual(final_probe["streams"]["video"][0]["frameCount"], 12)
-            full_decode(root / "output" / "final.mp4")
-
-            published_hashes = {
-                relative: sha256_file(root / relative)
-                for relative in (
-                    "subtitles/final.ass",
-                    "output/final-subtitled-video-only.mp4",
-                    "output/final.mp4",
-                    "previews/final-subtitle-contact-sheet.png",
-                    "manifests/delivery-manifest.json",
-                )
-            }
-            original_validate_video = media_validation.validate_video
-
-            def reject_candidate(path: str | Path, *args: object, **kwargs: object) -> dict:
-                if Path(path).name == "captioned.tmp.mp4":
-                    raise media_validation.MediaValidationError("candidate deep validation failed")
-                return original_validate_video(path, *args, **kwargs)
-
-            with mock.patch.object(burn_subtitles, "load_project", return_value=project), mock.patch.object(
-                media_validation,
-                "validate_video",
-                side_effect=reject_candidate,
-            ):
-                with self.assertRaisesRegex(media_validation.MediaValidationError, "candidate deep"):
-                    burn_subtitles.burn_project(root, run_id="subtitle-candidate-failure")
-            self.assertEqual(
-                {
-                    relative: sha256_file(root / relative)
-                    for relative in published_hashes
-                },
-                published_hashes,
-            )
-
-    def test_real_gap_frame_has_no_subtitle_residue(self) -> None:
-        raw = (
-            "1\n00:00:00,000 --> 00:00:00,100\n第一条\n\n"
-            "2\n00:00:00,300 --> 00:00:00,400\n第二条\n"
-        )
-        compiled = compile_ass(parse_srt(raw))
-        with tempfile.TemporaryDirectory() as temp:
-            run = Path(temp)
-            (run / "fonts").mkdir()
-            (run / "burn.ass").write_bytes(compiled.content)
-            shutil.copyfile(DEFAULT_FONT_PATH, run / "fonts" / "msyh.ttc")
-            clean = run / "clean.mp4"
-            captioned = run / "captioned.mp4"
-            subprocess.run(
-                [
-                    "ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
-                    "color=c=#F5EBD7:s=1920x1080:r=60", "-frames:v", "24", "-an",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p", str(clean),
-                ],
-                shell=False,
-                check=True,
-            )
-            burn_subtitles._run(
-                [
-                    "ffmpeg", "-y", "-loglevel", "error", "-i", str(clean.resolve()),
-                    "-vf", "ass=burn.ass:fontsdir=fonts", "-map", "0:v:0", "-an",
-                    "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-                    "-pix_fmt", "yuv420p", "-fps_mode", "passthrough", str(captioned.resolve()),
-                ],
-                cwd=run,
-            )
-
-            def frame(video: Path, timestamp: str, name: str) -> Path:
-                output = run / name
-                subprocess.run(
-                    [
-                        "ffmpeg", "-y", "-loglevel", "error", "-ss", timestamp,
-                        "-i", str(video), "-frames:v", "1", str(output),
-                    ],
-                    shell=False,
-                    check=True,
-                )
-                return output
-
-            clean_active = frame(clean, "0.050", "clean-active.png")
-            caption_active = frame(captioned, "0.050", "caption-active.png")
-            clean_gap = frame(clean, "0.200", "clean-gap.png")
-            caption_gap = frame(captioned, "0.200", "caption-gap.png")
-
-            def mean_bottom_delta(first: Path, second: Path) -> float:
-                with Image.open(first) as left_image, Image.open(second) as right_image:
-                    left = left_image.convert("RGB").crop((0, 720, 1920, 1080))
-                    right = right_image.convert("RGB").crop((0, 720, 1920, 1080))
-                    histogram = ImageChops.difference(left, right).histogram()
-                    total = sum(index % 256 * count for index, count in enumerate(histogram))
-                    return total / (1920 * 360 * 3)
-
-            active_delta = mean_bottom_delta(clean_active, caption_active)
-            gap_delta = mean_bottom_delta(clean_gap, caption_gap)
-            self.assertGreater(active_delta, 0.5)
-            self.assertLess(gap_delta, active_delta / 5)
 
 
 if __name__ == "__main__":

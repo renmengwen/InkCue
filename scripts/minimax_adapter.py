@@ -242,13 +242,14 @@ class MiniMaxAdapter:
         base = value.get("base_resp") if isinstance(value, Mapping) else None
         if not isinstance(base, Mapping) or base.get("status_code") != 0:
             message = base.get("status_msg") if isinstance(base, Mapping) else None
-            safe = str(message)[:160] if message else "未知 provider 错误"
             if _is_rate_limited(message):
                 raise _MiniMaxRetryableError(
-                    f"MiniMax provider 限流: {safe}",
+                    "MiniMax provider 明确限流",
                     rate_limited=True,
                 )
-            raise PermanentProviderError(f"MiniMax provider 错误: {safe}")
+            # provider 自由文本可能回显请求头、正文或账号信息，只用于内部分
+            # 类，不进入异常、CLI、manifest errorSummary 或日志。
+            raise PermanentProviderError("MiniMax provider 返回业务错误")
         audio = value.get("data", {}).get("audio") if isinstance(value.get("data"), Mapping) else None
         if not isinstance(audio, str) or not audio:
             raise PermanentProviderError("MiniMax 返回缺少 hex 音频")

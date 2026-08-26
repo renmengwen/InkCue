@@ -22,6 +22,11 @@ except ImportError:  # direct scripts import
 
 DEFAULT_MIN_MATCH_RATIO = 0.72
 DEFAULT_MAX_NORMALIZED_EDIT_RATIO = 0.35
+DEFAULT_MAX_CUE_MS_PER_CHARACTER = 1_200.0
+DEFAULT_MAX_CUE_RATE_MULTIPLIER = 4.0
+DEFAULT_MIN_RATE_OUTLIER_DURATION_MS = 10_000
+DEFAULT_MAX_DOMINANT_CUE_DURATION_SHARE = 0.5
+DEFAULT_MAX_DOMINANT_CUE_CHARACTER_SHARE = 0.35
 _EXACT_EDIT_DISTANCE_CELL_LIMIT = 4_000_000
 
 
@@ -211,6 +216,84 @@ def _source_scene_lookup(
         for ordinal in range(first, last + 1):
             lookup[ordinal] = scene_id
     return lookup
+
+
+def _validate_timing_plausibility(
+    cues: Sequence[Mapping[str, Any]],
+    reference_cues: Sequence[Mapping[str, Any]],
+    audio_duration_ms: int,
+    diagnostics: dict[str, Any],
+) -> None:
+    """拒绝少量原稿占据整轨大部分时长等明显错误声学边界。"""
+
+    character_counts = [
+        len(normalise_alignment_text(str(cue["text"]))) for cue in reference_cues
+    ]
+    total_characters = sum(character_counts)
+    overall_ms_per_character = audio_duration_ms / total_characters
+    metrics: list[dict[str, Any]] = []
+    implausible: list[dict[str, Any]] = []
+    for source_ordinal, character_count in enumerate(character_counts, start=1):
+        source_cues = [
+            cue for cue in cues if cue["sourceCueOrdinal"] == source_ordinal
+        ]
+        if not source_cues:
+            raise ReferenceAlignmentError(
+                f"内部错误：原稿 cue {source_ordinal} 没有最终字幕"
+            )
+        duration_ms = source_cues[-1]["endMs"] - source_cues[0]["startMs"]
+        ms_per_character = duration_ms / character_count
+        duration_share = duration_ms / audio_duration_ms
+        character_share = character_count / total_characters
+        reasons: list[str] = []
+        if (
+            duration_ms >= DEFAULT_MIN_RATE_OUTLIER_DURATION_MS
+            and ms_per_character
+            > max(
+                DEFAULT_MAX_CUE_MS_PER_CHARACTER,
+                overall_ms_per_character * DEFAULT_MAX_CUE_RATE_MULTIPLIER,
+            )
+        ):
+            reasons.append("reading_rate_outlier")
+        if (
+            len(reference_cues) > 1
+            and duration_share > DEFAULT_MAX_DOMINANT_CUE_DURATION_SHARE
+            and character_share < DEFAULT_MAX_DOMINANT_CUE_CHARACTER_SHARE
+        ):
+            reasons.append("disproportionate_track_share")
+        metric = {
+            "sourceCueOrdinal": source_ordinal,
+            "durationMs": duration_ms,
+            "normalizedCharacters": character_count,
+            "msPerCharacter": round(ms_per_character, 3),
+            "durationShare": round(duration_share, 6),
+            "characterShare": round(character_share, 6),
+        }
+        metrics.append(metric)
+        if reasons:
+            implausible.append({**metric, "reasons": reasons})
+
+    diagnostics["timingPlausibility"] = {
+        "overallMsPerCharacter": round(overall_ms_per_character, 3),
+        "sourceCues": metrics,
+        "implausibleSourceCues": implausible,
+        "thresholds": {
+            "maxCueMsPerCharacter": DEFAULT_MAX_CUE_MS_PER_CHARACTER,
+            "maxCueRateMultiplier": DEFAULT_MAX_CUE_RATE_MULTIPLIER,
+            "minRateOutlierDurationMs": DEFAULT_MIN_RATE_OUTLIER_DURATION_MS,
+            "maxDominantCueDurationShare": DEFAULT_MAX_DOMINANT_CUE_DURATION_SHARE,
+            "maxDominantCueCharacterShare": DEFAULT_MAX_DOMINANT_CUE_CHARACTER_SHARE,
+        },
+    }
+    if implausible:
+        diagnostics["status"] = "FAIL"
+        first = implausible[0]
+        raise ReferenceAlignmentError(
+            "ASR 声学边界明显失真："
+            f"原稿 cue {first['sourceCueOrdinal']} 的 {first['durationMs']}ms "
+            "与文本长度不相称",
+            diagnostics=diagnostics,
+        )
 
 
 def align_reference_audio(
@@ -416,6 +499,13 @@ def align_reference_audio(
         if previous["sourceCueOrdinal"] >= current["sourceCueOrdinal"]:
             raise ReferenceAlignmentError("scene 切换没有遵循原稿 cue 顺序")
 
+    _validate_timing_plausibility(
+        cues,
+        reference_cues,
+        audio_duration_ms,
+        diagnostics,
+    )
+
     scenes: list[dict[str, Any]] = []
     for scene_id, first_source, last_source in scene_ranges:
         scene_cues = [
@@ -459,6 +549,8 @@ def align_reference_audio(
 
 
 __all__ = [
+    "DEFAULT_MAX_CUE_MS_PER_CHARACTER",
+    "DEFAULT_MAX_CUE_RATE_MULTIPLIER",
     "DEFAULT_MAX_NORMALIZED_EDIT_RATIO",
     "DEFAULT_MIN_MATCH_RATIO",
     "ReferenceAlignmentError",

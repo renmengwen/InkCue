@@ -472,6 +472,210 @@ def subtitle_identity(
     )
 
 
+def current_timing_plan_record(project: Project) -> dict[str, Any]:
+    """Return the delivery binding for the project's current timing plan."""
+
+    scenes = project.timing_plan.get("scenes")
+    if not isinstance(scenes, list) or not scenes:
+        raise SubtitleDeliveryError("current timing plan 没有场景")
+    frame_count = scenes[-1].get("endFrameExclusive")
+    if isinstance(frame_count, bool) or not isinstance(frame_count, int) or frame_count <= 0:
+        raise SubtitleDeliveryError("current timing plan 总帧数无效")
+    return {
+        "file": "planning/timing-plan.json" if project.timing_plan_persisted else None,
+        "sha256": (
+            sha256_file(project.timing_plan_path)
+            if project.timing_plan_persisted
+            else sha256_json(project.timing_plan)
+        ),
+        "voiceoverMode": project.voiceover_mode,
+        "activeTimeline": project.timing_plan["activeTimeline"],
+        "renderProfileSha256": project.timing_plan["renderProfileSha256"],
+        "frameRounding": project.render_profile["frameRounding"],
+        "frameCount": frame_count,
+    }
+
+
+def _require_sha256(value: Any, label: str, *, allow_empty: bool = False) -> str:
+    if allow_empty and value == "":
+        return ""
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(char not in "0123456789abcdef" for char in value)
+    ):
+        raise SubtitleStaleError(f"{label} 必须为小写 SHA-256")
+    return value
+
+
+def build_subtitle_only_clean_master_reuse(
+    *,
+    project: Project,
+    visual_timing_plan: Mapping[str, Any],
+    current_timing_plan: Mapping[str, Any],
+    clean_media: Mapping[str, Any],
+    subtitle_timeline_sha256: str,
+    audio_sha256: str,
+    background_music: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build minimal provenance for reusing clean bytes while replacing subtitles."""
+
+    visual = dict(visual_timing_plan)
+    current = dict(current_timing_plan)
+    if not visual or visual == current:
+        raise SubtitleStaleError("字幕层 clean master 复用仅适用于视觉 timing 已与 current timing 不同的恢复")
+    for field in ("voiceoverMode", "renderProfileSha256", "frameRounding"):
+        if visual.get(field) != current.get(field):
+            raise SubtitleStaleError(f"视觉 timing 与 current timing 的 {field} 不一致，不能只重烧字幕")
+    visual_frames = visual.get("frameCount")
+    current_frames = current.get("frameCount")
+    if (
+        isinstance(visual_frames, bool)
+        or not isinstance(visual_frames, int)
+        or visual_frames <= 0
+        or visual_frames != current_frames
+    ):
+        raise SubtitleStaleError("视觉 timing 与 current timing 总帧数不同，不能只重烧字幕")
+    visual_sha = _require_sha256(visual.get("sha256"), "visual timing plan SHA-256")
+    current_sha = _require_sha256(current.get("sha256"), "current timing plan SHA-256")
+    visual_active = visual.get("activeTimeline")
+    if not isinstance(visual_active, Mapping):
+        raise SubtitleStaleError("visual timing plan 缺少 activeTimeline")
+    visual_timeline_sha = _require_sha256(
+        visual_active.get("sha256"),
+        "visual active timeline SHA-256",
+    )
+
+    clean_sha = _require_sha256(clean_media.get("sha256"), "clean master SHA-256")
+    clean_bytes = clean_media.get("bytes")
+    clean_duration = clean_media.get("durationMs")
+    clean_frames = clean_media.get("decodedFrameCount")
+    if isinstance(clean_bytes, bool) or not isinstance(clean_bytes, int) or clean_bytes <= 0:
+        raise SubtitleStaleError("clean master bytes 无效")
+    if isinstance(clean_duration, bool) or not isinstance(clean_duration, int) or clean_duration <= 0:
+        raise SubtitleStaleError("clean master durationMs 无效")
+    if clean_frames != current_frames:
+        raise SubtitleStaleError("clean master 完整解码帧数与 current timing 不一致")
+    validation = clean_media.get("validation")
+    if not isinstance(validation, Mapping) or validation.get("fullDecode") is not True:
+        raise SubtitleStaleError("字幕层复用必须具备 clean master 完整解码证据")
+    if not isinstance(validation.get("deepReceipt"), Mapping):
+        raise SubtitleStaleError("clean master 缺少完整解码 receipt")
+
+    scenes = project.timing_plan.get("scenes")
+    current_end_ms = scenes[-1].get("endMs") if isinstance(scenes, list) and scenes else None
+    if isinstance(current_end_ms, bool) or not isinstance(current_end_ms, int) or current_end_ms <= 0:
+        raise SubtitleStaleError("current timing plan 总时长无效")
+    fps = project.render_profile.get("fps")
+    if isinstance(fps, bool) or not isinstance(fps, (int, float)) or fps <= 0:
+        raise SubtitleStaleError("render profile fps 无效")
+    duration_tolerance_ms = max(1, int(1000 / float(fps)) + 1)
+    if abs(clean_duration - current_end_ms) > duration_tolerance_ms:
+        raise SubtitleStaleError("clean master 总时长与 current timing 相差超过一帧，不能只重烧字幕")
+
+    _require_sha256(subtitle_timeline_sha256, "current subtitle timeline SHA-256")
+    if project.voiceover_mode == "disabled":
+        if audio_sha256 != "":
+            raise SubtitleStaleError("Disabled 字幕层复用的 audioSha256 必须为空")
+    else:
+        _require_sha256(audio_sha256, "current narration audio SHA-256")
+    if not isinstance(background_music, Mapping) or not isinstance(background_music.get("enabled"), bool):
+        raise SubtitleStaleError("current BGM binding 无效")
+
+    return {
+        "kind": "subtitle-only-clean-master-reuse",
+        "cleanVideoSha256": clean_sha,
+        "cleanVideoBytes": clean_bytes,
+        "cleanVideoDurationMs": clean_duration,
+        "visualTimingPlanSha256": visual_sha,
+        "visualTimelineSha256": visual_timeline_sha,
+        "currentSubtitleTimingPlanSha256": current_sha,
+        "currentSubtitleTimelineSha256": subtitle_timeline_sha256,
+        "audioSha256": audio_sha256,
+        "backgroundMusic": dict(background_music),
+        "frameCount": current_frames,
+        "currentTimelineDurationMs": current_end_ms,
+    }
+
+
+def assert_subtitle_only_clean_master_reuse(
+    *,
+    project: Project,
+    reuse: Any,
+    clean_visual_timing_sha256: Any,
+    clean_media: Mapping[str, Any],
+    current_timing_plan: Mapping[str, Any],
+    subtitle_timeline_sha256: str,
+    audio_sha256: str,
+    background_music: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    """Validate optional subtitle-only clean-master reuse evidence fail-closed."""
+
+    clean_visual_sha = _require_sha256(
+        clean_visual_timing_sha256,
+        "clean master visual timing plan SHA-256",
+    )
+    current_sha = _require_sha256(current_timing_plan.get("sha256"), "current timing plan SHA-256")
+    if reuse is None:
+        if clean_visual_sha != current_sha:
+            raise SubtitleStaleError("clean master 不是 current render，且缺少字幕层复用证据")
+        return None
+    if not isinstance(reuse, Mapping):
+        raise SubtitleStaleError("cleanVideo.reuse 必须为对象")
+    visual_sha = _require_sha256(reuse.get("visualTimingPlanSha256"), "visual timing plan SHA-256")
+    visual_timeline_sha = _require_sha256(
+        reuse.get("visualTimelineSha256"),
+        "visual active timeline SHA-256",
+    )
+    if visual_sha == current_sha:
+        raise SubtitleStaleError("cleanVideo.reuse.visualTimingPlanSha256 不得等于 current timing")
+    if clean_visual_sha != visual_sha:
+        raise SubtitleStaleError("cleanVideo.reuse 未绑定 clean master 的视觉 timing")
+    scenes = project.timing_plan.get("scenes")
+    current_end_ms = scenes[-1].get("endMs") if isinstance(scenes, list) and scenes else None
+    current_frames = current_timing_plan.get("frameCount")
+    validation = clean_media.get("validation")
+    if (
+        isinstance(current_end_ms, bool)
+        or not isinstance(current_end_ms, int)
+        or isinstance(current_frames, bool)
+        or not isinstance(current_frames, int)
+        or clean_media.get("decodedFrameCount") != current_frames
+        or not isinstance(validation, Mapping)
+        or validation.get("fullDecode") is not True
+        or not isinstance(validation.get("deepReceipt"), Mapping)
+    ):
+        raise SubtitleStaleError("cleanVideo.reuse 缺少 current 帧数/时长/完整解码证据")
+    tolerance_ms = max(1, int(1000 / float(project.render_profile["fps"])) + 1)
+    if abs(int(clean_media.get("durationMs", -1)) - current_end_ms) > tolerance_ms:
+        raise SubtitleStaleError("cleanVideo.reuse 总时长与 current timing 相差超过一帧")
+    expected = {
+        "kind": "subtitle-only-clean-master-reuse",
+        "cleanVideoSha256": clean_media.get("sha256"),
+        "cleanVideoBytes": clean_media.get("bytes"),
+        "cleanVideoDurationMs": clean_media.get("durationMs"),
+        "visualTimingPlanSha256": visual_sha,
+        "visualTimelineSha256": visual_timeline_sha,
+        "currentSubtitleTimingPlanSha256": current_sha,
+        "currentSubtitleTimelineSha256": subtitle_timeline_sha256,
+        "audioSha256": audio_sha256,
+        "backgroundMusic": dict(background_music),
+        "frameCount": current_frames,
+        "currentTimelineDurationMs": current_end_ms,
+    }
+    if dict(reuse) != expected:
+        changed = next(
+            (
+                key
+                for key in sorted(set(reuse) | set(expected))
+                if reuse.get(key) != expected.get(key)
+            ),
+            "unknown",
+        )
+        raise SubtitleStaleError(f"cleanVideo.reuse.{changed} 与 current 字幕层复用条件不一致")
+    return reuse
+
+
 def compute_final_identity_inputs(
     *,
     voiceover_mode: str,
@@ -542,10 +746,13 @@ __all__ = [
     "SubtitleDeliveryError",
     "SubtitleStaleError",
     "compile_ass",
+    "assert_subtitle_only_clean_master_reuse",
+    "build_subtitle_only_clean_master_reuse",
     "compute_final_identity",
     "compute_final_identity_inputs",
     "escape_ass_text",
     "find_subtitle_gap",
+    "current_timing_plan_record",
     "load_font_identity",
     "preflight_subtitles",
     "select_authoritative_srt",

@@ -41,7 +41,10 @@ from subtitle_delivery import (
     DEFAULT_FONT_PATH,
     DISABLED_MUX_CONTRACT_VERSION,
     SubtitleDeliveryError,
+    SubtitleStaleError,
+    assert_subtitle_only_clean_master_reuse,
     compute_final_identity,
+    current_timing_plan_record,
     select_authoritative_srt,
 )
 from voiceover import VoiceoverValidationError
@@ -125,17 +128,27 @@ def _timing_plan_sha(project: Project) -> str:
 
 
 def _expected_timing_record(project: Project) -> dict[str, Any]:
-    scenes = project.timing_plan["scenes"]
-    if not scenes:
-        raise FinalMediaStaleError("current timing plan 没有场景")
+    try:
+        return current_timing_plan_record(project)
+    except SubtitleDeliveryError as exc:
+        raise FinalMediaStaleError(str(exc)) from exc
+
+
+def _background_music_reuse_binding(plan: Mapping[str, Any]) -> dict[str, Any]:
+    if not plan["enabled"]:
+        return {"enabled": False}
     return {
-        "file": "planning/timing-plan.json" if project.timing_plan_persisted else None,
-        "sha256": _timing_plan_sha(project),
-        "voiceoverMode": project.voiceover_mode,
-        "activeTimeline": project.timing_plan["activeTimeline"],
-        "renderProfileSha256": project.timing_plan["renderProfileSha256"],
-        "frameRounding": project.render_profile["frameRounding"],
-        "frameCount": scenes[-1]["endFrameExclusive"],
+        "enabled": True,
+        "assetFile": plan["asset"],
+        "assetSha256": plan["assetSha256"],
+        "title": plan["title"],
+        "artist": plan["artist"],
+        "license": plan["license"],
+        "gainDb": plan["gainDb"],
+        "fadeInMs": plan["fadeInMs"],
+        "fadeOutMs": plan["fadeOutMs"],
+        "loop": plan["loop"],
+        "mixContractVersion": BGM_MIX_CONTRACT_VERSION,
     }
 
 
@@ -541,6 +554,19 @@ def inspect_project_final_media(
             final,
             mux_version,
         )
+    try:
+        assert_subtitle_only_clean_master_reuse(
+            project=project,
+            reuse=clean.get("reuse"),
+            clean_visual_timing_sha256=clean.get("visualTimingPlanSha256"),
+            clean_media=clean_media,
+            current_timing_plan=_expected_timing_record(project),
+            subtitle_timeline_sha256=selection.timeline_sha256,
+            audio_sha256=audio_sha,
+            background_music=_background_music_reuse_binding(background_music),
+        )
+    except SubtitleStaleError as exc:
+        raise FinalMediaStaleError(str(exc)) from exc
 
     return {
         "project": project,

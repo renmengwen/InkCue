@@ -53,12 +53,17 @@ class VoiceoverTimingTests(unittest.TestCase):
             voice_module, "active_provider_id", return_value="edge-tts"
         )
         cls._provider_patcher.start()
+        cls._asr_preflight_patcher = mock.patch.object(
+            voice_module, "_preflight_narration_asr", return_value=None
+        )
+        cls._asr_preflight_patcher.start()
 
     @classmethod
     def tearDownClass(cls) -> None:
         target = cls.root.resolve()
         target.relative_to(ROOT.resolve())
         shutil.rmtree(target)
+        cls._asr_preflight_patcher.stop()
         cls._provider_patcher.stop()
         cls._drive_patcher.stop()
 

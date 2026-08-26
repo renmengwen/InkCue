@@ -66,8 +66,10 @@ class PrepareEnvFunasrTests(unittest.TestCase):
                 "funasr": f"funasr=={prepare_env.FUNASR_VERSION}",
                 "modelscope": f"modelscope=={prepare_env.MODELSCOPE_VERSION}",
                 "torch": f"torch=={prepare_env.TORCH_VERSION}",
+                "torchaudio": f"torchaudio=={prepare_env.TORCHAUDIO_VERSION}",
             },
         )
+        self.assertEqual(prepare_env.TORCH_VERSION, prepare_env.TORCHAUDIO_VERSION)
         self.assertEqual(
             [item["alias"] for item in prepare_env.NARRATION_ASR_MODELS],
             ["paraformer-zh", "fsmn-vad", "ct-punc"],
@@ -119,6 +121,15 @@ class PrepareEnvFunasrTests(unittest.TestCase):
             ) as probe,
             mock.patch.object(prepare_env, "install") as install,
             mock.patch.object(prepare_env, "prepare_narration_asr_models") as prepare,
+            mock.patch.object(
+                prepare_env,
+                "probe_narration_asr_runtime",
+                return_value={
+                    "available": True,
+                    "torchVersion": prepare_env.TORCH_VERSION,
+                    "torchaudioVersion": prepare_env.TORCHAUDIO_VERSION,
+                },
+            ) as runtime_probe,
         ):
             result = prepare_env.main(["--check", "--feature", "narration-asr"])
         self.assertEqual(result, 0)
@@ -126,6 +137,7 @@ class PrepareEnvFunasrTests(unittest.TestCase):
         self.assertEqual(probe.call_args.args[1], dependencies)
         install.assert_not_called()
         prepare.assert_not_called()
+        runtime_probe.assert_called_once_with(py, mock.ANY)
         self.assertEqual(
             prepare_env.load_narration_asr_model_paths(receipt_path=receipt),
             expected,
@@ -149,10 +161,43 @@ class PrepareEnvFunasrTests(unittest.TestCase):
                 return_value={name: True for name in dependencies},
             ),
             mock.patch.object(prepare_env, "install") as install,
+            mock.patch.object(
+                prepare_env,
+                "probe_narration_asr_runtime",
+                return_value={
+                    "available": True,
+                    "torchVersion": prepare_env.TORCH_VERSION,
+                    "torchaudioVersion": prepare_env.TORCHAUDIO_VERSION,
+                },
+            ) as runtime_probe,
         ):
             result = prepare_env.main(["--check", "--feature", "narration-asr"])
         self.assertEqual(result, 1)
         install.assert_not_called()
+        runtime_probe.assert_called_once_with(py, mock.ANY)
+
+    def test_runtime_probe_requires_torchaudio_fbank_and_wav_frontend(self) -> None:
+        py = self.root / "python.exe"
+        payload = {
+            "available": True,
+            "torchVersion": prepare_env.TORCH_VERSION,
+            "torchaudioVersion": prepare_env.TORCHAUDIO_VERSION,
+        }
+        completed = subprocess.CompletedProcess(
+            [str(py)],
+            0,
+            stdout=(
+                prepare_env._NARRATION_ASR_RUNTIME_PROBE_PREFIX
+                + json.dumps(payload)
+                + "\n"
+            ),
+            stderr="",
+        )
+        with mock.patch.object(prepare_env.subprocess, "run", return_value=completed) as run:
+            actual = prepare_env.probe_narration_asr_runtime(py, {"TEMP": str(self.root)})
+        self.assertEqual(actual, payload)
+        self.assertIn("WavFrontend", run.call_args.args[0][2])
+        self.assertIn("kaldi.fbank", run.call_args.args[0][2])
 
     def test_first_prepare_downloads_fixed_snapshots_and_writes_valid_receipt(self) -> None:
         cache_root, receipt = prepare_env.narration_asr_paths()

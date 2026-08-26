@@ -76,6 +76,14 @@ python scripts/prepare_env.py
 
 `config/voice-providers.example.json` 是无秘密的首版 provider 合同示例，记录 package/contract、voice、language、规范化 rate/pitch/volume、输出格式及请求策略字段。它不是凭据文件，也不允许加入 key、Cookie、Token 或临时 URL。
 
+排查 active provider 或凭据是否已配置时，只能调用脱敏状态接口，不得用 shell、文件读取工具或临时代码直接读取、打印或转述任何 `config/*.local.json` 原文：
+
+```powershell
+<ENV_PY> scripts/voice_provider_config.py status
+```
+
+该命令只输出 `provider`、`model`、`voice`、`rate` 与 `credentialsConfigured`。provider 自由文本响应只可在进程内用于分类；异常、CLI、request audit、receipt 与 manifest 均不得保存 API Key、Authorization、Token、原始请求 ID、原始响应或可能回显这些内容的 provider 消息。
+
 MiniMax 请求策略字段为 `queueIntervalMs`、`requestsPerMinute`、`rateLimitBackoffMs` 与 `maxRetries`。`requestsPerMinute` 必须位于 1–600，`rateLimitBackoffMs` 必须位于 1000–300000；缺失时分别采用 20 RPM 与 35000ms。豆包使用 `queueIntervalMs` 与 `maxRetries`，并要求本地配置包含 `apiKey`、实际 `voice`、`model=seed-audio-1.0`。降低 `voiceGeneration` 只能减少在途请求和本地资源占用，不能替代 provider 自身限流。
 
 当前样音 CLI 的 provider 永远读取 `config/voice-providers.local.json` 的 `activeProvider`，不提供 `--provider` 覆盖入口；activeProvider 必须与项目已经冻结的 `voiceoverMode` 一致。CLI 仍支持 `--voice` 与整数百分点 `--rate`，MiniMax/豆包未指定 voice/rate 时从 local provider 配置读取。`--rate 0` 规范化为 `+0%`，`10` 为 `+10%`，`-10` 为 `-10%`。持久化 identity 使用规范化字符串，不依赖调用点猜单位。全局示例配置不能自动覆盖项目中已经生成或批准的 `planning/voice-plan.json`。

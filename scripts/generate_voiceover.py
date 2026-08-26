@@ -487,6 +487,23 @@ def _write_manifest(path: Path, manifest: Mapping[str, Any], plan: Mapping[str, 
     write_json_atomic(path, candidate)
 
 
+def _restore_bytes_atomic(path: Path, payload: bytes) -> None:
+    """按原字节恢复正式文件，供跨文件批准事务失败时回滚。"""
+
+    candidate = path.with_name(f".{path.name}.{uuid.uuid4().hex}.rollback")
+    try:
+        with candidate.open("xb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(candidate, path)
+    finally:
+        try:
+            candidate.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def _fresh_manifest_with_reuse(
     project: Project,
     plan: Mapping[str, Any],
@@ -1205,6 +1222,32 @@ def _full_audio_identity(plan: Mapping[str, Any], composite: Mapping[str, Any]) 
     )
 
 
+def _preflight_narration_asr() -> None:
+    """在任何完整 TTS 请求前验证本地 FunASR 运行时与固定模型 receipt。"""
+
+    if transcribe_narration is None:
+        raise VoiceoverStateError(
+            "当前 skill 的 narration ASR runner 尚未安装；请先准备 narration-asr 环境"
+        )
+    try:
+        try:
+            from .prepare_env import (
+                load_narration_asr_model_paths,
+                probe_narration_asr_runtime,
+            )
+        except ImportError:  # pragma: no cover - direct script execution
+            from prepare_env import (  # type: ignore[no-redef]
+                load_narration_asr_model_paths,
+                probe_narration_asr_runtime,
+            )
+        probe_narration_asr_runtime(Path(sys.executable).resolve(), os.environ.copy())
+        load_narration_asr_model_paths()
+    except Exception as exc:
+        raise VoiceoverStateError(
+            f"narration-ASR preflight 失败；完整 TTS 尚未请求: {str(exc)[-300:]}"
+        ) from exc
+
+
 def _full(
     project: Project,
     *,
@@ -1212,6 +1255,7 @@ def _full(
     adapter: ProviderAdapter,
     normalizer: Callable[..., CanonicalAudioResult],
     configured_concurrency: int,
+    asr_preflight: Callable[[], None],
 ) -> str:
     plan, units = _load_current_plan_units(project)
     if (
@@ -1227,6 +1271,7 @@ def _full(
     approval = old.get("sample", {}).get("approval", {})
     if not approval.get("approved") or approval.get("identityHash") != current_sample:
         raise ApprovalGateError("未获得 current 样音 voice/rate 人工批准")
+    asr_preflight()
     # Preserve only the current sample approval; full/timeline approvals are reset.
     manifest["sample"] = copy.deepcopy(old["sample"])
     if isinstance(configured_concurrency, bool) or not isinstance(configured_concurrency, int):
@@ -1998,12 +2043,44 @@ def _approve_full(
         "reviewPolicy": review_policy,
         "approvedAt": _now(),
     }
-    # Prepare both candidates first. The timing plan is published first and the
-    # manifest approval second; identity mismatch paths mutate neither file.
-    write_json_atomic(project.timing_plan_path, timing_plan)
-    _write_manifest(paths["manifest"], manifest, plan, units)
-    if sha256_file(project.plan_path) != generation_hash:
-        raise VoiceoverStateError("批准真实时长不得改写 generation plan")
+    # 两个候选先完成 schema/current 校验，再进入短事务。发布任一步失败时按原
+    # 字节恢复两个正式文件，使项目回到可由 pending-audio-timeline 模式继续的
+    # 待批准状态；错误 identity 在进入此处前已经拒绝，两个文件均不会变化。
+    validate_voice_manifest(manifest, voice_plan=plan, speech_units=units)
+    timing_before = project.timing_plan_path.read_bytes()
+    manifest_before = paths["manifest"].read_bytes()
+    try:
+        write_json_atomic(project.timing_plan_path, timing_plan)
+        _write_manifest(paths["manifest"], manifest, plan, units)
+        committed = load_project(project.root)
+        committed_manifest = validate_voice_manifest(
+            _read_json(paths["manifest"], "voice manifest"),
+            voice_plan=plan,
+            speech_units=units,
+        )
+        if (
+            committed.pending_audio_timeline
+            or committed.timing_plan["activeTimeline"]["sha256"] != timeline_sha
+            or committed_manifest["fullApproval"].get("identityHash") != identity_hash
+        ):
+            raise VoiceoverStateError("完整旁白批准事务提交后 current binding 复核失败")
+        if sha256_file(project.plan_path) != generation_hash:
+            raise VoiceoverStateError("批准真实时长不得改写 generation plan")
+    except Exception:
+        rollback_errors: list[str] = []
+        for target, payload in (
+            (project.timing_plan_path, timing_before),
+            (paths["manifest"], manifest_before),
+        ):
+            try:
+                _restore_bytes_atomic(target, payload)
+            except OSError as rollback_exc:
+                rollback_errors.append(f"{target.name}: {rollback_exc}")
+        if rollback_errors:
+            raise VoiceoverStateError(
+                "完整旁白批准失败且回滚不完整: " + "; ".join(rollback_errors)
+            )
+        raise
     return identity_hash
 
 
@@ -2033,6 +2110,7 @@ def _status(project: Project) -> dict[str, Any]:
         "sample": "missing",
         "segments": {},
         "full": "missing",
+        "pendingAudioTimeline": project.pending_audio_timeline,
     }
     if not paths["manifest"].is_file():
         return payload
@@ -2101,10 +2179,15 @@ def main(
     normalizer: Callable[..., CanonicalAudioResult] | None = None,
     workspace_config: WorkspaceConfig | None = None,
     asr_runner: Callable[[Project, Path], Path] | None = None,
+    asr_preflight: Callable[[], None] | None = None,
 ) -> int:
     args = _parser().parse_args(argv)
     try:
-        project = load_project(args.project)
+        project = load_project(
+            args.project,
+            allow_pending_audio_timeline=args.command
+            in {"publish-alignment", "approve-full", "status"},
+        )
         execution = workspace_config
         if execution is None and argv is None:
             execution = load_workspace_config()
@@ -2146,6 +2229,7 @@ def main(
                 adapter=adapter or _adapter_from_plan(current_plan),
                 normalizer=normalizer or normalize_to_candidate,
                 configured_concurrency=concurrency.for_stage("voiceGeneration"),
+                asr_preflight=asr_preflight or _preflight_narration_asr,
             )
             print(f"FULL_AUDIO={project.path('audio/narration.wav')}")
             print(f"FULL_AUDIO_IDENTITY={audio_identity}")

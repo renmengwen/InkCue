@@ -33,12 +33,13 @@ except ImportError:  # Direct ``scripts/transcribe_narration.py`` execution.
     from srt_timeline import serialize_srt
 
 
-CONTRACT_VERSION = "narration-funasr-sentence-timestamp-v1"
+CONTRACT_VERSION = "narration-funasr-sentence-timestamp-v2"
 MODEL_CONTRACT = "narration-asr-models-v1"
 ASR_SAMPLE_RATE = 16_000
 ASR_CHANNELS = 1
 ASR_SAMPLE_WIDTH_BYTES = 2
 DEFAULT_TIMEOUT_SECONDS = 180.0
+MAX_VAD_SEGMENT_MS = 15_000
 MODEL_IDS = {
     "paraformer-zh": "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
     "fsmn-vad": "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
@@ -269,19 +270,65 @@ def _integral_milliseconds(value: object, *, label: str) -> int:
     return integer
 
 
-def _extract_sentence_info(result: object, *, duration_ms: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    if isinstance(result, Mapping):
-        records: Sequence[object] = [result]
-    elif isinstance(result, Sequence) and not isinstance(result, (str, bytes)):
-        records = result
-    else:
-        raise NarrationTranscriptionError("FunASR 返回结构无效")
-    if not records or not isinstance(records[0], Mapping):
-        raise NarrationTranscriptionError("FunASR 未返回转写记录")
-    raw_sentences = records[0].get("sentence_info")
-    if not isinstance(raw_sentences, list) or not raw_sentences:
-        raise NarrationTranscriptionError("FunASR sentence_info 不能为空")
+def _token_timestamp_sentences(record: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """从可一一对应的 token 时间戳恢复声学 cue；绝不按字符比例估时。"""
 
+    raw_timestamps = record.get("timestamp")
+    if not isinstance(raw_timestamps, list) or not raw_timestamps:
+        raise NarrationTranscriptionError("FunASR 缺少可用的 token 时间戳")
+    timestamp_pairs: list[tuple[object, object]] = []
+    for ordinal, raw_timestamp in enumerate(raw_timestamps, start=1):
+        if (
+            not isinstance(raw_timestamp, (list, tuple))
+            or len(raw_timestamp) != 2
+        ):
+            raise NarrationTranscriptionError(
+                f"FunASR timestamp[{ordinal}] 必须是 [start, end]"
+            )
+        timestamp_pairs.append((raw_timestamp[0], raw_timestamp[1]))
+
+    raw_text = record.get("text")
+    if not isinstance(raw_text, str) or not raw_text.strip():
+        raise NarrationTranscriptionError("FunASR token 时间戳缺少转写文本")
+
+    explicit_tokens = record.get("tokens", record.get("token"))
+    token_candidates: list[list[str]] = []
+    if isinstance(explicit_tokens, list) and all(
+        isinstance(token, str) for token in explicit_tokens
+    ):
+        token_candidates.append([token.strip() for token in explicit_tokens])
+    whitespace_tokens = raw_text.split()
+    if whitespace_tokens:
+        token_candidates.append(whitespace_tokens)
+    token_candidates.append(
+        [character for character in raw_text if _SEMANTIC_TEXT_RE.search(character)]
+    )
+
+    tokens = next(
+        (
+            candidate
+            for candidate in token_candidates
+            if len(candidate) == len(timestamp_pairs)
+            and all(token and _SEMANTIC_TEXT_RE.search(token) for token in candidate)
+        ),
+        None,
+    )
+    if tokens is None:
+        raise NarrationTranscriptionError(
+            "FunASR token 数量与时间戳数量不一致，拒绝按字符比例估时"
+        )
+    return [
+        {"start": start, "end": end, "text": token}
+        for token, (start, end) in zip(tokens, timestamp_pairs, strict=True)
+    ]
+
+
+def _validated_sentences(
+    raw_sentences: Sequence[object],
+    *,
+    duration_ms: int,
+    evidence_kind: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     sentences: list[dict[str, Any]] = []
     previous_end = -1
     gap_count = 0
@@ -298,6 +345,10 @@ def _extract_sentence_info(result: object, *, duration_ms: int) -> tuple[list[di
             raise NarrationTranscriptionError(f"sentence {ordinal} 文本不能为空或纯标点")
         if start_ms < 0 or end_ms <= start_ms:
             raise NarrationTranscriptionError(f"sentence {ordinal} 时间范围无效")
+        if end_ms - start_ms > MAX_VAD_SEGMENT_MS:
+            raise NarrationTranscriptionError(
+                f"sentence {ordinal} 超过 {MAX_VAD_SEGMENT_MS}ms，不能把超长 VAD 大段作为字幕边界"
+            )
         if start_ms < previous_end:
             raise NarrationTranscriptionError(f"sentence {ordinal} 与前一句重叠或乱序")
         if end_ms > duration_ms:
@@ -314,9 +365,6 @@ def _extract_sentence_info(result: object, *, duration_ms: int) -> tuple[list[di
         )
         previous_end = end_ms
 
-    transcript = "".join(sentence["text"] for sentence in sentences)
-    if _CHINESE_PUNCTUATION_RE.search(transcript) is None:
-        raise NarrationTranscriptionError("FunASR 结果缺少中文标点，无法作为句级声学证据")
     timing = {
         "invalidRanges": 0,
         "overlaps": 0,
@@ -325,8 +373,50 @@ def _extract_sentence_info(result: object, *, duration_ms: int) -> tuple[list[di
         "lastEndMs": sentences[-1]["endMs"],
         "leadingRoomMs": sentences[0]["startMs"],
         "trailingRoomMs": duration_ms - sentences[-1]["endMs"],
+        "evidenceKind": evidence_kind,
     }
     return sentences, timing
+
+
+def _extract_sentence_info(result: object, *, duration_ms: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if isinstance(result, Mapping):
+        records: Sequence[object] = [result]
+    elif isinstance(result, Sequence) and not isinstance(result, (str, bytes)):
+        records = result
+    else:
+        raise NarrationTranscriptionError("FunASR 返回结构无效")
+    if not records or not isinstance(records[0], Mapping):
+        raise NarrationTranscriptionError("FunASR 未返回转写记录")
+    record = records[0]
+    token_error: NarrationTranscriptionError | None = None
+    if isinstance(record.get("timestamp"), list) and record.get("timestamp"):
+        try:
+            return _validated_sentences(
+                _token_timestamp_sentences(record),
+                duration_ms=duration_ms,
+                evidence_kind="token_timestamp",
+            )
+        except NarrationTranscriptionError as exc:
+            token_error = exc
+
+    raw_sentences = record.get("sentence_info")
+    if isinstance(raw_sentences, list) and raw_sentences:
+        transcript = "".join(
+            item.get("text", "") if isinstance(item, Mapping) else ""
+            for item in raw_sentences
+        )
+        if _CHINESE_PUNCTUATION_RE.search(transcript) is not None:
+            return _validated_sentences(
+                raw_sentences,
+                duration_ms=duration_ms,
+                evidence_kind="sentence_info",
+            )
+        raise NarrationTranscriptionError(
+            "FunASR 结果缺少中文标点，且没有可一一对应的 token 时间戳"
+        ) from token_error
+    raise NarrationTranscriptionError(
+        "FunASR sentence_info 不能为空且无法安全恢复"
+    ) from token_error
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -375,6 +465,7 @@ def transcribe_narration(
         "model": str(local_models["paraformer-zh"]),
         "vad_model": str(local_models["fsmn-vad"]),
         "punc_model": str(local_models["ct-punc"]),
+        "vad_kwargs": {"max_single_segment_time": MAX_VAD_SEGMENT_MS},
         "device": "cpu",
         "disable_update": True,
     }
@@ -387,6 +478,7 @@ def transcribe_narration(
             input=str(prepared.asr_path),
             batch_size=1,
             sentence_timestamp=True,
+            pred_timestamp=True,
         )
     except NarrationTranscriptionError:
         raise
@@ -448,7 +540,12 @@ def transcribe_narration(
             "device": "cpu",
             "disableUpdate": True,
         },
-        "inference": {"batchSize": 1, "sentenceTimestamp": True},
+        "inference": {
+            "batchSize": 1,
+            "sentenceTimestamp": True,
+            "predTimestamp": True,
+            "maxVadSegmentMs": MAX_VAD_SEGMENT_MS,
+        },
         "sentenceCount": len(sentences),
         "timingValidation": timing,
         "artifacts": {

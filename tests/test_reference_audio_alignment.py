@@ -219,6 +219,34 @@ class ReferenceAudioAlignmentTests(unittest.TestCase):
                 2000,
             )
 
+    def test_rejects_short_text_that_wrongly_consumes_most_of_long_audio(self) -> None:
+        reference = srt(
+            [
+                (0, 1000, "开场很短。"),
+                (1000, 2000, "后面的旁白内容明显更长，应当拥有正常的声学时间范围。"),
+            ]
+        )
+        asr = srt(
+            [
+                (0, 59_900, "开场很短"),
+                (60_000, 69_500, "后面的旁白内容明显更长应当拥有正常的声学时间范围"),
+            ]
+        )
+        with self.assertRaisesRegex(ReferenceAlignmentError, "声学边界明显失真") as caught:
+            align_reference_audio(
+                reference,
+                asr,
+                [{"sceneId": "scene", "cueRange": [1, 2]}],
+                70_000,
+            )
+        plausibility = caught.exception.diagnostics["timingPlausibility"]
+        self.assertEqual(caught.exception.diagnostics["status"], "FAIL")
+        self.assertEqual(plausibility["implausibleSourceCues"][0]["sourceCueOrdinal"], 1)
+        self.assertIn(
+            "disproportionate_track_share",
+            plausibility["implausibleSourceCues"][0]["reasons"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

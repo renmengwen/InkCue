@@ -28,7 +28,10 @@ try:
         BURN_CONTRACT_VERSION,
         DEFAULT_FONT_PATH,
         SubtitleDeliveryError,
+        SubtitleStaleError,
+        assert_subtitle_only_clean_master_reuse,
         compute_final_identity,
+        current_timing_plan_record,
         select_authoritative_srt,
     )
     from .voiceover import VoiceoverValidationError
@@ -56,7 +59,10 @@ except ImportError:  # pragma: no cover - direct script execution
         BURN_CONTRACT_VERSION,
         DEFAULT_FONT_PATH,
         SubtitleDeliveryError,
+        SubtitleStaleError,
+        assert_subtitle_only_clean_master_reuse,
         compute_final_identity,
+        current_timing_plan_record,
         select_authoritative_srt,
     )
     from voiceover import VoiceoverValidationError
@@ -145,21 +151,28 @@ def _assert_current_timing(project: Project, manifest: Mapping[str, Any]) -> tup
     timeline_sha = sha256_file(timeline_path)
     if active.get("sha256") != timeline_sha:
         raise MuxStaleError("timing plan activeTimeline SHA-256 stale")
-    scenes = project.timing_plan.get("scenes")
-    if not isinstance(scenes, list) or not scenes:
-        raise MuxStaleError("current timing plan 没有场景")
-    expected = {
-        "file": "planning/timing-plan.json" if project.timing_plan_persisted else None,
-        "sha256": _timing_plan_sha(project),
-        "voiceoverMode": project.voiceover_mode,
-        "activeTimeline": dict(active),
-        "renderProfileSha256": project.timing_plan["renderProfileSha256"],
-        "frameRounding": project.render_profile["frameRounding"],
-        "frameCount": scenes[-1]["endFrameExclusive"],
-    }
+    expected = current_timing_plan_record(project)
     if manifest.get("timingPlan") != expected:
         raise MuxStaleError("delivery timingPlan 与 current timing plan 不一致")
     return timeline_sha, _read_json(timeline_path, "audio timeline")
+
+
+def _background_music_reuse_binding(plan: Mapping[str, Any]) -> dict[str, Any]:
+    if not plan["enabled"]:
+        return {"enabled": False}
+    return {
+        "enabled": True,
+        "assetFile": plan["asset"],
+        "assetSha256": plan["assetSha256"],
+        "title": plan["title"],
+        "artist": plan["artist"],
+        "license": plan["license"],
+        "gainDb": plan["gainDb"],
+        "fadeInMs": plan["fadeInMs"],
+        "fadeOutMs": plan["fadeOutMs"],
+        "loop": plan["loop"],
+        "mixContractVersion": BGM_MIX_CONTRACT_VERSION,
+    }
 
 
 def _assert_media_record(record: Any, media: Mapping[str, Any], *, file: str, label: str) -> Mapping[str, Any]:
@@ -379,6 +392,19 @@ def mux_project(
     clean = _assert_media_record(
         manifest.get("cleanVideo"), clean_media, file="output/final-video-only.mp4", label="cleanVideo"
     )
+    try:
+        assert_subtitle_only_clean_master_reuse(
+            project=project,
+            reuse=clean.get("reuse"),
+            clean_visual_timing_sha256=clean.get("visualTimingPlanSha256"),
+            clean_media=clean_media,
+            current_timing_plan=current_timing_plan_record(project),
+            subtitle_timeline_sha256=selection.timeline_sha256,
+            audio_sha256=canonical.sha256,
+            background_music=_background_music_reuse_binding(background_music),
+        )
+    except SubtitleStaleError as exc:
+        raise MuxStaleError(str(exc)) from exc
     captioned_record = _mapping(manifest.get("captionedVideo"), "captionedVideo")
     captioned_receipt = captioned_record.get("technicalValidation")
     captioned_media = validate_video(

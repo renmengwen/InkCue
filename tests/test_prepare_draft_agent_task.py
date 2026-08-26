@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -242,6 +244,121 @@ class PrepareDraftAgentTaskTests(unittest.TestCase):
                     "voiceoverMode": "minimax",
                 }
             )
+
+    def _run_main(self, arguments: list[str]) -> tuple[int, dict[str, object], str]:
+        stdout = io.StringIO()
+        with mock.patch.object(
+            prepare,
+            "load_workspace_config",
+            return_value=self.workspace(),
+        ), redirect_stdout(stdout):
+            exit_code = prepare.main(arguments)
+        output = stdout.getvalue()
+        return exit_code, json.loads(output), output
+
+    def test_cli_rejects_content_input_at_managed_path_without_echo(self) -> None:
+        draft_root = self.workspace_root / "drafts" / "managed-content-collision"
+        draft_root.mkdir(parents=True)
+        source = draft_root / "content-input.json"
+        secret = "DO-NOT-ECHO-MANAGED-CONTENT"
+        source.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "contractVersion": "whiteboard-content-input-v1",
+                    "inputMode": "topic",
+                    "topic": secret,
+                    "body": None,
+                    "rewritePolicy": "generate",
+                    "targetDurationSeconds": 60,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        exit_code, result, output = self._run_main(
+            [
+                "contentDrafting",
+                "--draft-root", str(draft_root),
+                "--content-input", str(source),
+            ]
+        )
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(result["error"], "draft_agent_prepare_invalid")
+        self.assertEqual(result["reasonCode"], "managed_input_path_conflict")
+        self.assertFalse(result["formalPublished"])
+        self.assertFalse(result["approvalWritten"])
+        self.assertNotIn(secret, output)
+        self.assertNotIn(str(draft_root), output)
+        self.assertNotRegex(output, r"(?i)[a-z]:[\\/]")
+
+    def test_cli_rejects_source_srt_at_managed_path_with_same_reason(self) -> None:
+        draft_root = self.workspace_root / "drafts" / "managed-srt-collision"
+        draft_root.mkdir(parents=True)
+        source = draft_root / "source.srt"
+        source.write_text(
+            "1\n00:00:00,000 --> 00:00:01,000\nDO-NOT-ECHO-SRT\n",
+            encoding="utf-8",
+        )
+
+        exit_code, result, output = self._run_main(
+            [
+                "storyboardPlanning",
+                "--draft-root", str(draft_root),
+                "--source-srt", str(source),
+            ]
+        )
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(result["reasonCode"], "managed_input_path_conflict")
+        self.assertNotIn("DO-NOT-ECHO-SRT", output)
+        self.assertNotIn(str(draft_root), output)
+
+    def test_cli_reports_content_contract_reason_without_echoing_input(self) -> None:
+        source = self.root / "invalid-content.json"
+        secret = "DO-NOT-ECHO-INVALID-BODY"
+        source.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "contractVersion": "whiteboard-content-input-v1",
+                    "inputMode": "text",
+                    "topic": None,
+                    "body": secret,
+                    "rewritePolicy": "generate",
+                    "targetDurationSeconds": 30,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        draft_root = self.workspace_root / "drafts" / "invalid-content"
+
+        exit_code, result, output = self._run_main(
+            [
+                "contentDrafting",
+                "--draft-root", str(draft_root),
+                "--content-input", str(source),
+            ]
+        )
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(result["reasonCode"], "content_input_invalid")
+        self.assertNotIn(secret, output)
+        self.assertNotIn(str(source), output)
+
+    def test_cli_reports_argument_reason_instead_of_generic_error(self) -> None:
+        draft_root = self.workspace_root / "drafts" / "missing-input"
+        exit_code, result, output = self._run_main(
+            ["contentDrafting", "--draft-root", str(draft_root)]
+        )
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(result["reasonCode"], "invalid_arguments")
+        self.assertIn("命令参数组合无效", result["message"])
+        self.assertNotIn(str(draft_root), output)
 
 
 if __name__ == "__main__":

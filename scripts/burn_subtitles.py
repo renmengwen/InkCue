@@ -33,8 +33,10 @@ try:
         SUBTITLE_STYLE,
         SubtitleDeliveryError,
         SubtitleStaleError,
+        build_subtitle_only_clean_master_reuse,
         compile_ass,
         compute_final_identity,
+        current_timing_plan_record,
         find_subtitle_gap,
         preflight_subtitles,
         select_authoritative_srt,
@@ -43,6 +45,11 @@ try:
         subtitle_identity,
     )
     from .cover_frame import attach_cover_manifest, attach_cover_review_manifest, cover_record
+    from .background_music import (
+        BGM_MIX_CONTRACT_VERSION,
+        BackgroundMusicError,
+        load_background_music_plan,
+    )
 except ImportError:  # pragma: no cover - direct script execution
     from project_workspace import (
         Project,
@@ -62,8 +69,10 @@ except ImportError:  # pragma: no cover - direct script execution
         SUBTITLE_STYLE,
         SubtitleDeliveryError,
         SubtitleStaleError,
+        build_subtitle_only_clean_master_reuse,
         compile_ass,
         compute_final_identity,
+        current_timing_plan_record,
         find_subtitle_gap,
         preflight_subtitles,
         select_authoritative_srt,
@@ -72,6 +81,11 @@ except ImportError:  # pragma: no cover - direct script execution
         subtitle_identity,
     )
     from cover_frame import attach_cover_manifest, attach_cover_review_manifest, cover_record
+    from background_music import (
+        BGM_MIX_CONTRACT_VERSION,
+        BackgroundMusicError,
+        load_background_music_plan,
+    )
 
 
 DELIVERY_SCHEMA_VERSION = 1
@@ -283,6 +297,81 @@ def _record_matches_media(record: Mapping[str, Any], media: Mapping[str, Any], *
     )
 
 
+def _background_music_reuse_binding(project: Project) -> dict[str, Any]:
+    plan = load_background_music_plan(project)
+    if not plan["enabled"]:
+        return {"enabled": False}
+    return {
+        "enabled": True,
+        "assetFile": plan["asset"],
+        "assetSha256": plan["assetSha256"],
+        "title": plan["title"],
+        "artist": plan["artist"],
+        "license": plan["license"],
+        "gainDb": plan["gainDb"],
+        "fadeInMs": plan["fadeInMs"],
+        "fadeOutMs": plan["fadeOutMs"],
+        "loop": plan["loop"],
+        "mixContractVersion": BGM_MIX_CONTRACT_VERSION,
+    }
+
+
+def _assert_clean_manifest_binding(
+    clean_record: Any,
+    clean_media: Mapping[str, Any],
+    *,
+    expected_frames: int,
+) -> Mapping[str, Any]:
+    if not isinstance(clean_record, Mapping):
+        raise SubtitleStaleError("delivery cleanVideo 缺失；必须先生成 clean master")
+    if (
+        clean_record.get("file") != "output/final-video-only.mp4"
+        or clean_record.get("sha256") != clean_media.get("sha256")
+        or clean_record.get("bytes") != clean_media.get("bytes")
+        or clean_record.get("durationMs") != clean_media.get("durationMs")
+    ):
+        raise SubtitleStaleError("delivery cleanVideo 与正式 clean master 字节不一致")
+    recorded_frames = clean_record.get("frameCount")
+    if recorded_frames is not None and recorded_frames != expected_frames:
+        raise SubtitleStaleError("delivery cleanVideo.frameCount 与 current timing 不一致")
+    validation = clean_record.get("technicalValidation")
+    if not isinstance(validation, Mapping) or validation.get("validated") is not True:
+        raise SubtitleStaleError("delivery cleanVideo 缺少技术验证证据")
+    return clean_record
+
+
+def _assert_reuse_audio_and_bgm_unchanged(
+    project: Project,
+    manifest: Mapping[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    final = manifest.get("final")
+    if not isinstance(final, Mapping) or not final:
+        raise SubtitleStaleError("字幕层复用需要上一版 final identity 证明音频/BGM 未变化")
+    identity_inputs = final.get("identityInputs")
+    if not isinstance(identity_inputs, Mapping):
+        raise SubtitleStaleError("上一版 final 缺少 identityInputs")
+    if project.voiceover_mode == "disabled":
+        audio_sha = ""
+    else:
+        audio_path = project.path("audio/narration.wav")
+        if not audio_path.is_file():
+            raise SubtitleStaleError("current narration.wav 缺失")
+        audio_sha = sha256_file(audio_path)
+    if identity_inputs.get("audioSha256") != audio_sha:
+        raise SubtitleStaleError("current narration 音频字节已变化，不能只重烧字幕")
+
+    bgm = _background_music_reuse_binding(project)
+    previous_bgm = final.get("backgroundMusic")
+    if bgm["enabled"]:
+        expected_previous = {key: value for key, value in bgm.items() if key != "enabled"}
+        expected_previous["projectField"] = "project.json#backgroundMusic.enabled"
+        if previous_bgm != expected_previous:
+            raise SubtitleStaleError("current BGM 资产或混音参数已变化，不能只重烧字幕")
+    elif previous_bgm is not None:
+        raise SubtitleStaleError("current BGM 开关已变化，不能只重烧字幕")
+    return audio_sha, bgm
+
+
 def _reuse_current_burn(
     *,
     project: Project,
@@ -454,15 +543,53 @@ def burn_project(
         if isinstance(clean_record, Mapping)
         else None
     )
+    current_timing = current_timing_plan_record(project)
+    visual_timing = manifest.get("timingPlan")
+    recovering_stale_visual_timing = visual_timing != current_timing
     clean_validation = media.validate_video(
         clean_path,
         render_profile=render_profile,
         expected_frame_count=expected_frames,
         expected_audio_streams=0,
         deep_receipt=clean_receipt if isinstance(clean_receipt, Mapping) else None,
-        force_deep=force_deep,
+        force_deep=(force_deep or recovering_stale_visual_timing),
     )
-    if _reuse_current_burn(
+    clean_record = _assert_clean_manifest_binding(
+        clean_record,
+        clean_validation,
+        expected_frames=expected_frames,
+    )
+    reuse_evidence: Mapping[str, Any] | None = None
+    if recovering_stale_visual_timing:
+        if not isinstance(visual_timing, Mapping):
+            raise SubtitleStaleError("旧视觉 timingPlan 证据缺失，不能复用 clean master")
+        audio_sha, bgm = _assert_reuse_audio_and_bgm_unchanged(project, manifest)
+        reuse_evidence = build_subtitle_only_clean_master_reuse(
+            project=project,
+            visual_timing_plan=visual_timing,
+            current_timing_plan=current_timing,
+            clean_media=clean_validation,
+            subtitle_timeline_sha256=selection.timeline_sha256,
+            audio_sha256=audio_sha,
+            background_music=bgm,
+        )
+
+    refreshed_clean = {
+        **dict(clean_record),
+        **_media_record(clean_relative, clean_validation),
+        "frameCount": expected_frames,
+        "visualTimingPlanSha256": (
+            visual_timing.get("sha256")
+            if recovering_stale_visual_timing and isinstance(visual_timing, Mapping)
+            else current_timing["sha256"]
+        ),
+    }
+    if reuse_evidence is not None:
+        refreshed_clean["reuse"] = dict(reuse_evidence)
+    manifest["timingPlan"] = current_timing
+    manifest["cleanVideo"] = refreshed_clean
+
+    if reuse_evidence is None and _reuse_current_burn(
         project=project,
         manifest=manifest,
         selection=selection,
@@ -617,6 +744,8 @@ def burn_project(
             "burnContractVersion": BURN_CONTRACT_VERSION,
             "burnContractSha256": encoding["contractSha256"],
         }
+        manifest["timingPlan"] = current_timing
+        manifest["cleanVideo"] = refreshed_clean
         manifest["finalApproval"] = None
         if project.voiceover_mode == "disabled":
             timing_sha = _timing_plan_sha(project)
@@ -680,7 +809,7 @@ def main(
     except (ProjectValidationError, WorkspaceError) as exc:
         print(f"ERROR={exc}", file=sys.stderr)
         return 2
-    except SubtitleStaleError as exc:
+    except (SubtitleStaleError, BackgroundMusicError) as exc:
         print(f"ERROR={exc}", file=sys.stderr)
         return 5
     except SubtitleDeliveryError as exc:

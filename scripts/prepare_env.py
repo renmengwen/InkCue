@@ -35,13 +35,15 @@ BASE_DEPS: dict[str, str] = {
 EDGE_TTS_VERSION = "7.2.8"
 FUNASR_VERSION = "1.4.3"
 MODELSCOPE_VERSION = "1.39.1"
-TORCH_VERSION = "2.13.0"
+TORCH_VERSION = "2.11.0"
+TORCHAUDIO_VERSION = TORCH_VERSION
 NARRATION_ASR_CONTRACT = "narration-asr-models-v1"
 NARRATION_ASR_RECEIPT_NAME = "narration-asr-models.json"
 NARRATION_ASR_DEPS: dict[str, str] = {
     "funasr": f"funasr=={FUNASR_VERSION}",
     "modelscope": f"modelscope=={MODELSCOPE_VERSION}",
     "torch": f"torch=={TORCH_VERSION}",
+    "torchaudio": f"torchaudio=={TORCHAUDIO_VERSION}",
 }
 NARRATION_ASR_MODELS: tuple[dict[str, str], ...] = (
     {
@@ -68,6 +70,7 @@ FEATURE_DEPS: dict[str, dict[str, str]] = {
 DEPS = BASE_DEPS
 
 _PROBE_RESULT_PREFIX = "ENV_DEPENDENCY_PROBE="
+_NARRATION_ASR_RUNTIME_PROBE_PREFIX = "NARRATION_ASR_RUNTIME_PROBE="
 _MODEL_PREPARE_RESULT_PREFIX = "NARRATION_ASR_MODEL_PREPARE="
 _DEPENDENCY_PROBE_CODE = r"""
 import importlib
@@ -113,6 +116,46 @@ for model in models:
     ).resolve()
     resolved.append({**model, "path": str(path)})
 print("NARRATION_ASR_MODEL_PREPARE=" + json.dumps(resolved, separators=(",", ":")))
+"""
+_NARRATION_ASR_RUNTIME_PROBE_CODE = r"""
+import json
+
+import torch
+import torchaudio
+import torchaudio.compliance.kaldi as kaldi
+from funasr.frontends.wav_frontend import WavFrontend
+
+sample_count = 3200
+waveform = torch.zeros((1, sample_count), dtype=torch.float32)
+direct_features = kaldi.fbank(
+    waveform,
+    num_mel_bins=80,
+    sample_frequency=16000,
+    dither=0.0,
+)
+frontend = WavFrontend(fs=16000, n_mels=80, dither=0.0)
+frontend_features, frontend_lengths = frontend(
+    waveform,
+    torch.tensor([sample_count], dtype=torch.int64),
+)
+available = bool(
+    direct_features.ndim == 2
+    and direct_features.shape[0] > 0
+    and frontend_features.ndim == 3
+    and frontend_features.shape[1] > 0
+    and int(frontend_lengths[0]) > 0
+)
+print(
+    "NARRATION_ASR_RUNTIME_PROBE="
+    + json.dumps(
+        {
+            "available": available,
+            "torchVersion": torch.__version__.split("+")[0],
+            "torchaudioVersion": torchaudio.__version__.split("+")[0],
+        },
+        separators=(",", ":"),
+    )
+)
 """
 
 
@@ -339,6 +382,43 @@ def install(py: Path, packages: list[str], env: dict[str, str]) -> bool:
     return True
 
 
+def probe_narration_asr_runtime(py: Path, env: dict[str, str]) -> dict[str, object]:
+    """验证 FunASR 实际依赖的 torchaudio fbank 与 WavFrontend 能完成计算。"""
+
+    probe = subprocess.run(
+        [str(py), "-c", _NARRATION_ASR_RUNTIME_PROBE_CODE],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    if probe.returncode != 0:
+        detail = (probe.stderr or probe.stdout).strip().splitlines()
+        suffix = f": {detail[-1][:300]}" if detail else ""
+        raise RuntimeError(f"narration-asr 前端功能探测失败{suffix}")
+    payload_line = next(
+        (
+            line[len(_NARRATION_ASR_RUNTIME_PROBE_PREFIX) :]
+            for line in reversed(probe.stdout.splitlines())
+            if line.startswith(_NARRATION_ASR_RUNTIME_PROBE_PREFIX)
+        ),
+        None,
+    )
+    if payload_line is None:
+        raise RuntimeError("narration-asr 前端功能探测未返回结构化结果")
+    try:
+        payload = json.loads(payload_line)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("narration-asr 前端功能探测返回了无效 JSON") from exc
+    if not isinstance(payload, dict) or payload.get("available") is not True:
+        raise RuntimeError("narration-asr 前端无法完成 fbank 计算")
+    if payload.get("torchVersion") != TORCH_VERSION or payload.get(
+        "torchaudioVersion"
+    ) != TORCHAUDIO_VERSION:
+        raise RuntimeError("narration-asr torch/torchaudio 运行时版本不匹配")
+    return payload
+
+
 def _narration_asr_environment(
     env: dict[str, str],
     cache_root: Path,
@@ -549,6 +629,24 @@ def main(argv: list[str] | None = None) -> int:
                         reason="dependency_install_failed",
                     )
                 return 1
+
+        if args.feature == "narration-asr":
+            try:
+                runtime_probe = probe_narration_asr_runtime(py, env)
+            except RuntimeError as exc:
+                cache_root, receipt_path = narration_asr_paths(args.config)
+                _print_narration_asr_status(
+                    "BLOCKED",
+                    cache_root,
+                    receipt_path,
+                    reason="runtime_probe_failed",
+                )
+                print(f"[err] {exc}", file=sys.stderr)
+                return 1
+            print(
+                "[ok] narration-asr torchaudio/WavFrontend fbank "
+                f"({runtime_probe['torchVersion']}/{runtime_probe['torchaudioVersion']})"
+            )
 
         if args.feature == "narration-asr":
             cache_root, receipt_path = narration_asr_paths(args.config)

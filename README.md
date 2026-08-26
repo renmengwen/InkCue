@@ -326,24 +326,18 @@ runner 中断后可直接恢复，也可退回逐步 CLI；保留 current bindin
 
 ## 测试
 
-自动测试使用 fake provider，不会调用真实图片或语音服务：
+项目只保留 fast 自动回归；它使用 mock/fake、纯逻辑和静态合同测试，不启动 FFmpeg、ffprobe、真实媒体处理或真实 provider：
 
 ```powershell
 $runtimePython = "D:\SRTWhiteboard\runtime\.venv\Scripts\python.exe"
-& $runtimePython -m unittest discover -s tests -p "test_*.py"
+& $runtimePython scripts\run_test_suite.py
 ```
 
-自动测试通过不代表真实 provider、用户亲自验收或 AI 代理验收通过。
+runner 使用显式模块 allowlist，并让每个模块在独立 Python 子进程中串行运行；不要直接执行全目录 `unittest discover`。每个子进程都有超时，输出受限，首个失败或超时会立即停止。
 
-测试/CI 报告必须分别标记三类状态：本地 fake/fixture 的自动 `PASS`、真实图片或语音 provider/媒体不可用时的 `SKIP` 或 `BLOCKED`，以及尚未由当前批准主体确认的质量 Gate（`待确认`）。fixture 的通过不能冒充真实 provider、真实媒体、用户亲自批准或 AI 代理批准。
+自动测试通过不代表真实 provider、真实媒体、用户亲自验收或 AI 代理验收通过。
 
-固定场景 benchmark 同样只属于第一类；例如：
-
-```powershell
-& $runtimePython benchmarks\run_scene_render_benchmark.py --fixture fixture-medium
-```
-
-该命令输出的 `PASS` 只覆盖仓库 fixture 的渲染、技术验证和恢复探针。真实 provider 未执行时必须另报 `SKIP`（外部条件不可用则报 `BLOCKED`），质量 Gate 必须保留为“待确认”且 `approvalWritten=false`。
+测试/CI 只能把本地 mock/fake/fixture 合同报告为自动 `PASS` 或 `FAIL`。真实 provider、真实媒体和质量 Gate 均在自动测试范围之外，必须分别标记为“未执行”或“待确认”，不能由 fixture 结果推断通过。
 
 ## 已知限制
 

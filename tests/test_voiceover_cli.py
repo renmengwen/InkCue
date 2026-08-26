@@ -56,9 +56,14 @@ class VoiceoverCliTests(unittest.TestCase):
             voice_module, "active_provider_id", return_value="edge-tts"
         )
         cls._provider_patcher.start()
+        cls._asr_preflight_patcher = mock.patch.object(
+            voice_module, "_preflight_narration_asr", return_value=None
+        )
+        cls._asr_preflight_patcher.start()
 
     @classmethod
     def tearDownClass(cls) -> None:
+        cls._asr_preflight_patcher.stop()
         cls._provider_patcher.stop()
         cls._drive_patcher.stop()
         cls._temporary_root.cleanup()
@@ -130,7 +135,12 @@ class VoiceoverCliTests(unittest.TestCase):
         )
         return identity, adapter
 
-    def publish_alignment(self, project) -> str:
+    def publish_alignment(
+        self,
+        project,
+        *,
+        cue_boundaries_ms: list[int] | None = None,
+    ) -> str:
         manifest = json.loads(
             project.path("manifests/voice-manifest.json").read_text(encoding="utf-8")
         )
@@ -139,9 +149,15 @@ class VoiceoverCliTests(unittest.TestCase):
             project.path("source/source.srt").read_text(encoding="utf-8-sig")
         )
         asr_cues = []
+        boundaries = cue_boundaries_ms or [
+            index * duration_ms // len(source_cues)
+            for index in range(len(source_cues) + 1)
+        ]
+        if len(boundaries) != len(source_cues) + 1:
+            raise AssertionError("cue_boundaries_ms 数量无效")
         for index, cue in enumerate(source_cues):
-            start_ms = index * duration_ms // len(source_cues)
-            end_ms = (index + 1) * duration_ms // len(source_cues)
+            start_ms = boundaries[index]
+            end_ms = boundaries[index + 1]
             asr_cues.append(
                 {
                     "originalIndex": index + 1,
@@ -171,6 +187,138 @@ class VoiceoverCliTests(unittest.TestCase):
             line.split("=", 1)[1]
             for line in output.getvalue().splitlines()
             if line.startswith("FULL_IDENTITY=")
+        )
+
+    def test_pending_audio_timeline_allows_only_voice_recovery_and_approval_rolls_back(self) -> None:
+        project = self.make_project()
+        self.sample_and_approve(project)
+        self.assertEqual(
+            voice_main(
+                ["full", "--project", str(project.root)],
+                adapter=FakeProviderAdapter(canonical_wav_bytes(400), "audio/wav"),
+            ),
+            0,
+        )
+        first_identity = self.publish_alignment(project)
+        self.assertEqual(
+            voice_main(
+                [
+                    "approve-full",
+                    "--project",
+                    str(project.root),
+                    "--identity-hash",
+                    first_identity,
+                    "--review-policy",
+                    "user_first",
+                ]
+            ),
+            0,
+        )
+
+        second_identity = self.publish_alignment(
+            project,
+            cue_boundaries_ms=[0, 100, 400],
+        )
+        self.assertNotEqual(second_identity, first_identity)
+        with self.assertRaisesRegex(
+            workspace_module.ProjectValidationError,
+            "audio/timeline.json",
+        ):
+            workspace_module.load_project(project.root)
+        pending = workspace_module.load_project(
+            project.root,
+            allow_pending_audio_timeline=True,
+        )
+        self.assertTrue(pending.pending_audio_timeline)
+
+        status_output = io.StringIO()
+        with redirect_stdout(status_output):
+            self.assertEqual(
+                voice_main(["status", "--project", str(project.root)]),
+                0,
+            )
+        self.assertTrue(
+            json.loads(status_output.getvalue())["pendingAudioTimeline"]
+        )
+        self.assertEqual(validate_main(["--project", str(project.root)]), 0)
+        # 普通旁白生成命令仍使用严格 loader，不得借 pending 模式继续写入。
+        self.assertEqual(
+            voice_main(
+                ["full", "--project", str(project.root)],
+                adapter=FakeProviderAdapter(canonical_wav_bytes(400), "audio/wav"),
+            ),
+            2,
+        )
+
+        timing_path = project.path("planning/timing-plan.json")
+        manifest_path = project.path("manifests/voice-manifest.json")
+        timing_before = timing_path.read_bytes()
+        manifest_before = manifest_path.read_bytes()
+        self.assertEqual(
+            voice_main(
+                [
+                    "approve-full",
+                    "--project",
+                    str(project.root),
+                    "--identity-hash",
+                    "f" * 64,
+                    "--review-policy",
+                    "user_first",
+                ]
+            ),
+            5,
+        )
+        self.assertEqual(timing_path.read_bytes(), timing_before)
+        self.assertEqual(manifest_path.read_bytes(), manifest_before)
+
+        with mock.patch.object(
+            voice_module,
+            "_write_manifest",
+            side_effect=OSError("模拟 manifest 提交失败"),
+        ):
+            self.assertEqual(
+                voice_main(
+                    [
+                        "approve-full",
+                        "--project",
+                        str(project.root),
+                        "--identity-hash",
+                        second_identity,
+                        "--review-policy",
+                        "user_first",
+                    ]
+                ),
+                2,
+            )
+        self.assertEqual(timing_path.read_bytes(), timing_before)
+        self.assertEqual(manifest_path.read_bytes(), manifest_before)
+        self.assertTrue(
+            workspace_module.load_project(
+                project.root,
+                allow_pending_audio_timeline=True,
+            ).pending_audio_timeline
+        )
+
+        self.assertEqual(
+            voice_main(
+                [
+                    "approve-full",
+                    "--project",
+                    str(project.root),
+                    "--identity-hash",
+                    second_identity,
+                    "--review-policy",
+                    "user_first",
+                ]
+            ),
+            0,
+        )
+        committed = workspace_module.load_project(project.root)
+        self.assertFalse(committed.pending_audio_timeline)
+        committed_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            committed_manifest["fullApproval"]["identityHash"],
+            second_identity,
         )
 
     def test_sample_gate_identity_and_full_technical_validation_do_not_auto_approve(self) -> None:
@@ -271,6 +419,34 @@ class VoiceoverCliTests(unittest.TestCase):
         with self.assertRaisesRegex(workspace_module.ProjectValidationError, "不一致"):
             workspace_module.resolve_project_review_policy(project, "user_first")
         self.assertNotIn("reviewIdentityHash", manifest["fullApproval"])
+
+    def test_full_asr_preflight_failure_never_calls_provider(self) -> None:
+        project = self.make_project()
+        self.sample_and_approve(project)
+        adapter = FakeProviderAdapter(canonical_wav_bytes(400), "audio/wav")
+        calls = 0
+
+        def fail_preflight() -> None:
+            nonlocal calls
+            calls += 1
+            raise voice_module.VoiceoverStateError("fixture narration-ASR unavailable")
+
+        self.assertEqual(
+            voice_main(
+                ["full", "--project", str(project.root)],
+                adapter=adapter,
+                asr_preflight=fail_preflight,
+            ),
+            2,
+        )
+        self.assertEqual(calls, 1)
+        self.assertEqual(adapter.requests, [])
+        manifest = json.loads(
+            project.path("manifests/voice-manifest.json").read_text(encoding="utf-8")
+        )
+        self.assertFalse(
+            any(run.get("kind") in {"full", "full-retry"} for run in manifest["runs"])
+        )
 
     def test_full_can_inject_local_asr_runner_and_publish_alignment_in_one_cli_action(self) -> None:
         project = self.make_project()

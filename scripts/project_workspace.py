@@ -230,6 +230,7 @@ class Project:
     metadata: dict[str, Any]
     plan: dict[str, Any]
     timing_plan: dict[str, Any]
+    pending_audio_timeline: bool = False
 
     @property
     def project_id(self) -> str:
@@ -1154,7 +1155,8 @@ def _load_persisted_timing_plan(
     *,
     metadata: Mapping[str, Any],
     generation_plan: Mapping[str, Any],
-) -> dict[str, Any]:
+    allow_pending_audio_timeline: bool = False,
+) -> tuple[dict[str, Any], bool]:
     path = safe_project_path(root, "planning/timing-plan.json")
     try:
         timing_plan = json.loads(path.read_text(encoding="utf-8"))
@@ -1169,6 +1171,7 @@ def _load_persisted_timing_plan(
         render_profile=metadata["renderProfile"],
         generation_scenes=generation_plan["scenes"],
     )
+    pending_audio_timeline = False
     if isinstance(active, dict):
         if active.get("kind") == "source-srt":
             expected = _build_source_timing_plan(
@@ -1182,12 +1185,86 @@ def _load_persisted_timing_plan(
                 raise ProjectValidationError("source timing plan 与 current SRT/语义场景的确定性结果不一致")
         elif active.get("kind") in {"edge-tts-audio-timeline", "audio-authoritative-timeline"}:
             active_path = safe_project_path(root, active["file"])
-            if not active_path.is_file() or sha256_file(active_path) != active["sha256"]:
+            if not active_path.is_file():
                 raise ProjectValidationError("timing plan 绑定的 audio/timeline.json 缺失或 SHA-256 不一致")
-    return timing_plan
+            if sha256_file(active_path) != active["sha256"]:
+                if not allow_pending_audio_timeline:
+                    raise ProjectValidationError(
+                        "timing plan 绑定的 audio/timeline.json 缺失或 SHA-256 不一致"
+                    )
+                _validate_pending_audio_timeline_binding(
+                    root,
+                    metadata=metadata,
+                    timeline_path=active_path,
+                )
+                # publish-alignment 会先发布待审阅的新 audio timeline，随后才由
+                # approve-full 把正式 timing plan 切换到它。只有旁白状态/验证/批准
+                # 命令显式请求本模式时，才允许读取这一种受限的待批准状态。
+                pending_audio_timeline = True
+    return timing_plan, pending_audio_timeline
 
 
-def load_project(project_root: str | Path) -> Project:
+def _validate_pending_audio_timeline_binding(
+    root: Path,
+    *,
+    metadata: Mapping[str, Any],
+    timeline_path: Path,
+) -> None:
+    """确认 SHA 漂移来自正式 publish-alignment，而不是任意 timeline 篡改。"""
+
+    manifest_path = safe_project_path(root, "manifests/voice-manifest.json")
+    narration_path = safe_project_path(root, "audio/narration.srt")
+    audio_path = safe_project_path(root, "audio/narration.wav")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        timeline = json.loads(timeline_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ProjectValidationError(f"pending audio timeline 证据不可读: {exc}") from exc
+    timeline_sha = sha256_file(timeline_path)
+    timeline_ref = manifest.get("timeline") if isinstance(manifest, dict) else None
+    narration_ref = manifest.get("narrationSrt") if isinstance(manifest, dict) else None
+    composite_ref = manifest.get("composite") if isinstance(manifest, dict) else None
+    approval = manifest.get("fullApproval") if isinstance(manifest, dict) else None
+    if (
+        manifest.get("projectId") != metadata["projectId"]
+        or not isinstance(timeline_ref, dict)
+        or timeline_ref.get("status") != "validated"
+        or timeline_ref.get("relativePath") != "audio/timeline.json"
+        or timeline_ref.get("sha256") != timeline_sha
+        or not isinstance(narration_ref, dict)
+        or narration_ref.get("status") != "validated"
+        or narration_ref.get("relativePath") != "audio/narration.srt"
+        or not isinstance(composite_ref, dict)
+        or composite_ref.get("status") != "validated"
+        or composite_ref.get("relativePath") != "audio/narration.wav"
+        or not isinstance(approval, dict)
+        or approval.get("approved") is not False
+        or approval.get("identityHash") is not None
+    ):
+        raise ProjectValidationError("pending audio timeline 缺少 current publish-alignment manifest 绑定")
+    if not narration_path.is_file() or not audio_path.is_file():
+        raise ProjectValidationError("pending audio timeline 缺少 current narration SRT 或 WAV")
+    if (
+        narration_ref.get("sha256") != sha256_file(narration_path)
+        or composite_ref.get("sha256") != sha256_file(audio_path)
+    ):
+        raise ProjectValidationError("pending audio timeline 的 narration SRT/WAV SHA-256 已 stale")
+    if (
+        not isinstance(timeline, dict)
+        or timeline.get("projectId") != metadata["projectId"]
+        or timeline.get("sourceSrt", {}).get("sha256") != metadata["source"]["sha256"]
+        or timeline.get("audio", {}).get("sha256") != composite_ref.get("sha256")
+        or timeline.get("narrationSrt", {}).get("file") != "audio/narration.srt"
+        or timeline.get("narrationSrt", {}).get("sha256") != narration_ref.get("sha256")
+    ):
+        raise ProjectValidationError("pending audio timeline 内容未绑定 current 项目/WAV/SRT")
+
+
+def load_project(
+    project_root: str | Path,
+    *,
+    allow_pending_audio_timeline: bool = False,
+) -> Project:
     root = _resolved(Path(project_root))
     if not root.is_dir():
         raise ProjectValidationError(f"项目目录不存在: {root}")
@@ -1210,9 +1287,21 @@ def load_project(project_root: str | Path) -> Project:
             render_profile=FIXED_RENDER_PROFILE,
             generation_scenes=plan["scenes"],
         )
+        pending_audio_timeline = False
     else:
-        timing_plan = _load_persisted_timing_plan(root, metadata=metadata, generation_plan=plan)
-    return Project(root=root, metadata=metadata, plan=plan, timing_plan=timing_plan)
+        timing_plan, pending_audio_timeline = _load_persisted_timing_plan(
+            root,
+            metadata=metadata,
+            generation_plan=plan,
+            allow_pending_audio_timeline=allow_pending_audio_timeline,
+        )
+    return Project(
+        root=root,
+        metadata=metadata,
+        plan=plan,
+        timing_plan=timing_plan,
+        pending_audio_timeline=pending_audio_timeline,
+    )
 
 
 def upgrade_project(

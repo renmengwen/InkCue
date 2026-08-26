@@ -17,7 +17,9 @@ description: 将主题、正文或 SRT 制作成暖米黄纸张底、按叙事�
 | `topic` | 仅 `generate` | 自动读取 `activeProvider` |
 | `text` | `preserve | polish` | 自动读取 `activeProvider` |
 
-`topic + preserve/polish`、`text + generate` 非法。非 SRT 必须有 15–600 秒 `targetDurationSeconds`；缺失时可建议 60 秒，但要与其他缺失配置一次性展示并等待确认。`voiceoverMode` 不属于用户选择项：除非用户明确要求静音，否则必须读取 skill 根目录 `config/voice-providers.local.json` 的 `activeProvider`，规范化为 `edge-tts`、`minimax` 或 `doubao` 后自动冻结。不得询问用户在 Edge TTS、MiniMax 与豆包语音之间选择，也不得从项目目录、旧项目 manifest、命令行 provider 参数或对话回复读取旁白 provider。
+用户明确说“新任务”“不要沿用旧任务”或同义表达时，该意图立即覆盖任何基于同名目录、相似输入或历史 artifact 的恢复推断：阶段 0 使用新的 `draft-root`，建项走新建路径且不得使用 `--resume`。只有用户明确要求继续某个既有项目时，才进入恢复路径。
+
+`topic + preserve/polish`、`text + generate` 非法。非 SRT 必须有 15–600 秒 `targetDurationSeconds`；缺失时可建议 60 秒，但要与其他缺失配置一次性展示并等待确认。`voiceoverMode` 不属于用户选择项：除非用户明确要求静音，否则必须通过 `voice_provider_config.py status` 的脱敏接口读取 active provider，规范化为 `edge-tts`、`minimax` 或 `doubao` 后自动冻结；禁止用 shell、文件读取工具或临时代码直接读取、打印、转述任何 `config/*.local.json` 原文。不得询问用户在 Edge TTS、MiniMax 与豆包语音之间选择，也不得从项目目录、旧项目 manifest、命令行 provider 参数或对话回复读取旁白 provider。
 
 topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经只读校验后，coordinator 生成审阅 artifact。内容、target、rewritePolicy、由 activeProvider 派生的 voiceoverMode、cue→scene、分镜、图片提示词、是否加入 BGM、阶段 0 后是否委托 AI 代理批准，以及 `imageGenerationMode`，必须通过一次“内容与制作方案联合确认”同时冻结；确认前不得运行 `prepare_source.py`、创建正式项目或写批准。review 中可以展示“当前已采用：豆包语音/MiniMax/Edge TTS”供用户知情查看，但不把旁白 provider 变成待选择问题。`backgroundMusic.enabled` 与 `agentApprovalEnabled` 是两个独立布尔选择：BGM 只询问“加入/不加入”，加入时固定使用内置 CC0 轻音乐和 `-15 dB` 预设；代理批准只询问“逐阶段由我确认/委托 AI 自动判断并推进”，二者都不增加独立 Gate。
 
@@ -153,6 +155,7 @@ python scripts/prepare_env.py
 <ENV_PY> scripts/upgrade_project.py --project <项目根目录> --to-schema 2
 
 # 图片、线稿、语音
+<ENV_PY> scripts/voice_provider_config.py status
 <ENV_PY> scripts/generate_images.py --project <项目根目录>
 <ENV_PY> scripts/generate_images.py --project <项目根目录> --host-results <绝对JSON路径>
 <ENV_PY> scripts/validate_generated_images.py --project <项目根目录> --review-policy user_first

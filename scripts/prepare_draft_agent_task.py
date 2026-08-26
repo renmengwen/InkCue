@@ -73,6 +73,25 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _CUE_ID_RE = re.compile(r"^cue-[0-9]{3}$")
 _SCENE_ID_RE = re.compile(r"^scene-[0-9]{2}$")
 
+_SAFE_ERROR_MESSAGES = {
+    "invalid_arguments": "命令参数组合无效；请按对应 role 提供且仅提供所需输入。",
+    "draft_scope_invalid": "draft-root 必须是当前 workspace 的 drafts 下一级目录。",
+    "managed_input_path_conflict": (
+        "外部输入不能与 draft-root 内由脚本管理的文件同路径；"
+        "请将输入移到 draft-root 外或改用其他文件名。"
+    ),
+    "input_unreadable": "输入文件不存在、不可读，或不是有效的 UTF-8 JSON/SRT。",
+    "content_input_invalid": (
+        "content input 不符合 whiteboard-content-input-v1 或 activeProvider 绑定要求。"
+    ),
+    "revision_input_invalid": "修订输入、上一版草案或二者的 identity 绑定无效。",
+    "storyboard_input_invalid": "传统 SRT 输入或分幕时长参数无效。",
+    "managed_state_conflict": "draft-root 中已有脚本管理文件，且内容与本次输入不一致。",
+    "attempt_conflict": "指定的 draft attempt 已存在；请使用新的 run/attempt。",
+    "workspace_invalid": "workspace 配置不可用或不符合当前 skill 合同。",
+    "draft_agent_prepare_invalid": "draft task 准备失败；输入或当前 draft 状态无效。",
+}
+
 CONTENT_ROLE_CONTRACT = """# contentDrafting frozen role contract
 
 - 只读取 task.json 的 inputs；正文不从 prompt 或主对话补取。
@@ -126,12 +145,45 @@ STORYBOARD_ROLE_CONTRACT = """# storyboardPlanning frozen role contract
 
 
 class PrepareError(ValueError):
-    pass
+    def __init__(
+        self,
+        detail: str,
+        *,
+        reason_code: str = "draft_agent_prepare_invalid",
+    ) -> None:
+        super().__init__(detail)
+        self.reason_code = reason_code
 
 
 class JsonArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
-        raise PrepareError(message)
+        raise PrepareError(message, reason_code="invalid_arguments")
+
+
+def _managed_path_conflicts(source: Path, target: Path) -> bool:
+    """Windows 路径按平台规则比较，避免输入占用脚本管理的正式路径。"""
+
+    return os.path.normcase(str(source)) == os.path.normcase(
+        str(target.resolve(strict=False))
+    )
+
+
+def _safe_failure(reason_code: str) -> dict[str, Any]:
+    safe_code = (
+        reason_code
+        if reason_code in _SAFE_ERROR_MESSAGES
+        else "draft_agent_prepare_invalid"
+    )
+    return {
+        "contractVersion": PREPARE_CONTRACT_VERSION,
+        "ok": False,
+        "exitCode": 2,
+        "error": "draft_agent_prepare_invalid",
+        "reasonCode": safe_code,
+        "message": _SAFE_ERROR_MESSAGES[safe_code],
+        "formalPublished": False,
+        "approvalWritten": False,
+    }
 
 
 def _normalise_text(value: Any, *, label: str, allow_null: bool = False) -> str | None:
@@ -372,9 +424,15 @@ def _write_once_json(path: Path, value: Mapping[str, Any]) -> None:
         try:
             current = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise PrepareError(f"已存在的 {path.name} 不可读") from exc
+            raise PrepareError(
+                f"已存在的 {path.name} 不可读",
+                reason_code="managed_state_conflict",
+            ) from exc
         if current != dict(value):
-            raise PrepareError(f"拒绝覆盖内容不同的 {path.name}")
+            raise PrepareError(
+                f"拒绝覆盖内容不同的 {path.name}",
+                reason_code="managed_state_conflict",
+            )
         return
     write_json_atomic(path, value)
 
@@ -382,7 +440,10 @@ def _write_once_json(path: Path, value: Mapping[str, Any]) -> None:
 def _write_once_bytes(path: Path, payload: bytes) -> None:
     if path.exists():
         if path.read_bytes() != payload:
-            raise PrepareError(f"拒绝覆盖内容不同的 {path.name}")
+            raise PrepareError(
+                f"拒绝覆盖内容不同的 {path.name}",
+                reason_code="managed_state_conflict",
+            )
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     candidate = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -400,12 +461,21 @@ def _load_revision_sources(
     args: argparse.Namespace,
     draft_root: Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    base_source = Path(getattr(args, "base_content_draft")).resolve(strict=True)
+    try:
+        base_source = Path(getattr(args, "base_content_draft")).resolve(strict=True)
+    except OSError as exc:
+        raise PrepareError(
+            "base content draft 不可读",
+            reason_code="revision_input_invalid",
+        ) from exc
     draft_root_resolved = draft_root.resolve(strict=False)
     try:
         relative = base_source.relative_to(draft_root_resolved)
     except ValueError as exc:
-        raise PrepareError("base content draft 必须来自当前 draft-root 的旧 attempt") from exc
+        raise PrepareError(
+            "base content draft 必须来自当前 draft-root 的旧 attempt",
+            reason_code="revision_input_invalid",
+        ) from exc
     parts = relative.parts
     if (
         len(parts) != 6
@@ -414,34 +484,86 @@ def _load_revision_sources(
         or re.fullmatch(r"attempt-[0-9]{4}", parts[4]) is None
         or parts[5] != "candidate.content-draft.json"
     ):
-        raise PrepareError("base content draft 必须是当前 draft-root 中旧 attempt 的候选")
-    base_draft = validate_content_draft(_read_json(base_source))
-    request_source = Path(getattr(args, "revision_request")).resolve(strict=True)
-    revision_request = validate_revision_request(
-        _read_json(request_source),
-        base_draft=base_draft,
-    )
+        raise PrepareError(
+            "base content draft 必须是当前 draft-root 中旧 attempt 的候选",
+            reason_code="revision_input_invalid",
+        )
+    try:
+        base_draft = validate_content_draft(_read_json(base_source))
+        request_source = Path(getattr(args, "revision_request")).resolve(strict=True)
+        revision_request = validate_revision_request(
+            _read_json(request_source),
+            base_draft=base_draft,
+        )
+    except (PrepareError, ContentSourceError, OSError) as exc:
+        raise PrepareError(
+            "revision source 无效",
+            reason_code="revision_input_invalid",
+        ) from exc
     return base_draft, revision_request
 
 
 def _prepare_input(args: argparse.Namespace, draft_root: Path) -> tuple[str, Path, dict[str, str | None], str]:
     if args.role == "contentDrafting":
-        source = Path(args.content_input).resolve(strict=True)
-        normalised = validate_content_input(_read_json(source))
         target = draft_root / "content-input.json"
+        try:
+            source = Path(args.content_input).resolve(strict=True)
+        except OSError as exc:
+            raise PrepareError(
+                "content input 不可读",
+                reason_code="input_unreadable",
+            ) from exc
+        if _managed_path_conflicts(source, target):
+            raise PrepareError(
+                "content input 与 managed content-input.json 冲突",
+                reason_code="managed_input_path_conflict",
+            )
+        try:
+            normalised = validate_content_input(_read_json(source))
+        except PrepareError as exc:
+            raise PrepareError(
+                "content input 无效",
+                reason_code="content_input_invalid",
+            ) from exc
         _write_once_json(target, normalised)
         sha = sha256_file(target)
         return "content-draft", target, {"contentInputSha256": sha}, CONTENT_ROLE_CONTRACT
 
-    source = Path(args.source_srt).resolve(strict=True)
-    payload = source.read_bytes()
+    source_target = draft_root / "source.srt"
+    try:
+        source = Path(args.source_srt).resolve(strict=True)
+    except OSError as exc:
+        raise PrepareError(
+            "source SRT 不可读",
+            reason_code="input_unreadable",
+        ) from exc
+    if _managed_path_conflicts(source, source_target):
+        raise PrepareError(
+            "source SRT 与 managed source.srt 冲突",
+            reason_code="managed_input_path_conflict",
+        )
+    try:
+        payload = source.read_bytes()
+    except OSError as exc:
+        raise PrepareError(
+            "source SRT 不可读",
+            reason_code="input_unreadable",
+        ) from exc
     try:
         text = payload.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
-        raise PrepareError("source SRT 必须是 UTF-8/UTF-8 BOM") from exc
-    cues = parse_srt(text)
-    scenes = group_scenes(cues, args.target_sec, args.min_sec, args.max_sec)
-    source_target = draft_root / "source.srt"
+        raise PrepareError(
+            "source SRT 必须是 UTF-8/UTF-8 BOM",
+            reason_code="storyboard_input_invalid",
+        ) from exc
+    try:
+        cues = parse_srt(text)
+        scenes = group_scenes(cues, args.target_sec, args.min_sec, args.max_sec)
+    except (SrtValidationError, ValueError) as exc:
+        raise PrepareError(
+            "source SRT 或分幕参数无效",
+            reason_code="storyboard_input_invalid",
+        ) from exc
     parsed_target = draft_root / "parsed-srt.json"
     _write_once_bytes(source_target, payload)
     _write_once_json(parsed_target, {"cues": cues, "scenes": scenes})
@@ -461,20 +583,28 @@ def prepare_draft_task(args: argparse.Namespace) -> dict[str, Any]:
     draft_root = Path(args.draft_root).resolve(strict=False)
     expected_parent = (workspace.root / "drafts").resolve(strict=False)
     if draft_root.parent != expected_parent or not draft_root.name:
-        raise PrepareError("draft-root 必须是 workspace/drafts/<draft-id>")
+        raise PrepareError(
+            "draft-root 必须是 workspace/drafts/<draft-id>",
+            reason_code="draft_scope_invalid",
+        )
     revision_request_arg = getattr(args, "revision_request", None)
     base_content_draft_arg = getattr(args, "base_content_draft", None)
     if bool(revision_request_arg) != bool(base_content_draft_arg):
         raise PrepareError(
-            "--revision-request 与 --base-content-draft 必须成对提供"
+            "--revision-request 与 --base-content-draft 必须成对提供",
+            reason_code="invalid_arguments",
         )
     if args.role == "contentDrafting":
         if bool(revision_request_arg) == bool(args.content_input):
             raise PrepareError(
-                "contentDrafting 必须在初次输入与修订输入中二选一"
+                "contentDrafting 必须在初次输入与修订输入中二选一",
+                reason_code="invalid_arguments",
             )
     elif revision_request_arg or base_content_draft_arg:
-        raise PrepareError("storyboardPlanning 不接受 content revision 参数")
+        raise PrepareError(
+            "storyboardPlanning 不接受 content revision 参数",
+            reason_code="invalid_arguments",
+        )
     draft_root.mkdir(parents=True, exist_ok=True)
     revision_mode = (
         args.role == "contentDrafting"
@@ -497,7 +627,13 @@ def prepare_draft_task(args: argparse.Namespace) -> dict[str, Any]:
     task_id = args.task_id or task_id_default
     run_id = args.run_id or ("cd-" if args.role == "contentDrafting" else "sb-") + uuid.uuid4().hex[:12]
     context = TrustedTaskContext(workspace.root, draft_root, "draft", run_id, task_id, args.attempt)
-    context.task_dir.mkdir(parents=True, exist_ok=False)
+    try:
+        context.task_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError as exc:
+        raise PrepareError(
+            "draft attempt 已存在",
+            reason_code="attempt_conflict",
+        ) from exc
     if revision_mode:
         base_target = context.task_dir / "base.content-draft.json"
         revision_target = context.task_dir / "revision-request.json"
@@ -590,7 +726,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = parser.parse_args(argv)
         if args.attempt < 1:
-            raise PrepareError("attempt 必须是正整数")
+            raise PrepareError(
+                "attempt 必须是正整数",
+                reason_code="invalid_arguments",
+            )
         if args.role == "contentDrafting":
             initial_mode = bool(args.content_input) and not args.revision_request and not args.base_content_draft
             revision_mode = (
@@ -601,7 +740,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.source_srt or not (initial_mode or revision_mode):
                 raise PrepareError(
                     "contentDrafting 必须提供 --content-input，或成对提供 "
-                    "--revision-request 与 --base-content-draft"
+                    "--revision-request 与 --base-content-draft",
+                    reason_code="invalid_arguments",
                 )
         elif (
             not args.source_srt
@@ -609,12 +749,21 @@ def main(argv: list[str] | None = None) -> int:
             or args.revision_request
             or args.base_content_draft
         ):
-            raise PrepareError("storyboardPlanning 必须且只能提供 --source-srt")
+            raise PrepareError(
+                "storyboardPlanning 必须且只能提供 --source-srt",
+                reason_code="invalid_arguments",
+            )
         result = prepare_draft_task(args)
     except SystemExit as exc:
         return int(exc.code)
-    except (PrepareError, WorkspaceError, ContentSourceError, SrtValidationError, OSError, ValueError):
-        print(json.dumps({"contractVersion": PREPARE_CONTRACT_VERSION, "ok": False, "exitCode": 2, "error": "draft_agent_prepare_invalid"}, ensure_ascii=False))
+    except PrepareError as exc:
+        print(json.dumps(_safe_failure(exc.reason_code), ensure_ascii=False))
+        return 2
+    except WorkspaceError:
+        print(json.dumps(_safe_failure("workspace_invalid"), ensure_ascii=False))
+        return 2
+    except (ContentSourceError, SrtValidationError, OSError, ValueError):
+        print(json.dumps(_safe_failure("draft_agent_prepare_invalid"), ensure_ascii=False))
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0

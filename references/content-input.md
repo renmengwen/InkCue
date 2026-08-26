@@ -27,6 +27,8 @@ rewritePolicy = preserve | polish | generate
 
 topic/text 的权威顺序是：
 
+用户明确要求“新任务”或“不要沿用旧任务”时，coordinator 立即停止旧项目/旧 draft 的恢复推断，为阶段 0 分配新的 `draft-root`，后续只走新建项目命令；仅在用户明确指定续接既有项目时才允许恢复。该优先级不增加状态字段或恢复协议。
+
 1. 接收原始主题或正文，并冻结 `rewritePolicy`、`targetDurationSeconds`；在同一次联合确认中，让用户分别选择 BGM“加入/不加入”和后续“逐阶段由我确认/委托 AI 自动判断并推进”，对应 `backgroundMusic.enabled` 与 `agentApprovalEnabled` 两个独立布尔值。`voiceoverMode` 始终从 skill 根目录 `config/voice-providers.local.json` 的 `activeProvider` 派生。用户无需提供或选择 Edge TTS/MiniMax/豆包语音，编排层不得询问“旁白方式”。派生结果只可规范化为 `edge-tts`、`minimax` 或 `doubao`，并写入冻结的 content input/review，供用户知情查看。只有用户明确要求静音时，才走传统 SRT 的 `disabled` 显式入口。BGM 与代理批准选择都不进入 content draft schema；coordinator 在联合确认消息中展示两个选择，并在建项时分别写入 `project.json.backgroundMusic.enabled` 与顶层 `project.json.agentApprovalEnabled`。
 2. coordinator 运行 `prepare_draft_agent_task.py contentDrafting` 冻结 attempt 和 `preparedTask`，再直接根据当前宿主状态调用 `spawn_agent` 或 `followup`；脚本不参与 dispatch/fallback 决策。首次草案默认使用短上下文 child；真实派发不可用时才由具备相同能力的 coordinator fallback。所有路径使用同一 task/result 合同。
 3. coordinator 重验 result、SHA 与 candidate 合同后，从 `candidate.content-draft.json` 确定性生成不可变 Markdown 审阅 artifact。主窗口只发送文件链接、完整 identity、cue/scene 计数和短摘要，不把长正文、逐幕提示词或整份 Markdown 读回、转述或粘贴到聊天。
@@ -111,6 +113,8 @@ revision request 固定 `schemaVersion: 1`，只保存用户本轮真实要求�
 ```
 
 成功 stdout 是 `whiteboard-draft-agent-prepare-v2`，包含 `configuredAgentConcurrency`、宿主中立 `preparedTask`、`formalPublished:false` 与 `approvalWritten:false`。descriptor 只列冻结 task/role 的绝对路径和 SHA、唯一 attempt 根、result 路径、allowed outputs 与 required capabilities，不包含 `spawnAgentCall`、child slots、fallback 或 agentId。coordinator 收到后直接使用宿主协作工具；prepare 既不代表真实派发，也不代表 candidate 完成或用户批准。
+
+准备失败仍使用退出码 2，并输出稳定的 `error=draft_agent_prepare_invalid`；`reasonCode` 区分参数、draft scope、输入不可读、content/revision/SRT 合同、managed input 路径冲突及 attempt 冲突。`message` 只来自固定文案，不回显正文、输入值、本机绝对路径或底层异常。外部 `--content-input`/`--source-srt` 不得与 draft-root 中脚本管理的 `content-input.json`/`source.srt` 同路径。
 
 ### 人工确认前的只读草案校验
 

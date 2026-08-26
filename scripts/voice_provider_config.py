@@ -2,9 +2,11 @@
 """读取旁白 provider 配置；本地密钥只在进程内使用，绝不进入输出。"""
 from __future__ import annotations
 
+import argparse
 import copy
 import json
 from pathlib import Path
+import sys
 from typing import Any, Mapping
 
 try:
@@ -38,7 +40,7 @@ def _provider_key(providers: Mapping[str, Any], provider_id: str) -> str:
     for key in providers:
         if str(key).lower() == wanted:
             return str(key)
-    raise VoiceProviderConfigError(f"未找到语音 provider: {provider_id}")
+    raise VoiceProviderConfigError("未找到 active 语音 provider")
 
 
 def load_voice_provider_config(*, provider_id: str | None = None, root: Path | None = None) -> dict[str, Any]:
@@ -53,7 +55,7 @@ def load_voice_provider_config(*, provider_id: str | None = None, root: Path | N
     key = _provider_key(value["providers"], selected)
     config = copy.deepcopy(value["providers"][key])
     if not isinstance(config, dict):
-        raise VoiceProviderConfigError(f"provider {selected} 配置必须是对象")
+        raise VoiceProviderConfigError("active provider 配置必须是对象")
     normalized = key.lower()
     config["id"] = normalized
     config["configKey"] = key
@@ -166,4 +168,67 @@ def active_provider_id(*, root: Path | None = None) -> str:
     return normalized
 
 
-__all__ = ["VoiceProviderConfigError", "active_provider_id", "load_voice_provider_config"]
+def voice_provider_status(*, root: Path | None = None) -> dict[str, Any]:
+    """返回严格 allowlist 的 provider 状态，不暴露本地配置原文或凭据。"""
+
+    base = root or _root()
+    local = base / "config" / "voice-providers.local.json"
+    example = base / "config" / "voice-providers.example.json"
+    value = _load(local if local.is_file() else example)
+    selected = value.get("activeProvider")
+    if not isinstance(selected, str) or not selected.strip():
+        raise VoiceProviderConfigError("activeProvider 必须是非空字符串")
+    key = _provider_key(value["providers"], selected)
+    config = value["providers"][key]
+    if not isinstance(config, Mapping):
+        raise VoiceProviderConfigError("active provider 配置必须是对象")
+    provider = key.lower()
+    if provider not in {"edge-tts", "minimax", "doubao"}:
+        raise VoiceProviderConfigError(
+            "activeProvider 只允许 edge-tts、MiniMax 或 doubao"
+        )
+    voice = config.get("voice")
+    model = config.get("model")
+    if not isinstance(voice, str) or not voice.strip():
+        raise VoiceProviderConfigError("active provider voice 必须是非空字符串")
+    if model is not None and (not isinstance(model, str) or not model.strip()):
+        raise VoiceProviderConfigError("active provider model 必须是非空字符串或 null")
+    try:
+        rate = normalize_rate(config.get("rate", 0))
+    except VoiceoverValidationError as exc:
+        raise VoiceProviderConfigError(str(exc)) from exc
+    credentials_configured = provider == "edge-tts" or (
+        isinstance(config.get("apiKey"), str) and bool(config["apiKey"].strip())
+    )
+    return {
+        "provider": provider,
+        "model": model,
+        "voice": voice,
+        "rate": rate,
+        "credentialsConfigured": credentials_configured,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="只读输出脱敏语音 provider 状态")
+    parser.add_argument("command", choices=("status",))
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "status":
+            print(json.dumps(voice_provider_status(), ensure_ascii=False, sort_keys=True))
+        return 0
+    except VoiceProviderConfigError as exc:
+        print(f"[config] {exc}", file=sys.stderr)
+        return 2
+
+
+__all__ = [
+    "VoiceProviderConfigError",
+    "active_provider_id",
+    "load_voice_provider_config",
+    "voice_provider_status",
+]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
