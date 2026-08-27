@@ -204,6 +204,99 @@ class ImageGenerationCliTests(unittest.TestCase):
             content = (skill_root / relative).read_text(encoding="utf-8")
             self.assertNotIn("--provider " + "primary", content)
 
+    def test_scene_scope_is_explicit_validated_and_keeps_plan_order(self) -> None:
+        scenes = [
+            {
+                "sceneId": f"scene-{index:02d}",
+                "name": f"场景{index}",
+                "subtitleRange": {"startMs": (index - 1) * 1000, "endMs": index * 1000},
+                "sceneDurationMs": 1000,
+                "prompt": f"第{index}幕有明确主体",
+                "outputFile": f"scene-{index:02d}.png",
+            }
+            for index in range(1, 4)
+        ]
+        self.assertEqual(
+            [
+                scene["sceneId"]
+                for scene in generate_images._scoped_plan_scenes(
+                    scenes, ["scene-03", "scene-01"]
+                )
+            ],
+            ["scene-01", "scene-03"],
+        )
+        with self.assertRaisesRegex(generate_images.CliArgumentError, "不得重复"):
+            generate_images._scoped_plan_scenes(scenes, ["scene-01", "scene-01"])
+        with self.assertRaisesRegex(generate_images.CliArgumentError, "不属于 generation plan"):
+            generate_images._scoped_plan_scenes(scenes, ["scene-99"])
+
+    def test_scene_scope_only_requests_and_overwrites_selected_scene(self) -> None:
+        scenes = [
+            {
+                "sceneId": f"scene-{index:02d}",
+                "name": f"场景{index}",
+                "subtitleRange": {"startMs": (index - 1) * 1000, "endMs": index * 1000},
+                "sceneDurationMs": 1000,
+                "prompt": f"第{index}幕有明确主体",
+                "outputFile": f"scene-{index:02d}.png",
+            }
+            for index in range(1, 3)
+        ]
+        self._write_plan(scenes)
+        first_payload = self._image_payload()
+        first_client = mock.Mock()
+        first_client.generate.return_value = first_payload
+        with self._configured_workspace(generate_images), mock.patch.object(
+            generate_images, "verify_config_git_safety", return_value=[]
+        ), mock.patch.object(
+            generate_images, "load_provider_config", return_value=self._provider()
+        ), mock.patch.object(
+            generate_images, "ImagesGenerationsClient", return_value=first_client
+        ), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(generate_images.main(["--project", str(self.root)]), 0)
+
+        untouched_path = self.root / "scenes" / "scene-01.png"
+        selected_path = self.root / "scenes" / "scene-02.png"
+        untouched_hash = _sha256(untouched_path)
+        selected_hash = _sha256(selected_path)
+        replacement_buffer = io.BytesIO()
+        Image.new("RGB", (512, 512), "#8B3A2B").save(replacement_buffer, "PNG")
+        replacement = image_generation.ImagePayload(
+            data=replacement_buffer.getvalue(), source="b64_json", attempts=1
+        )
+        second_client = mock.Mock()
+        second_client.generate.return_value = replacement
+        stdout = io.StringIO()
+        with self._configured_workspace(generate_images), mock.patch.object(
+            generate_images, "verify_config_git_safety", return_value=[]
+        ), mock.patch.object(
+            generate_images, "load_provider_config", return_value=self._provider()
+        ), mock.patch.object(
+            generate_images, "ImagesGenerationsClient", return_value=second_client
+        ), contextlib.redirect_stdout(stdout):
+            exit_code = generate_images.main(
+                [
+                    "--project",
+                    str(self.root),
+                    "--scene-id",
+                    "scene-02",
+                    "--overwrite",
+                ]
+            )
+        summary = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 0, summary)
+        self.assertEqual(summary["targeted"], 1)
+        self.assertEqual(summary["skipped"], 1)
+        self.assertEqual(second_client.generate.call_count, 1)
+        self.assertEqual(_sha256(untouched_path), untouched_hash)
+        self.assertNotEqual(_sha256(selected_path), selected_hash)
+        manifest = json.loads(
+            (self.root / "manifests" / "generation-manifest.json").read_text(encoding="utf-8")
+        )
+        by_id = {scene["sceneId"]: scene for scene in manifest["scenes"]}
+        self.assertEqual(len(by_id["scene-01"]["attemptRecords"]), 1)
+        self.assertEqual(len(by_id["scene-02"]["attemptRecords"]), 2)
+
     def _image_payload(self) -> image_generation.ImagePayload:
         source_buffer = io.BytesIO()
         Image.new("RGB", (512, 512), "#F5EBD7").save(source_buffer, "PNG")

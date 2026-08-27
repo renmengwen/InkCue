@@ -38,7 +38,7 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-RENDER_CONTRACT_VERSION = "whiteboard-project-scene-render-v1"
+RENDER_CONTRACT_VERSION = "whiteboard-project-scene-render-v2"
 RENDER_MANIFEST_FILE = "manifests/render-manifest.json"
 FORMAL_CONTEXT_RECEIPT_CONTRACT_VERSION = "whiteboard-formal-validation-context-receipt-v1"
 FORMAL_CONTEXT_VALIDATOR_CONTRACT = "whiteboard-formal-validation-context-validator-v1"
@@ -868,6 +868,7 @@ def update_render_manifest(
     scene = context.timing_scene
     options = dict(render_options)
     identity = render_identity(context, render_options=options)
+    manifest["contractVersion"] = RENDER_CONTRACT_VERSION
     manifest["scenes"][context.scene_id] = {
         "renderIdentityHash": identity,
         "outputFile": context.output_path.relative_to(context.project.root).as_posix(),

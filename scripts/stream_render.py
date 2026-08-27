@@ -490,6 +490,153 @@ def _gradient_walk(cells: Sequence[tuple[int, int]]) -> list[tuple[int, int]]:
     return path
 
 
+_REVEAL_DIRECTIONS = {
+    "left-to-right",
+    "right-to-left",
+    "top-to-bottom",
+    "bottom-to-top",
+}
+
+
+def _validate_reveal_direction(direction: str) -> str:
+    if direction not in _REVEAL_DIRECTIONS:
+        choices = ", ".join(sorted(_REVEAL_DIRECTIONS))
+        raise ValueError(f"不支持的 reveal direction: {direction!r}；允许值：{choices}")
+    return direction
+
+
+def _cell_projection(cell: tuple[int, int], direction: str) -> int:
+    """Return monotonically increasing progress along ``direction``."""
+    row, col = cell
+    if direction == "left-to-right":
+        return col
+    if direction == "right-to-left":
+        return -col
+    if direction == "top-to-bottom":
+        return row
+    return -row
+
+
+def _cell_cross_projection(cell: tuple[int, int], direction: str) -> int:
+    """Stable tie-break axis perpendicular to the reveal direction."""
+    row, col = cell
+    if direction in {"left-to-right", "right-to-left"}:
+        return row
+    return col
+
+
+def _local_cell_density(
+    cell: tuple[int, int], cell_set: set[tuple[int, int]], radius: int = 1
+) -> int:
+    row, col = cell
+    return sum(
+        1
+        for dr in range(-radius, radius + 1)
+        for dc in range(-radius, radius + 1)
+        if (row + dr, col + dc) in cell_set
+    )
+
+
+def _directional_seed(
+    cells: Sequence[tuple[int, int]], direction: str
+) -> tuple[int, int]:
+    """
+    Pick a leading-edge contour cell instead of an arbitrary dense texture.
+
+    Directional progress is the hard first key.  At the same leading edge,
+    sparse contour cells win over dense hair/hatching, which makes the early
+    reveal establish the subject silhouette before local texture.
+    """
+    cell_set = set(cells)
+    return min(
+        cells,
+        key=lambda cell: (
+            _cell_projection(cell, direction),
+            _local_cell_density(cell, cell_set),
+            _cell_cross_projection(cell, direction),
+            cell[0],
+            cell[1],
+        ),
+    )
+
+
+def _directional_band_walk(
+    cells: Sequence[tuple[int, int]], direction: str
+) -> list[tuple[int, int]]:
+    """Walk one narrow spatial band while preserving local ink continuity."""
+    if not cells:
+        return []
+
+    direction = _validate_reveal_direction(direction)
+    cell_set = set(cells)
+    seed = _directional_seed(cells, direction)
+    visited: set[tuple[int, int]] = {seed}
+    path = [seed]
+    current = seed
+    prev_dir = (0, 0)
+
+    while len(visited) < len(cell_set):
+        neighbors = [
+            (row, col)
+            for dr in (-1, 0, 1)
+            for dc in (-1, 0, 1)
+            if (dr or dc)
+            and (row := current[0] + dr, col := current[1] + dc) in cell_set
+            and (row, col) not in visited
+        ]
+        if neighbors:
+            current_projection = _cell_projection(current, direction)
+
+            def neighbor_cost(cell: tuple[int, int]) -> tuple[int, int, int, int, int, int]:
+                projection = _cell_projection(cell, direction)
+                # A backward step is allowed only to finish a local contour in
+                # the same narrow band, and loses to every forward/level step.
+                regression = max(0, current_projection - projection)
+                step = (cell[0] - current[0], cell[1] - current[1])
+                turn = (step[0] - prev_dir[0]) ** 2 + (step[1] - prev_dir[1]) ** 2
+                local = sum(
+                    1
+                    for dr in (-1, 0, 1)
+                    for dc in (-1, 0, 1)
+                    if (cell[0] + dr, cell[1] + dc) in cell_set
+                    and (cell[0] + dr, cell[1] + dc) not in visited
+                )
+                return (
+                    regression,
+                    turn,
+                    -local,
+                    projection,
+                    _cell_cross_projection(cell, direction),
+                    cell[0] * 100000 + cell[1],
+                )
+
+            nxt = min(neighbors, key=neighbor_cost)
+        else:
+            # A disconnected fragment may only jump within the current band.
+            # Prefer the least directional regression, then the shortest pen
+            # move; unlike the old path chain, never reverse a completed path.
+            unvisited = [cell for cell in cell_set if cell not in visited]
+            current_projection = _cell_projection(current, direction)
+            nxt = min(
+                unvisited,
+                key=lambda cell: (
+                    max(0, current_projection - _cell_projection(cell, direction)),
+                    (cell[0] - current[0]) ** 2 + (cell[1] - current[1]) ** 2,
+                    _cell_projection(cell, direction),
+                    _cell_cross_projection(cell, direction),
+                    cell[0],
+                    cell[1],
+                ),
+            )
+
+        prev_dir = (nxt[0] - current[0], nxt[1] - current[1])
+        path.append(nxt)
+        visited.add(nxt)
+        current = nxt
+
+    return path
+
+
 def _nearest_neighbor_order(
     cells: Sequence[tuple[int, int]], seed: tuple[int, int]
 ) -> list[tuple[int, int]]:
@@ -592,50 +739,56 @@ def _chain_region_paths(
     return ordered
 
 
-def cluster_ink_streams(active: np.ndarray) -> list[list[tuple[int, int]]]:
+def cluster_ink_streams(
+    active: np.ndarray, direction: str = "left-to-right"
+) -> list[list[tuple[int, int]]]:
     """
-    把墨迹格按语义聚成若干条墨流：主体(subject) → 文字(text) → 局部轮廓(contour)，
-    每条内部按类型选画法（文字按段扫、其余密度游走）；
-    墨流之间按“出口到入口最近邻”动态串联，必要时整条反向，减少跳笔。
-    返回的是已串联排序好的多条笔迹流。
+    按 annotation direction 把墨迹切成窄空间带，再在带内保持局部连续。
+
+    方向投影是跨墨流的硬约束：当前带全部完成后才进入下一带，最近邻只在
+    当前带内优化，且不允许通过整条反转把落笔带回已完成方向。带内仍保持
+    subject → text → contour 的语义优先级；每个局部路径从方向前沿的稀疏轮廓
+    起笔，避免头发、排线等高密纹理任意抢先。
     """
+    direction = _validate_reveal_direction(direction)
     if not active.any():
         return []
+
     groups = classify_stroke_groups(active)
-    # A stream is now a complete visual region, not merely one connected
-    # component.  Thus a label's border, its characters, and its arrow cannot
-    # be interrupted by a different object that happens to be closer.
-    regions = _group_adjacent_stroke_groups(groups)
-    streams = [_chain_region_paths(region) for region in regions]
-    streams = [s for s in streams if s]
-    if not streams:
+    if not groups:
         return []
 
-    # 串联：主体（第一支）开局，之后每次挑入口离当前出口最近的墨流，
-    # 并视情况把该墨流整体反向，使其起点更靠近上一支的出口。
-    ordered: list[list[tuple[int, int]]] = []
-    remaining = list(streams)
-    tail: tuple[int, int] | None = None
-    while remaining:
-        if tail is None:
-            pick_idx = 0  # classify 已把主体排在最前
-        else:
-            def dist_to_tail(stream: list[tuple[int, int]]) -> int:
-                head = stream[0]
-                return (head[0] - tail[0]) ** 2 + (head[1] - tail[1]) ** 2
-            pick_idx = min(range(len(remaining)), key=lambda i: dist_to_tail(remaining[i]))
-        pick = remaining.pop(pick_idx)
-        # 视情况反向：若尾离 pick 的终点比离起点更近，则反向
-        if tail is not None and len(pick) > 1:
-            head = pick[0]
-            end = pick[-1]
-            d_end = (end[0] - tail[0]) ** 2 + (end[1] - tail[1]) ** 2
-            d_head = (head[0] - tail[0]) ** 2 + (head[1] - tail[1]) ** 2
-            if d_end < d_head:
-                pick = pick[::-1]
-        ordered.append(pick)
-        tail = pick[-1]
-    return ordered
+    all_cells = [cell for _, cells in groups for cell in cells]
+    leading_projection = min(_cell_projection(cell, direction) for cell in all_cells)
+    # Four grid cells (40 px at the default grid) is narrow enough to make
+    # progress legible while leaving room for continuous local strokes.
+    band_width = 4
+    bands: dict[int, list[tuple[str, list[tuple[int, int]]]]] = {}
+    for kind, cells in groups:
+        grouped_cells: dict[int, list[tuple[int, int]]] = {}
+        for cell in cells:
+            band = (_cell_projection(cell, direction) - leading_projection) // band_width
+            grouped_cells.setdefault(band, []).append(cell)
+        for band, band_cells in grouped_cells.items():
+            bands.setdefault(band, []).append((kind, band_cells))
+
+    kind_rank = {"subject": 0, "text": 1, "contour": 2}
+    streams: list[list[tuple[int, int]]] = []
+    for band in sorted(bands):
+        chunks = bands[band]
+        chunks.sort(
+            key=lambda item: (
+                kind_rank.get(item[0], 3),
+                -len(item[1]),
+                min(_cell_cross_projection(cell, direction) for cell in item[1]),
+            )
+        )
+        stream: list[tuple[int, int]] = []
+        for _, cells in chunks:
+            stream.extend(_directional_band_walk(cells, direction))
+        if stream:
+            streams.append(stream)
+    return streams
 
 
 def flatten_streams(streams: list[list[tuple[int, int]]]) -> list[tuple[int, int]]:
@@ -1005,19 +1158,48 @@ def _chaikin_smooth(
     return pts
 
 
-def _order_skeleton_strokes(strokes: list[list[tuple[float, float]]]) -> list[list[tuple[float, float]]]:
+def _order_skeleton_strokes(
+    strokes: list[list[tuple[float, float]]],
+    direction: str = "left-to-right",
+) -> list[list[tuple[float, float]]]:
     """
-    笔画排序：从上到下、从左到右，长笔优先。
-    简化版①order_strokes——用包围盒左上角 + 负长度做字典序。
+    按 reveal direction 排序并定向骨架笔画；长笔只在同一空间带内优先。
+
+    不使用“离上一笔尾端更近就整条反转”的优化，避免最近邻破坏方向。
     """
-    def sort_key(s):
+    direction = _validate_reveal_direction(direction)
+
+    def point_projection(point: tuple[float, float]) -> float:
+        x, y = point
+        if direction == "left-to-right":
+            return x
+        if direction == "right-to-left":
+            return -x
+        if direction == "top-to-bottom":
+            return y
+        return -y
+
+    def point_cross_projection(point: tuple[float, float]) -> float:
+        x, y = point
+        return y if direction in {"left-to-right", "right-to-left"} else x
+
+    oriented: list[list[tuple[float, float]]] = []
+    for stroke in strokes:
+        current = list(stroke)
+        if len(current) > 1 and point_projection(current[0]) > point_projection(current[-1]):
+            current.reverse()
+        oriented.append(current)
+
+    def sort_key(s: list[tuple[float, float]]) -> tuple[float, float, float, float]:
         if not s:
             return (0, 0, 0, 0)
-        xs = [p[0] for p in s]
-        ys = [p[1] for p in s]
+        projections = [point_projection(point) for point in s]
+        cross_projections = [point_cross_projection(point) for point in s]
         length = _stroke_cumulative_length(s)[-1]
-        return (min(ys) // 12, min(xs), min(ys), -length)
-    return sorted(strokes, key=sort_key)
+        leading = min(projections)
+        return (leading // 12, min(cross_projections), leading, -length)
+
+    return sorted(oriented, key=sort_key)
 
 
 # ──────────────────────────────────────────────────────────────

@@ -38,6 +38,7 @@ FAST_TEST_MODULES = (
     "tests.test_cover_frame",
     "tests.test_cover_generation",
     "tests.test_cover_review",
+    "tests.test_directional_ink_order",
     "tests.test_documentation_contract",
     "tests.test_doubao_adapter",
     "tests.test_edge_tts_adapter",

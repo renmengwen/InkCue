@@ -40,6 +40,7 @@ ASR_CHANNELS = 1
 ASR_SAMPLE_WIDTH_BYTES = 2
 DEFAULT_TIMEOUT_SECONDS = 180.0
 MAX_VAD_SEGMENT_MS = 15_000
+MAX_FINAL_TIMESTAMP_OVERSHOOT_MS = 50
 MODEL_IDS = {
     "paraformer-zh": "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
     "fsmn-vad": "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
@@ -332,6 +333,7 @@ def _validated_sentences(
     sentences: list[dict[str, Any]] = []
     previous_end = -1
     gap_count = 0
+    final_timestamp_clamp_ms = 0
     for ordinal, raw in enumerate(raw_sentences, start=1):
         if not isinstance(raw, Mapping):
             raise NarrationTranscriptionError(f"FunASR sentence_info[{ordinal}] 结构无效")
@@ -352,7 +354,17 @@ def _validated_sentences(
         if start_ms < previous_end:
             raise NarrationTranscriptionError(f"sentence {ordinal} 与前一句重叠或乱序")
         if end_ms > duration_ms:
-            raise NarrationTranscriptionError(f"sentence {ordinal} 越过实测旁白时长")
+            overshoot_ms = end_ms - duration_ms
+            if (
+                ordinal != len(raw_sentences)
+                or overshoot_ms > MAX_FINAL_TIMESTAMP_OVERSHOOT_MS
+            ):
+                raise NarrationTranscriptionError(f"sentence {ordinal} 越过实测旁白时长")
+            # FunASR timestamps are frame-quantised and may extend the final
+            # sentence by a few milliseconds beyond the canonical WAV.  Clamp
+            # only the last sentence within a narrow, auditable tolerance.
+            final_timestamp_clamp_ms = overshoot_ms
+            end_ms = duration_ms
         if previous_end >= 0 and start_ms > previous_end:
             gap_count += 1
         sentences.append(
@@ -373,6 +385,7 @@ def _validated_sentences(
         "lastEndMs": sentences[-1]["endMs"],
         "leadingRoomMs": sentences[0]["startMs"],
         "trailingRoomMs": duration_ms - sentences[-1]["endMs"],
+        "finalTimestampClampMs": final_timestamp_clamp_ms,
         "evidenceKind": evidence_kind,
     }
     return sentences, timing

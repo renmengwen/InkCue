@@ -187,8 +187,16 @@ class NarrationTranscriptionTests(unittest.TestCase):
     def test_rejects_sentence_past_measured_audio(self) -> None:
         with self.assertRaisesRegex(runner.NarrationTranscriptionError, "越过实测旁白时长"):
             self.run_with_result(
-                [{"sentence_info": [{"start": 10, "end": 4001, "text": "越界。"}]}]
+                [{"sentence_info": [{"start": 10, "end": 4051, "text": "越界。"}]}]
             )
+
+    def test_clamps_small_final_timestamp_quantisation_overshoot(self) -> None:
+        payload, _model, _factory_kwargs = self.run_with_result(
+            [{"sentence_info": [{"start": 10, "end": 4043, "text": "尾句。"}]}]
+        )
+        self.assertEqual(payload["timingValidation"]["finalTimestampClampMs"], 43)
+        self.assertEqual(payload["timingValidation"]["trailingRoomMs"], 0)
+        self.assertIn("00:00:04,000", Path(payload["rawSrtPath"]).read_text(encoding="utf-8"))
 
     def test_rejects_empty_or_punctuation_only_sentence(self) -> None:
         with self.assertRaisesRegex(runner.NarrationTranscriptionError, "纯标点"):

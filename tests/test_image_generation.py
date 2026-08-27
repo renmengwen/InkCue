@@ -240,19 +240,23 @@ class ClientTests(unittest.TestCase):
         response = json.dumps(
             {"data": [{"url": "https://storage.example.test/file.png"}]}
         ).encode("utf-8")
-        seen: list[tuple[str, str | None]] = []
+        seen: list[tuple[str, str | None, str | None]] = []
 
         def open_url(request: object, timeout: float) -> BytesResponse:
             method = request.get_method()  # type: ignore[attr-defined]
             auth = request.get_header("Authorization")  # type: ignore[attr-defined]
-            seen.append((method, auth))
+            user_agent = request.get_header("User-agent")  # type: ignore[attr-defined]
+            seen.append((method, auth, user_agent))
             return BytesResponse(response if method == "POST" else self.image)
 
         result = ig.ImagesGenerationsClient(self.provider, urlopen=open_url).generate("prompt")
         self.assertEqual(result.source, "url")
         self.assertEqual(result.data, self.image)
-        self.assertEqual(seen[0], ("POST", f"Bearer {self.provider.api_key}"))
-        self.assertEqual(seen[1], ("GET", None))
+        self.assertEqual(
+            seen[0],
+            ("POST", f"Bearer {self.provider.api_key}", "curl/8.12.1"),
+        )
+        self.assertEqual(seen[1], ("GET", None, "srt-whiteboard-animation/1"))
 
     def test_429_and_500_retry_then_succeed(self) -> None:
         body = json.dumps(

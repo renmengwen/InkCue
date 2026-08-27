@@ -257,6 +257,24 @@ def _selected_scenes(
     return selected
 
 
+def _scoped_plan_scenes(
+    plan_scenes: list[dict[str, Any]],
+    requested_scene_ids: list[str] | None,
+) -> list[dict[str, Any]]:
+    """Return an explicit scene scope in generation-plan order."""
+
+    if requested_scene_ids is None:
+        return plan_scenes
+    if len(set(requested_scene_ids)) != len(requested_scene_ids):
+        raise CliArgumentError("--scene-id 不得重复")
+    plan_ids = {scene["sceneId"] for scene in plan_scenes}
+    unknown = [scene_id for scene_id in requested_scene_ids if scene_id not in plan_ids]
+    if unknown:
+        raise CliArgumentError(f"--scene-id 不属于 generation plan：{', '.join(unknown)}")
+    requested = set(requested_scene_ids)
+    return [scene for scene in plan_scenes if scene["sceneId"] in requested]
+
+
 def _candidate_for_attempt(
     project_root: Path,
     scene_id: str,
@@ -374,6 +392,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", help="供应商 local 配置的绝对路径")
     parser.add_argument("--overwrite", action="store_true", help="允许原子替换已有图片")
     parser.add_argument("--retry-failed", action="store_true", help="只处理明确 failed 的场景")
+    parser.add_argument(
+        "--scene-id",
+        action="append",
+        dest="scene_ids",
+        help="仅处理指定 sceneId；可重复传入，正式发布仍按 generation plan 顺序",
+    )
     parser.add_argument(
         "--host-results",
         help="gpt-login 宿主生图结果 JSON 的绝对路径",
@@ -532,6 +556,7 @@ def _run_host_image_generation(
     args: argparse.Namespace,
     project: Any,
     plan_scenes: list[dict[str, Any]],
+    scoped_plan_scenes: list[dict[str, Any]],
     prompts: dict[str, str],
     configured_concurrency: int,
     host_results: dict[str, Any] | None,
@@ -611,7 +636,7 @@ def _run_host_image_generation(
             )
             return 1
 
-        targets = _selected_scenes(plan_scenes, manifest, retry_failed=args.retry_failed)
+        targets = _selected_scenes(scoped_plan_scenes, manifest, retry_failed=args.retry_failed)
         unknown = sum(
             record.get("status") == "unknown_external_outcome"
             for record in _scene_map(manifest).values()
@@ -916,12 +941,14 @@ def main(argv: list[str] | None = None) -> int:
             scene["sceneId"]: build_final_prompt(project.plan["globalPrompt"], scene["prompt"])
             for scene in plan_scenes
         }
+        scoped_plan_scenes = _scoped_plan_scenes(plan_scenes, args.scene_ids)
         image_generation_mode = project.metadata.get("imageGenerationMode", "provider")
         if image_generation_mode == "gpt-login":
             return _run_host_image_generation(
                 args=args,
                 project=project,
                 plan_scenes=plan_scenes,
+                scoped_plan_scenes=scoped_plan_scenes,
                 prompts=prompts,
                 configured_concurrency=configured_concurrency,
                 host_results=host_results,
@@ -931,7 +958,7 @@ def main(argv: list[str] | None = None) -> int:
         warnings = verify_config_git_safety(config_path)
         provider = load_provider_config(config_path, args.provider)
         manifest = ManifestStore.open(project.root, project.project_id, project.plan_path, plan_scenes)
-        targets = _selected_scenes(plan_scenes, manifest, retry_failed=args.retry_failed)
+        targets = _selected_scenes(scoped_plan_scenes, manifest, retry_failed=args.retry_failed)
     except CredentialSafetyError as exc:
         _emit(_summary(ok=False, exit_code=3, project=project_arg, provider=args.provider, error=str(exc)))
         return 3

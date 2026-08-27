@@ -479,6 +479,9 @@ class ImagesGenerationsClient:
                 "Authorization": f"Bearer {self.provider.api_key}",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
+                # Krill's coding gateway accepts the documented curl request
+                # but rejects Python's implicit urllib user agent at the WAF.
+                "User-Agent": "curl/8.12.1",
             },
         )
         # Base64 has 4/3 overhead; bounded JSON framing gets an additional MiB.

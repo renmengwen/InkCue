@@ -158,17 +158,25 @@ class RegionStreamRenderer:
         return mask
 
     # ── 区域内笔迹路径 ──
-    def _region_grid_path(self, allowed: np.ndarray) -> list[tuple[int, int]]:
+    def _region_grid_path(
+        self,
+        allowed: np.ndarray,
+        direction: str,
+    ) -> list[tuple[int, int]]:
         """网格模式：把区域内含墨的格聚类并串成连续格路径。"""
         allowed_u8 = allowed.astype(np.uint8)
         allowed_cell = sr._to_grid_blocks(allowed_u8, self.cfg.grid_edge).any(axis=(2, 3))
         active = self.active_all & allowed_cell
         if not active.any():
             return []
-        streams = sr.cluster_ink_streams(active)
+        streams = sr.cluster_ink_streams(active, direction=direction)
         return sr.flatten_streams(streams)
 
-    def _region_skeleton_strokes(self, allowed: np.ndarray) -> list[list[tuple[int, int]]]:
+    def _region_skeleton_strokes(
+        self,
+        allowed: np.ndarray,
+        direction: str,
+    ) -> list[list[tuple[int, int]]]:
         """骨架模式：区域内墨迹细化 + 8 邻接追踪 + 重采样平滑。"""
         cfg = self.cfg
         region_ink = self.ink_pixels & allowed
@@ -187,7 +195,7 @@ class RegionStreamRenderer:
             pts = sr._resample_stroke_points(pts, spacing)
             if len(pts) >= 2 and sr._stroke_cumulative_length(pts)[-1] > 2.0:
                 out.append([(int(round(x)), int(round(y))) for x, y in pts])
-        return sr._order_skeleton_strokes(out)
+        return sr._order_skeleton_strokes(out, direction=direction)
 
     # ── 落墨（限制在 allowed 内）──
     def _reveal_ink_segment(self, a: tuple[int, int], b: tuple[int, int], allowed: np.ndarray) -> None:
@@ -405,6 +413,7 @@ class RegionStreamRenderer:
         try:
             for idx, element in enumerate(elements):
                 reveal = element["reveal"]
+                direction = reveal.get("direction", "left-to-right")
                 start_ms = reveal["startMs"]
                 dur_ms = reveal["durationMs"]
                 start_frame = boundary(start_ms)
@@ -429,7 +438,7 @@ class RegionStreamRenderer:
                     color_frames = element_frames - ink_frames
 
                 if cfg.ink_path_mode == "skeleton":
-                    strokes = self._region_skeleton_strokes(allowed)
+                    strokes = self._region_skeleton_strokes(allowed, direction)
                     if strokes:
                         samples, pen_lifts = [], set()
                         for si, stroke in enumerate(strokes):
@@ -439,12 +448,12 @@ class RegionStreamRenderer:
                         self._lay_ink(writer, ink_frames, samples, pen_lifts, allowed)
                         centers = samples
                     else:
-                        path = self._region_grid_path(allowed)
+                        path = self._region_grid_path(allowed, direction)
                         samples, pen_lifts, _ = self._grid_plan(path) if path else ([], set(), [])
                         self._lay_ink(writer, ink_frames, samples, pen_lifts, allowed)
                         centers = [self._cell_center(c) for c in path]
                 else:
-                    path = self._region_grid_path(allowed)
+                    path = self._region_grid_path(allowed, direction)
                     if path:
                         samples, pen_lifts, sample_cell = self._grid_plan(path)
                         # 块填充：随笔尖推进逐格铺满（保证文字/大块实心）
@@ -853,6 +862,7 @@ def _formal_render_options(
         "bareTip": bool(args.bare_tip),
         "cleanFirstFrame": "when-first-element-has-at-least-2-frames",
         "paperBackground": "paper-content-mask-v3",
+        "inkOrderingContract": "annotation-directional-bands-v1",
         "canvasHex": cfg.canvas_hex,
         "paperMask": {
             "grayCut": cfg.paper_gray_cut,
