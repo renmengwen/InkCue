@@ -250,7 +250,9 @@ _CAPTION_CLOSERS = frozenset("”’）》】〉」』")
 _CAPTION_TARGET_TOKENS = 28
 _CAPTION_HARD_MAX_TOKENS = 48
 _MAX_BOUNDARY_DISPLACEMENT_TOKENS = 12
-_MAX_CAPTION_CHARACTERS_PER_SECOND = 12.0
+_MAX_CAPTION_CHARACTERS_PER_SECOND = 9.0
+_MAX_LOCAL_ACOUSTIC_CHARACTERS_PER_SECOND = 8.5
+_LOCAL_ACOUSTIC_WINDOW_TOKENS = (16, 32, 48)
 
 
 def _alignment_tokens(text: str) -> list[str]:
@@ -351,6 +353,64 @@ def _token_boundary_map(asr_tokens: Sequence[str], reference_tokens: Sequence[st
         previous = current
     resolved[-1] = len(reference_tokens)
     return resolved
+
+
+def _validate_local_acoustic_rate(
+    lexical_asr_cues: Sequence[Mapping[str, Any]],
+    diagnostics: dict[str, Any],
+) -> None:
+    """用滑动 token 窗口拒绝局部压缩和长段累计漂移。"""
+
+    outliers: list[dict[str, Any]] = []
+    maximum_rate = 0.0
+    maximum_window: dict[str, Any] | None = None
+    for window_tokens in _LOCAL_ACOUSTIC_WINDOW_TOKENS:
+        if len(lexical_asr_cues) < window_tokens:
+            continue
+        for start_index in range(0, len(lexical_asr_cues) - window_tokens + 1):
+            window = lexical_asr_cues[start_index : start_index + window_tokens]
+            start_ms = window[0]["startMs"]
+            end_ms = window[-1]["endMs"]
+            duration_ms = end_ms - start_ms
+            if duration_ms <= 0:
+                raise ReferenceAlignmentError("ASR 局部 token 窗口无法形成正时长")
+            semantic_characters = sum(
+                len(normalise_alignment_text(str(cue["text"]))) for cue in window
+            )
+            rate = semantic_characters * 1000 / duration_ms
+            metric = {
+                "firstAsrCueOrdinal": window[0]["sourceOrdinal"],
+                "lastAsrCueOrdinal": window[-1]["sourceOrdinal"],
+                "windowTokens": window_tokens,
+                "semanticCharacters": semantic_characters,
+                "startMs": start_ms,
+                "endMs": end_ms,
+                "durationMs": duration_ms,
+                "charactersPerSecond": round(rate, 3),
+            }
+            if rate > maximum_rate:
+                maximum_rate = rate
+                maximum_window = metric
+            if rate > _MAX_LOCAL_ACOUSTIC_CHARACTERS_PER_SECOND:
+                outliers.append(metric)
+
+    diagnostics["localAcousticRate"] = {
+        "windowTokenCounts": list(_LOCAL_ACOUSTIC_WINDOW_TOKENS),
+        "maxCharactersPerSecond": _MAX_LOCAL_ACOUSTIC_CHARACTERS_PER_SECOND,
+        "observedMaxCharactersPerSecond": round(maximum_rate, 3),
+        "observedMaxWindow": maximum_window,
+        "outlierCount": len(outliers),
+        "outliers": outliers[:20],
+    }
+    if outliers:
+        diagnostics["status"] = "FAIL"
+        first = outliers[0]
+        raise ReferenceAlignmentError(
+            "ASR token 时间存在局部异常压缩或累计漂移："
+            f"{first['startMs']}–{first['endMs']}ms 的 "
+            f"{first['charactersPerSecond']} chars/s 超过上限",
+            diagnostics=diagnostics,
+        )
 
 
 def align_reference_audio(
@@ -462,6 +522,8 @@ def align_reference_audio(
             "maxNormalizedEditRatio": max_normalized_edit_ratio,
             "maxBoundaryDisplacementTokens": _MAX_BOUNDARY_DISPLACEMENT_TOKENS,
             "maxCaptionCharactersPerSecond": _MAX_CAPTION_CHARACTERS_PER_SECOND,
+            "maxLocalAcousticCharactersPerSecond": _MAX_LOCAL_ACOUSTIC_CHARACTERS_PER_SECOND,
+            "localAcousticWindowTokens": list(_LOCAL_ACOUSTIC_WINDOW_TOKENS),
         },
     }
     if match_ratio < min_match_ratio or edit_ratio > max_normalized_edit_ratio:
@@ -470,6 +532,8 @@ def align_reference_audio(
             "ASR 与已确认原稿的匹配质量过低，拒绝生成推测时间轴",
             diagnostics=diagnostics,
         )
+
+    _validate_local_acoustic_rate(lexical_asr_cues, diagnostics)
 
     mapped_positions = _token_boundary_map(asr_tokens, reference_tokens)
     try:
@@ -586,12 +650,31 @@ def align_reference_audio(
         start_ms = 0 if scene_index == 0 else scenes[-1]["endMs"]
         if scene_index == len(scene_ranges) - 1:
             end_ms = audio_duration_ms
+            last_narrated_end_ms = scene_cues[-1]["endMs"]
+            next_narrated_start_ms = None
+            available_pause_ms = audio_duration_ms - last_narrated_end_ms
+            boundary_basis = "canonical-audio-end"
         else:
             next_first_source = scene_ranges[scene_index + 1][1]
             next_cue = next(
                 cue for cue in cues if cue["sourceCueOrdinal"] == next_first_source
             )
-            end_ms = next_cue["startMs"]
+            last_narrated_end_ms = scene_cues[-1]["endMs"]
+            next_narrated_start_ms = next_cue["startMs"]
+            available_pause_ms = next_narrated_start_ms - last_narrated_end_ms
+            if available_pause_ms < 0:
+                raise ReferenceAlignmentError(
+                    f"{scene_id} 的最后旁白尚未结束，下一 scene 旁白已经开始"
+                )
+            # scene N 至少保留到本幕最后一个真实声学 token 结束。若中间
+            # 存在真实静音，只在该静音内取中点，让前后两幕各获得可审计的
+            # 尾音/预备时间；不使用统一固定延迟掩盖对齐错误。
+            end_ms = last_narrated_end_ms + available_pause_ms // 2
+            boundary_basis = (
+                "midpoint-of-real-token-gap"
+                if available_pause_ms > 0
+                else "shared-real-token-boundary"
+            )
         if end_ms <= start_ms:
             raise ReferenceAlignmentError(f"{scene_id} 无法形成连续正时长场景")
         scenes.append(
@@ -602,6 +685,10 @@ def align_reference_audio(
                 "startMs": start_ms,
                 "endMs": end_ms,
                 "sceneDurationMs": end_ms - start_ms,
+                "lastNarratedTokenEndMs": last_narrated_end_ms,
+                "nextNarratedTokenStartMs": next_narrated_start_ms,
+                "availablePauseMs": available_pause_ms,
+                "boundaryBasis": boundary_basis,
             }
         )
     return {

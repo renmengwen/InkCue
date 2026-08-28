@@ -9,6 +9,7 @@ models and never invents timing from character counts.
 from __future__ import annotations
 
 import argparse
+import copy
 import contextlib
 import hashlib
 import json
@@ -33,13 +34,16 @@ except ImportError:  # Direct ``scripts/transcribe_narration.py`` execution.
     from srt_timeline import serialize_srt
 
 
-CONTRACT_VERSION = "narration-funasr-token-timestamp-v3"
+CONTRACT_VERSION = "narration-funasr-vad-token-evidence-v4"
 MODEL_CONTRACT = "narration-asr-models-v1"
 ASR_SAMPLE_RATE = 16_000
 ASR_CHANNELS = 1
 ASR_SAMPLE_WIDTH_BYTES = 2
 DEFAULT_TIMEOUT_SECONDS = 180.0
-MAX_VAD_SEGMENT_MS = 15_000
+# Paraformer 的公开长音频范式以 30 秒作为单段上限。更短的强制切段会在
+# 连续语音中制造人为断点；当前项目已经证明 15 秒切段会把断点后的 token
+# 压缩到错误时间。这里固定模型支持的 30 秒，不允许调用点临时覆盖。
+MAX_VAD_SEGMENT_MS = 30_000
 # FunASR timestamps are quantised to acoustic-frame boundaries.  Only the
 # final token may be clamped, and only inside the same 80 ms tolerance used
 # by the final media duration contract.  Intermediate timestamps remain strict.
@@ -72,6 +76,17 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _sha256_json(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _regular_nonempty_file(path: str | Path, *, label: str) -> Path:
@@ -380,6 +395,201 @@ def _token_timestamp_sentences(record: Mapping[str, Any]) -> list[Mapping[str, A
     ]
 
 
+def _capture_funasr_segment_trace(model: Any, generate: Callable[..., Any], **kwargs: Any) -> tuple[object, dict[str, Any] | None]:
+    """捕获同一次 AutoModel 推理中的 VAD 与逐段 ASR 原始结果。
+
+    FunASR 的公开顶层结果会先分别拼接文本和 timestamp。仅比较两个顶层
+    数组的长度，无法证明第 N 个文本来自第 N 个声学区间。这里不修改
+    site-packages，而是在同一次正式推理中只读记录 VAD 调用和 Paraformer
+    子调用；随后由本 runner 按 FunASR 的稳定排序规则重建原始顺序。
+    """
+
+    inference = getattr(model, "inference", None)
+    vad_model = getattr(model, "vad_model", None)
+    asr_model = getattr(model, "model", None)
+    if not callable(inference) or vad_model is None or asr_model is None:
+        return generate(**kwargs), None
+
+    trace: dict[str, Any] = {"vadCalls": [], "asrCalls": []}
+
+    def traced_inference(*args: Any, **call_kwargs: Any) -> Any:
+        result = inference(*args, **call_kwargs)
+        backend = call_kwargs.get("model")
+        if backend is vad_model:
+            trace["vadCalls"].append(copy.deepcopy(result))
+        elif backend is asr_model:
+            # 必须在 FunASR 顶层合并给 timestamp 加 VAD offset 之前取快照。
+            trace["asrCalls"].append(copy.deepcopy(result))
+        return result
+
+    setattr(model, "inference", traced_inference)
+    try:
+        result = generate(**kwargs)
+    finally:
+        setattr(model, "inference", inference)
+    return result, trace
+
+
+def _single_result_record(result: object, *, label: str) -> Mapping[str, Any]:
+    if isinstance(result, Mapping):
+        records: Sequence[object] = [result]
+    elif isinstance(result, Sequence) and not isinstance(result, (str, bytes)):
+        records = result
+    else:
+        raise NarrationTranscriptionError(f"{label} 返回结构无效")
+    if len(records) != 1 or not isinstance(records[0], Mapping):
+        raise NarrationTranscriptionError(f"{label} 必须只包含当前整轨的一条记录")
+    return records[0]
+
+
+def _rebuild_vad_segment_tokens(
+    raw_result: object,
+    trace: Mapping[str, Any],
+    *,
+    duration_ms: int,
+) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
+    """按 VAD 子结果重建 token 流，并逐项核对 FunASR 顶层数组。"""
+
+    vad_calls = trace.get("vadCalls")
+    asr_calls = trace.get("asrCalls")
+    if not isinstance(vad_calls, list) or len(vad_calls) != 1:
+        raise NarrationTranscriptionError("FunASR 未留下唯一、可审计的 VAD 子结果")
+    vad_record = _single_result_record(vad_calls[0], label="FunASR VAD")
+    raw_segments = vad_record.get("value")
+    if not isinstance(raw_segments, list) or not raw_segments:
+        raise NarrationTranscriptionError("FunASR VAD 没有返回语音分段")
+
+    segments: list[tuple[int, int]] = []
+    previous_start = -1
+    for ordinal, raw_segment in enumerate(raw_segments, start=1):
+        if not isinstance(raw_segment, (list, tuple)) or len(raw_segment) != 2:
+            raise NarrationTranscriptionError(f"VAD segment {ordinal} 必须是 [start, end]")
+        start_ms = _integral_milliseconds(raw_segment[0], label=f"VAD segment {ordinal} start")
+        end_ms = _integral_milliseconds(raw_segment[1], label=f"VAD segment {ordinal} end")
+        if (
+            start_ms < 0
+            or end_ms <= start_ms
+            or start_ms < previous_start
+            or end_ms > duration_ms + MAX_FINAL_TIMESTAMP_OVERSHOOT_MS
+            or end_ms - start_ms > MAX_VAD_SEGMENT_MS + MAX_FINAL_TIMESTAMP_OVERSHOOT_MS
+        ):
+            raise NarrationTranscriptionError(f"VAD segment {ordinal} 范围无效或越过固定 30 秒合同")
+        segments.append((start_ms, end_ms))
+        previous_start = start_ms
+
+    if not isinstance(asr_calls, list) or not asr_calls:
+        raise NarrationTranscriptionError("FunASR 未留下逐 VAD Paraformer 子结果")
+    sorted_asr_records: list[Mapping[str, Any]] = []
+    for call_index, call in enumerate(asr_calls, start=1):
+        if not isinstance(call, Sequence) or isinstance(call, (str, bytes)):
+            raise NarrationTranscriptionError(f"Paraformer 子调用 {call_index} 返回结构无效")
+        for record in call:
+            if not isinstance(record, Mapping):
+                raise NarrationTranscriptionError(f"Paraformer 子调用 {call_index} 含无效记录")
+            sorted_asr_records.append(record)
+    if len(sorted_asr_records) != len(segments):
+        raise NarrationTranscriptionError(
+            "VAD 分段数与 Paraformer 子结果数不一致："
+            f"segments={len(segments)}, results={len(sorted_asr_records)}"
+        )
+
+    # AutoModel 在 CPU 上也按时长稳定排序后推理，再按原 VAD ordinal 还原。
+    sorted_segment_indexes = sorted(
+        range(len(segments)),
+        key=lambda index: segments[index][1] - segments[index][0],
+    )
+    restored_records: list[Mapping[str, Any] | None] = [None] * len(segments)
+    for record, segment_index in zip(
+        sorted_asr_records, sorted_segment_indexes, strict=True
+    ):
+        restored_records[segment_index] = record
+
+    reconstructed: list[Mapping[str, Any]] = []
+    segment_evidence: list[dict[str, Any]] = []
+    for segment_index, ((segment_start, segment_end), record) in enumerate(
+        zip(segments, restored_records, strict=True), start=1
+    ):
+        if record is None:
+            raise NarrationTranscriptionError(f"VAD segment {segment_index} 缺少恢复后的 ASR 记录")
+        relative_tokens = _token_timestamp_sentences(record)
+        token_evidence: list[dict[str, Any]] = []
+        for token_ordinal, token in enumerate(relative_tokens, start=1):
+            relative_start = _integral_milliseconds(
+                token["start"], label=f"segment {segment_index} token {token_ordinal} start"
+            )
+            relative_end = _integral_milliseconds(
+                token["end"], label=f"segment {segment_index} token {token_ordinal} end"
+            )
+            segment_duration = segment_end - segment_start
+            if (
+                relative_end <= relative_start
+                or relative_start < -MAX_TIMESTAMP_OVERLAP_RECOVERY_MS
+                or relative_end > segment_duration + MAX_TIMESTAMP_OVERLAP_RECOVERY_MS
+            ):
+                raise NarrationTranscriptionError(
+                    f"segment {segment_index} token {token_ordinal} 越出所属 VAD 声学包络"
+                )
+            global_start = segment_start + relative_start
+            global_end = segment_start + relative_end
+            reconstructed.append(
+                {"start": global_start, "end": global_end, "text": token["text"]}
+            )
+            token_evidence.append(
+                {
+                    "ordinal": token_ordinal,
+                    "text": token["text"],
+                    "relativeStartMs": relative_start,
+                    "relativeEndMs": relative_end,
+                    "globalStartMs": global_start,
+                    "globalEndMs": global_end,
+                }
+            )
+        segment_evidence.append(
+            {
+                "ordinal": segment_index,
+                "segmentStartMs": segment_start,
+                "segmentEndMs": segment_end,
+                "segmentDurationMs": segment_end - segment_start,
+                "tokenCount": len(token_evidence),
+                "timestampCount": len(token_evidence),
+                "tokenSequenceSha256": _sha256_json(
+                    [item["text"] for item in token_evidence]
+                ),
+                "timestampSequenceSha256": _sha256_json(
+                    [
+                        [item["relativeStartMs"], item["relativeEndMs"]]
+                        for item in token_evidence
+                    ]
+                ),
+                "tokens": token_evidence,
+            }
+        )
+
+    top_record = _single_result_record(raw_result, label="FunASR 顶层 ASR")
+    top_tokens = _token_timestamp_sentences(top_record)
+    reconstructed_surface = [
+        [item["text"], item["start"], item["end"]] for item in reconstructed
+    ]
+    top_surface = [[item["text"], item["start"], item["end"]] for item in top_tokens]
+    if reconstructed_surface != top_surface:
+        raise NarrationTranscriptionError(
+            "按 VAD 子结果重建的 token/timestamp 与 FunASR 顶层数组不逐项一致"
+        )
+
+    evidence = {
+        "contractVersion": "funasr-vad-segment-token-reconstruction-v1",
+        "validated": True,
+        "segmentCount": len(segment_evidence),
+        "tokenCount": len(reconstructed),
+        "topLevelTokenCount": len(top_tokens),
+        "reconstructionMatchesTopLevel": True,
+        "reconstructedSequenceSha256": _sha256_json(reconstructed_surface),
+        "topLevelSequenceSha256": _sha256_json(top_surface),
+        "segments": segment_evidence,
+    }
+    return reconstructed, evidence
+
+
 def _validated_sentences(
     raw_sentences: Sequence[object],
     *,
@@ -491,7 +701,27 @@ def _validated_sentences(
     return sentences, timing
 
 
-def _extract_sentence_info(result: object, *, duration_ms: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _extract_sentence_info(
+    result: object,
+    *,
+    duration_ms: int,
+    segment_trace: Mapping[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any] | None]:
+    if segment_trace is not None:
+        raw_tokens, segment_evidence = _rebuild_vad_segment_tokens(
+            result,
+            segment_trace,
+            duration_ms=duration_ms,
+        )
+        sentences, timing = _validated_sentences(
+            raw_tokens,
+            duration_ms=duration_ms,
+            evidence_kind="vad_segment_token_timestamp",
+        )
+        timing["segmentEvidenceValidated"] = True
+        timing["segmentCount"] = segment_evidence["segmentCount"]
+        timing["reconstructionMatchesTopLevel"] = True
+        return sentences, timing, segment_evidence
     if isinstance(result, Mapping):
         records: Sequence[object] = [result]
     elif isinstance(result, Sequence) and not isinstance(result, (str, bytes)):
@@ -502,11 +732,13 @@ def _extract_sentence_info(result: object, *, duration_ms: int) -> tuple[list[di
         raise NarrationTranscriptionError("FunASR 未返回转写记录")
     record = records[0]
     if isinstance(record.get("timestamp"), list) and record.get("timestamp"):
-        return _validated_sentences(
+        sentences, timing = _validated_sentences(
             _token_timestamp_sentences(record),
             duration_ms=duration_ms,
             evidence_kind="token_timestamp",
         )
+        timing["segmentEvidenceValidated"] = False
+        return sentences, timing, None
     raise NarrationTranscriptionError(
         "FunASR 未返回 token timestamp；句级 sentence_info 不能作为正式字幕证据"
     )
@@ -568,22 +800,30 @@ def transcribe_narration(
         generate = getattr(model, "generate", None)
         if not callable(generate):
             raise TypeError("model factory 未返回具有 generate() 的对象")
-        raw_result = generate(
+        raw_result, segment_trace = _capture_funasr_segment_trace(
+            model,
+            generate,
             input=str(prepared.asr_path),
             batch_size=1,
             sentence_timestamp=True,
             pred_timestamp=True,
             return_raw_text=True,
+            disable_pbar=True,
         )
     except NarrationTranscriptionError:
         raise
     except Exception as exc:
         raise NarrationTranscriptionError(f"FunASR 本地推理失败: {exc}") from exc
 
-    sentences, timing = _extract_sentence_info(
+    sentences, timing, segment_evidence = _extract_sentence_info(
         raw_result,
         duration_ms=prepared.source.durationMs,
+        segment_trace=segment_trace,
     )
+    if model_factory is None and segment_evidence is None:
+        raise NarrationTranscriptionError(
+            "正式 FunASR 推理缺少逐 VAD token/timestamp 重建证据"
+        )
     raw_srt_path = work_dir / "transcript.raw.srt"
     raw_json_path = work_dir / "transcript.raw.json"
     receipt_path = work_dir / "asr-receipt.json"
@@ -604,6 +844,7 @@ def transcribe_narration(
             "sentenceInfo": sentences,
             "text": "".join(sentence["text"] for sentence in sentences),
             "timingValidation": timing,
+            "vadSegmentEvidence": segment_evidence,
         },
     )
 
@@ -641,11 +882,29 @@ def transcribe_narration(
             "predTimestamp": True,
             "returnRawText": True,
             "maxVadSegmentMs": MAX_VAD_SEGMENT_MS,
+            "segmentationContract": "paraformer-vad-30s-v1",
         },
         "sentenceCount": len(sentences),
         "tokenCount": len(sentences),
         "evidenceKind": timing["evidenceKind"],
         "timingValidation": timing,
+        "segmentEvidence": (
+            {
+                key: segment_evidence[key]
+                for key in (
+                    "contractVersion",
+                    "validated",
+                    "segmentCount",
+                    "tokenCount",
+                    "topLevelTokenCount",
+                    "reconstructionMatchesTopLevel",
+                    "reconstructedSequenceSha256",
+                    "topLevelSequenceSha256",
+                )
+            }
+            if segment_evidence is not None
+            else None
+        ),
         "artifacts": {
             "rawSrt": raw_srt_path.name,
             "rawJson": raw_json_path.name,
@@ -666,6 +925,10 @@ def transcribe_narration(
         "tokenCount": len(sentences),
         "evidenceKind": timing["evidenceKind"],
         "timingValidation": timing,
+        "segmentEvidenceValidated": segment_evidence is not None,
+        "segmentCount": (
+            segment_evidence["segmentCount"] if segment_evidence is not None else 0
+        ),
     }
 
 

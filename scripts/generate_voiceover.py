@@ -137,12 +137,12 @@ except ImportError:  # pragma: no cover - direct script execution / staged integ
             transcribe_narration,
         )
     except ImportError:  # pragma: no cover - fail closed until the companion module is installed
-        NARRATION_ASR_CONTRACT_VERSION = "narration-funasr-token-timestamp-v3"
+        NARRATION_ASR_CONTRACT_VERSION = "narration-funasr-vad-token-evidence-v4"
         transcribe_narration = None  # type: ignore[assignment]
 
 
-VOICE_TIMELINE_SCHEMA_VERSION = 2
-VOICE_TIMELINE_CONTRACT_VERSION = "audio-authoritative-timeline-v2"
+VOICE_TIMELINE_SCHEMA_VERSION = 3
+VOICE_TIMELINE_CONTRACT_VERSION = "audio-authoritative-timeline-v3"
 VOICE_CLI_CONTRACT_VERSION = "voiceover-cli-v2"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0
 LEGACY_CANONICAL_WAV_VALIDATOR_RECEIPT_VERSION = "canonical-wav-validator-receipt-v1"
@@ -1655,6 +1655,10 @@ def _build_aligned_timeline(
         if not scene_units:
             raise VoiceoverStateError(f"{spec['sceneId']} 未覆盖任何对齐 cue")
         end_ms = aligned_scene.get("endMs")
+        last_narrated_end_ms = aligned_scene.get("lastNarratedTokenEndMs")
+        next_narrated_start_ms = aligned_scene.get("nextNarratedTokenStartMs")
+        available_pause_ms = aligned_scene.get("availablePauseMs")
+        boundary_basis = aligned_scene.get("boundaryBasis")
         if (
             aligned_scene.get("sceneId") != spec["sceneId"]
             or aligned_scene.get("sourceCueRange") != spec["sourceCueRange"]
@@ -1665,8 +1669,27 @@ def _build_aligned_timeline(
             or end_ms > composite.durationMs
             or scene_units[0]["startMs"] < scene_cursor
             or scene_units[-1]["endMs"] > end_ms
+            or isinstance(last_narrated_end_ms, bool)
+            or not isinstance(last_narrated_end_ms, int)
+            or last_narrated_end_ms != scene_units[-1]["endMs"]
+            or isinstance(available_pause_ms, bool)
+            or not isinstance(available_pause_ms, int)
+            or available_pause_ms < 0
+            or not isinstance(boundary_basis, str)
+            or not boundary_basis
         ):
             raise VoiceoverStateError(f"{spec['sceneId']} 对齐 scene 未连续覆盖真实音频时钟")
+        if scene_index < len(scene_specs) - 1:
+            if (
+                isinstance(next_narrated_start_ms, bool)
+                or not isinstance(next_narrated_start_ms, int)
+                or next_narrated_start_ms < last_narrated_end_ms
+                or available_pause_ms != next_narrated_start_ms - last_narrated_end_ms
+                or not (last_narrated_end_ms <= end_ms <= next_narrated_start_ms)
+            ):
+                raise VoiceoverStateError(f"{spec['sceneId']} scene 边界未绑定真实尾音/停顿")
+        elif next_narrated_start_ms is not None:
+            raise VoiceoverStateError("最后一幕不得声明下一幕旁白起点")
         if scene_index == len(scene_specs) - 1 and end_ms != composite.durationMs:
             raise VoiceoverStateError("reference alignment 最后一幕未收口到整轨真实时长")
         end_frame = (end_ms * fps + 999) // 1000
@@ -1681,6 +1704,10 @@ def _build_aligned_timeline(
                 "startFrame": frame_cursor,
                 "endFrameExclusive": end_frame,
                 "frameCount": end_frame - frame_cursor,
+                "lastNarratedTokenEndMs": last_narrated_end_ms,
+                "nextNarratedTokenStartMs": next_narrated_start_ms,
+                "availablePauseMs": available_pause_ms,
+                "boundaryBasis": boundary_basis,
             }
         )
         scene_cursor = end_ms
@@ -1708,6 +1735,7 @@ def _build_aligned_timeline(
                 "asrCueCount",
                 "outputCueCount",
                 "maxBoundaryDisplacementTokens",
+                "captionRateOutliers",
             }
             and isinstance(value, (int, float))
             and not isinstance(value, bool)
@@ -1722,6 +1750,12 @@ def _build_aligned_timeline(
                     "captionSegmentationContract"
                 ),
                 "subtitleGaps": copy.deepcopy(diagnostics.get("subtitleGaps")),
+                "localAcousticRate": copy.deepcopy(
+                    diagnostics.get("localAcousticRate")
+                ),
+                "acousticEvidence": copy.deepcopy(
+                    diagnostics.get("acousticEvidence")
+                ),
             }
         )
     timeline = {
@@ -1752,6 +1786,55 @@ def _build_aligned_timeline(
         },
     }
     return timeline, narration_srt
+
+
+def _load_asr_acoustic_evidence(asr_srt_path: Path) -> dict[str, Any]:
+    raw_json_path = asr_srt_path.with_name("transcript.raw.json")
+    receipt_path = asr_srt_path.with_name("asr-receipt.json")
+    if not raw_json_path.is_file() or not receipt_path.is_file():
+        raise VoiceoverStateError(
+            "ASR SRT 缺少同 attempt 的 transcript.raw.json/asr-receipt.json 分段证据"
+        )
+    raw_json = _read_json(raw_json_path, "ASR raw token evidence")
+    receipt = _read_json(receipt_path, "ASR receipt")
+    segment_evidence = raw_json.get("vadSegmentEvidence")
+    receipt_evidence = receipt.get("segmentEvidence")
+    timing = receipt.get("timingValidation")
+    if (
+        raw_json.get("contractVersion") != NARRATION_ASR_CONTRACT_VERSION
+        or receipt.get("contractVersion") != NARRATION_ASR_CONTRACT_VERSION
+        or not isinstance(segment_evidence, Mapping)
+        or segment_evidence.get("validated") is not True
+        or segment_evidence.get("reconstructionMatchesTopLevel") is not True
+        or not isinstance(segment_evidence.get("segmentCount"), int)
+        or segment_evidence.get("segmentCount", 0) <= 0
+        or not isinstance(segment_evidence.get("tokenCount"), int)
+        or segment_evidence.get("tokenCount", 0) <= 0
+        or not isinstance(receipt_evidence, Mapping)
+        or receipt_evidence.get("validated") is not True
+        or receipt_evidence.get("reconstructedSequenceSha256")
+        != segment_evidence.get("reconstructedSequenceSha256")
+        or receipt_evidence.get("topLevelSequenceSha256")
+        != segment_evidence.get("topLevelSequenceSha256")
+        or not isinstance(timing, Mapping)
+        or timing.get("evidenceKind") != "vad_segment_token_timestamp"
+        or timing.get("segmentEvidenceValidated") is not True
+    ):
+        raise VoiceoverStateError("ASR 分段 token/timestamp 证据未通过 v4 fail-closed 合同")
+    return {
+        "contractVersion": segment_evidence.get("contractVersion"),
+        "validated": True,
+        "evidenceKind": "vad_segment_token_timestamp",
+        "segmentCount": segment_evidence["segmentCount"],
+        "tokenCount": segment_evidence["tokenCount"],
+        "reconstructionMatchesTopLevel": True,
+        "reconstructedSequenceSha256": segment_evidence.get(
+            "reconstructedSequenceSha256"
+        ),
+        "topLevelSequenceSha256": segment_evidence.get("topLevelSequenceSha256"),
+        "rawJsonSha256": sha256_file(raw_json_path),
+        "receiptSha256": sha256_file(receipt_path),
+    }
 
 
 def _publish_alignment(
@@ -1792,6 +1875,7 @@ def _publish_alignment(
     except (OSError, UnicodeError) as exc:
         raise VoiceoverStateError(f"无法读取 ASR SRT: {exc}") from exc
     source_srt = project.path("source/source.srt").read_text(encoding="utf-8-sig")
+    acoustic_evidence = _load_asr_acoustic_evidence(asr_srt_path)
     alignment = align_reference_audio(
         source_srt,
         asr_srt,
@@ -1800,6 +1884,10 @@ def _publish_alignment(
     )
     if not isinstance(alignment, Mapping):
         raise VoiceoverStateError("reference audio alignment 返回值无效")
+    diagnostics = alignment.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        raise VoiceoverStateError("reference audio alignment 缺少 diagnostics")
+    diagnostics["acousticEvidence"] = acoustic_evidence
     asr_sha = hashlib.sha256(asr_srt.encode("utf-8")).hexdigest()
     timeline, narration_srt = _build_aligned_timeline(
         project,
@@ -1894,7 +1982,11 @@ def _run_local_asr(project: Project, narration_path: Path) -> Path:
     timing = payload.get("timingValidation")
     if (
         payload.get("contractVersion") != NARRATION_ASR_CONTRACT_VERSION
-        or payload.get("evidenceKind") != "token_timestamp"
+        or payload.get("evidenceKind") != "vad_segment_token_timestamp"
+        or payload.get("segmentEvidenceValidated") is not True
+        or isinstance(payload.get("segmentCount"), bool)
+        or not isinstance(payload.get("segmentCount"), int)
+        or payload.get("segmentCount", 0) <= 0
         or isinstance(duration_ms, bool)
         or not isinstance(duration_ms, int)
         or duration_ms <= 0
@@ -1905,10 +1997,12 @@ def _run_local_asr(project: Project, narration_path: Path) -> Path:
         or not isinstance(token_count, int)
         or token_count != sentence_count
         or not isinstance(timing, Mapping)
-        or timing.get("evidenceKind") != "token_timestamp"
+        or timing.get("evidenceKind") != "vad_segment_token_timestamp"
+        or timing.get("segmentEvidenceValidated") is not True
+        or timing.get("reconstructionMatchesTopLevel") is not True
     ):
         raise VoiceoverStateError(
-            "本地 narration ASR 摘要缺少有效的 v3 token 时间证据"
+            "本地 narration ASR 摘要缺少有效的 v4 VAD 分段 token 时间证据"
         )
     return raw_srt_path
 
@@ -2002,14 +2096,33 @@ def validate_current_voiceover(
     ):
         raise ApprovalGateError("audio timeline 合同版本已 stale，必须重新执行 token 对齐")
     alignment_diagnostics = timeline.get("alignment", {}).get("diagnostics", {})
+    acoustic_evidence = (
+        alignment_diagnostics.get("acousticEvidence")
+        if isinstance(alignment_diagnostics, Mapping)
+        else None
+    )
+    local_acoustic_rate = (
+        alignment_diagnostics.get("localAcousticRate")
+        if isinstance(alignment_diagnostics, Mapping)
+        else None
+    )
     if (
         not isinstance(alignment_diagnostics, Mapping)
         or alignment_diagnostics.get("tokenTimingUsed") is not True
         or alignment_diagnostics.get("qualityGatePassed") is not True
         or alignment_diagnostics.get("captionSegmentationContract")
         != "reference-punctuation-caption-v1"
+        or not isinstance(acoustic_evidence, Mapping)
+        or acoustic_evidence.get("validated") is not True
+        or acoustic_evidence.get("evidenceKind")
+        != "vad_segment_token_timestamp"
+        or acoustic_evidence.get("reconstructionMatchesTopLevel") is not True
+        or not isinstance(local_acoustic_rate, Mapping)
+        or local_acoustic_rate.get("outlierCount") != 0
     ):
-        raise VoiceoverStateError("audio timeline 缺少 token 级时间与语义安全切句 QA")
+        raise VoiceoverStateError(
+            "audio timeline 缺少 v4 VAD 分段 token 证据、局部漂移或语义安全切句 QA"
+        )
     timeline_units = timeline.get("units")
     if not isinstance(timeline_units, list) or not timeline_units:
         raise VoiceoverStateError("audio timeline units 不能为空")
@@ -2046,8 +2159,12 @@ def validate_current_voiceover(
     timing_scenes = project.timing_plan["scenes"]
     if not isinstance(timeline_scenes, list) or len(timeline_scenes) != len(timing_scenes):
         raise VoiceoverStateError("audio timeline scenes 与已批准语义场景数量不一致")
-    for scene, spec in zip(timeline_scenes, timing_scenes):
+    for scene_index, (scene, spec) in enumerate(zip(timeline_scenes, timing_scenes)):
         end_ms = scene.get("endMs")
+        scene_units = [unit for unit in timeline_units if unit.get("sceneId") == scene.get("sceneId")]
+        last_narrated_end_ms = scene.get("lastNarratedTokenEndMs")
+        next_narrated_start_ms = scene.get("nextNarratedTokenStartMs")
+        available_pause_ms = scene.get("availablePauseMs")
         expected_end_frame = (end_ms * fps + 999) // 1000 if isinstance(end_ms, int) else -1
         if (
             scene.get("sceneId") != spec.get("sceneId")
@@ -2059,8 +2176,25 @@ def validate_current_voiceover(
             or scene.get("startFrame") != expected_scene_start_frame
             or scene.get("endFrameExclusive") != expected_end_frame
             or scene.get("frameCount") != expected_end_frame - expected_scene_start_frame
+            or not scene_units
+            or last_narrated_end_ms != scene_units[-1]["endMs"]
+            or isinstance(available_pause_ms, bool)
+            or not isinstance(available_pause_ms, int)
+            or available_pause_ms < 0
+            or not isinstance(scene.get("boundaryBasis"), str)
+            or not scene.get("boundaryBasis")
         ):
             raise VoiceoverStateError("audio timeline scene 未遵循连续全局时钟/累计帧边界")
+        if scene_index < len(timeline_scenes) - 1:
+            if (
+                isinstance(next_narrated_start_ms, bool)
+                or not isinstance(next_narrated_start_ms, int)
+                or available_pause_ms != next_narrated_start_ms - last_narrated_end_ms
+                or not (last_narrated_end_ms <= end_ms <= next_narrated_start_ms)
+            ):
+                raise VoiceoverStateError("audio timeline scene 边界早于本幕实际旁白结束")
+        elif next_narrated_start_ms is not None or end_ms != composite.durationMs:
+            raise VoiceoverStateError("audio timeline 最后一幕尾音边界无效")
         expected_scene_start_ms = end_ms
         expected_scene_start_frame = expected_end_frame
     if expected_scene_start_ms != composite.durationMs:
