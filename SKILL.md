@@ -85,8 +85,9 @@ topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经�
 12. image validation 每张 PNG 同一打开周期只完整解码一次；voice deep validation、timeline、SRT、累计帧、identity、binding 和 approval 仍按合同串行/有界，证据缺失或 bytes 变化不得降级为 binding PASS。
 13. 正式成片永远烧录字幕：disabled 为 H.264、0 音频且使用 source SRT；Edge/MiniMax/豆包语音为 H.264 + AAC 旁白且使用 current narration SRT。旁白项目 `backgroundMusic.enabled=true` 时，最终封装在同一路 AAC 中按固定 `-15 dB` 混入内置 CC0 BGM；关闭或旧项目缺字段时保持原旁白封装。旁白模式缺少 current narration SRT/timeline/full approval/identity 必须失败，不能回退 source SRT。
 14. 任一输入、旁白文本/分段、scene mapping、imagePrompt、音频/timing/render binding、annotation/reveal、scene 集合/顺序、手部素材 `handSha256`、字幕 preset/字体/SRT 或 clean/final SHA 变化，按 [references/recovery-and-identity.md](references/recovery-and-identity.md) 使受影响 identity 和批准 stale；历史 stale 证据不得作为 current 输入。
-15. 每次进入工作区前先用当前可启动的 Python 运行 `prepare_env.py --check-workspace-access`，完成真实 create/write/flush/read/delete 预检；随后在任何业务脚本、导入探测或渲染启动前运行 `python scripts/prepare_env.py --check`，读取末行 `ENV_PY=<绝对解释器路径>`。若仅因专用环境或依赖尚未就绪而失败，运行不带 `--check` 的同一脚本完成准备并重新读取 `ENV_PY`。本次任务后续每条 Python 命令都必须直接调用该绝对路径；不得使用裸 `python`、`py`、shebang 或不会跨工具调用持久化的临时 shell 变量先试跑再回退，也不得把系统 Python 缺少 `cv2` 误报成 OpenCV 未安装。宿主 `CreateProcess rejected by policy` 与 Windows 文件写入拒绝必须分开报告；UI 刚切换权限时在新回合重跑预检，不用复杂 shell 写删命令试探。
+15. 先把本 `SKILL.md` 所在目录解析为绝对 `SKILL_ROOT`；脚本路径一律使用 `<SKILL_ROOT>\scripts\...`，不得依赖调用者 cwd。每次进入工作区前先用当前可启动的 Python 运行 `<SKILL_ROOT>\scripts\prepare_env.py --check-workspace-access`，完成真实 create/write/flush/read/delete 预检；随后在任何业务脚本、导入探测或渲染启动前运行同一绝对脚本的 `--check`，读取末行 `ENV_PY=<绝对解释器路径>`。若仅因专用环境或依赖尚未就绪而失败，运行不带 `--check` 的同一绝对脚本完成准备并重新读取 `ENV_PY`。本次任务后续每条 Python 命令都必须直接调用该绝对解释器和绝对脚本路径；不得使用裸 `python`、`py`、shebang 或不会跨工具调用持久化的临时 shell 变量先试跑再回退，也不得把系统 Python 缺少 `cv2` 误报成 OpenCV 未安装。宿主 `CreateProcess rejected by policy` 与 Windows 文件写入拒绝必须分开报告；UI 刚切换权限时在新回合重跑预检，不用复杂 shell 写删命令试探。
 16. 旁白项目的 `approve-full` 必须显式带 `--review-policy user_first|agent_first` 并写入 `fullApproval.reviewPolicy`；后续线稿、annotation preview 和 scene review 自动继承且拒绝冲突值。`agentApprovalEnabled=true` 时由项目授权确定性派生 `agent_first`，不得再次询问或接受冲突值；为 `false`/缺失时仍由用户选择，不得静默采用默认策略。
+17. 正式 CLI 在进程入口把可重配置的 stdout/stderr 固定为 UTF-8；不得依赖 PowerShell 当前代码页或要求调用者临时设置 `PYTHONUTF8`。测试捕获流等不可重配置对象保持原样。
 
 ## current、stale 与恢复摘要
 
@@ -139,58 +140,65 @@ coordinator 必须运行 `serve_preview.py --ensure --project <项目根目录>`
 
 ## 命令索引（逐步 CLI；命令不会自动批准）
 
+以下 `<SKILL_ROOT>` 必须解析为本文件所在目录的绝对路径；即使当前目录是 `D:\SRTWhiteboard` 也不能省略。其余 references 中的 `scripts/...` 只是排版简写，实际执行同样使用绝对脚本路径。
+
 ```powershell
 # 环境与输入准备
-python scripts/prepare_env.py --check-workspace-access
-python scripts/prepare_env.py --check
+python <SKILL_ROOT>\scripts\prepare_env.py --check-workspace-access
+python <SKILL_ROOT>\scripts\prepare_env.py --check
 # 上一步仅因专用环境或依赖缺失而失败时：
-python scripts/prepare_env.py
+python <SKILL_ROOT>\scripts\prepare_env.py
 # 捕获末行 ENV_PY；后续每次工具调用都直接使用该绝对路径，不用裸 python/py
 # 首次生成整轨旁白前准备/检查当前 skill 自带的本地 ASR：
-<ENV_PY> scripts/prepare_env.py --feature narration-asr
-<ENV_PY> scripts/prepare_env.py --check --feature narration-asr
-<ENV_PY> scripts/prepare_draft_agent_task.py contentDrafting --content-input <input.json> --draft-root <draft-root>
-<ENV_PY> scripts/validate_content_draft.py --stdin
-<ENV_PY> scripts/prepare_draft_agent_task.py storyboardPlanning --draft-root <draft-root> --source-srt <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 35
-<ENV_PY> scripts/parse_srt.py <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 35
-<ENV_PY> scripts/create_project.py --name <项目名> --srt <source.srt> --plan <generation-plan.json> --source-input <input.json> --source-manifest <manifest.json> --pending-initial-approval
+<ENV_PY> <SKILL_ROOT>\scripts\prepare_env.py --feature narration-asr
+<ENV_PY> <SKILL_ROOT>\scripts\prepare_env.py --check --feature narration-asr
+<ENV_PY> <SKILL_ROOT>\scripts\prepare_draft_agent_task.py contentDrafting --content-input <input.json> --draft-root <draft-root>
+<ENV_PY> <SKILL_ROOT>\scripts\validate_content_draft.py --stdin
+<ENV_PY> <SKILL_ROOT>\scripts\prepare_draft_agent_task.py storyboardPlanning --draft-root <draft-root> --source-srt <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 35
+<ENV_PY> <SKILL_ROOT>\scripts\parse_srt.py <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 35
+<ENV_PY> <SKILL_ROOT>\scripts\create_project.py --name <项目名> --srt <source.srt> --plan <generation-plan.json> --source-input <input.json> --source-manifest <manifest.json> --pending-initial-approval
 # coordinator 将用户完整句/编号解析为绑定 current identities 的 selection.json 后：
-<ENV_PY> scripts/approve_initial_project.py --project <项目根目录> --selection <selection.json> --configured-image-provider-available [--gpt-login-capable]
-<ENV_PY> scripts/create_project.py --resume <项目根目录> --srt <原始字幕.srt>
-<ENV_PY> scripts/upgrade_project.py --project <项目根目录> --to-schema 2
+<ENV_PY> <SKILL_ROOT>\scripts\approve_initial_project.py --project <项目根目录> --selection <selection.json> --configured-image-provider-available [--gpt-login-capable]
+<ENV_PY> <SKILL_ROOT>\scripts\create_project.py --resume <项目根目录> --srt <原始字幕.srt>
+<ENV_PY> <SKILL_ROOT>\scripts\upgrade_project.py --project <项目根目录> --to-schema 2
 
 # 图片、线稿、语音
-<ENV_PY> scripts/voice_provider_config.py status
-<ENV_PY> scripts/generate_images.py --project <项目根目录>
-<ENV_PY> scripts/generate_images.py --project <项目根目录> --host-results <绝对JSON路径>
-<ENV_PY> scripts/validate_generated_images.py --project <项目根目录> --review-policy user_first
-<ENV_PY> scripts/validate_generated_images.py --project <项目根目录> --review-policy agent_first
-<ENV_PY> scripts/generate_voiceover.py sample --project <项目根目录> --voice <voice> --rate <rate>
-<ENV_PY> scripts/generate_voiceover.py approve-sample --project <项目根目录> --identity-hash <SAMPLE_IDENTITY>
-<ENV_PY> scripts/generate_voiceover.py full --project <项目根目录>
+<ENV_PY> <SKILL_ROOT>\scripts\voice_provider_config.py status
+<ENV_PY> <SKILL_ROOT>\scripts\generate_images.py --project <项目根目录>
+<ENV_PY> <SKILL_ROOT>\scripts\generate_images.py --project <项目根目录> --host-results <绝对JSON路径>
+<ENV_PY> <SKILL_ROOT>\scripts\validate_generated_images.py --project <项目根目录> --review-policy user_first
+<ENV_PY> <SKILL_ROOT>\scripts\validate_generated_images.py --project <项目根目录> --review-policy agent_first
+<ENV_PY> <SKILL_ROOT>\scripts\generate_voiceover.py sample --project <项目根目录> --voice <voice> --rate <rate>
+<ENV_PY> <SKILL_ROOT>\scripts\generate_voiceover.py approve-sample --project <项目根目录> --identity-hash <SAMPLE_IDENTITY>
+<ENV_PY> <SKILL_ROOT>\scripts\generate_voiceover.py full --project <项目根目录>
 # CLI 正常执行时会自动调用当前 skill 内部 FunASR runner 并发布对齐结果；调试/恢复也可显式导入 ASR SRT：
-<ENV_PY> scripts/generate_voiceover.py publish-alignment --project <项目根目录> --asr-srt <ASR句级字幕.srt>
-<ENV_PY> scripts/generate_voiceover.py status --project <项目根目录>
-<ENV_PY> scripts/validate_voiceover.py --project <项目根目录> [--force-deep]
-<ENV_PY> scripts/generate_voiceover.py approve-full --project <项目根目录> --identity-hash <FULL_IDENTITY> --review-policy <user_first|agent_first> [--duration-decision accept_actual]
+<ENV_PY> <SKILL_ROOT>\scripts\generate_voiceover.py publish-alignment --project <项目根目录> --asr-srt <ASR句级字幕.srt>
+<ENV_PY> <SKILL_ROOT>\scripts\generate_voiceover.py status --project <项目根目录>
+<ENV_PY> <SKILL_ROOT>\scripts\validate_voiceover.py --project <项目根目录> [--force-deep]
+<ENV_PY> <SKILL_ROOT>\scripts\generate_voiceover.py approve-full --project <项目根目录> --identity-hash <FULL_IDENTITY> --review-policy <user_first|agent_first> [--duration-decision accept_actual]
 
 # annotation、preview、scene bundle
-<ENV_PY> scripts/validate_annotations.py prepare --project <项目根目录> --images-confirmed
-<ENV_PY> scripts/validate_annotations.py validate --project <项目根目录> --candidate-root <candidate-root>
-<ENV_PY> scripts/serve_preview.py --ensure --project <项目根目录>
-<ENV_PY> scripts/generate_annotation_previews.py --project <项目根目录> --all --review-policy user_first
-<ENV_PY> scripts/approve_annotation_review.py --project <项目根目录> --identity-hash <annotationReviewIdentitySha256>
-<ENV_PY> scripts/render_stream_whiteboard.py --project <项目根目录> --all --ink-path grid --color-fill contour-wipe
-<ENV_PY> scripts/scene_review.py --project <项目根目录> --review-policy user_first
-<ENV_PY> scripts/approve_scene_review.py --project <项目根目录> --identity-hash <sceneReviewIdentityHash>
+<ENV_PY> <SKILL_ROOT>\scripts\validate_annotations.py prepare --project <项目根目录> --images-confirmed
+<ENV_PY> <SKILL_ROOT>\scripts\validate_annotations.py materialize --project <项目根目录> --candidate-root <candidate-root> --task-id <taskId>
+<ENV_PY> <SKILL_ROOT>\scripts\validate_annotations.py validate --project <项目根目录> --candidate-root <candidate-root>
+<ENV_PY> <SKILL_ROOT>\scripts\serve_preview.py --ensure --project <项目根目录>
+<ENV_PY> <SKILL_ROOT>\scripts\generate_annotation_previews.py --project <项目根目录> --all --review-policy user_first
+<ENV_PY> <SKILL_ROOT>\scripts\approve_annotation_review.py --project <项目根目录> --identity-hash <annotationReviewIdentitySha256>
+<ENV_PY> <SKILL_ROOT>\scripts\render_stream_whiteboard.py --project <项目根目录> --all --ink-path grid --color-fill contour-wipe
+<ENV_PY> <SKILL_ROOT>\scripts\scene_review.py --project <项目根目录> --review-policy user_first
+<ENV_PY> <SKILL_ROOT>\scripts\approve_scene_review.py --project <项目根目录> --identity-hash <sceneReviewIdentityHash>
 
 # 连续交付与最终 Gate
-<ENV_PY> scripts/merge_scenes.py --project <项目根目录> --inputs <幕1.mp4> <幕2.mp4>
-<ENV_PY> scripts/burn_subtitles.py --project <项目根目录>
-<ENV_PY> scripts/mux_voiceover.py --project <项目根目录>
-<ENV_PY> scripts/validate_final_media.py --project <项目根目录>
-<ENV_PY> scripts/run_phase.py --project <项目根目录> --phase final-delivery
-<ENV_PY> scripts/approve_final_media.py --project <项目根目录> --identity-hash <FINAL_IDENTITY>
+<ENV_PY> <SKILL_ROOT>\scripts\merge_scenes.py --project <项目根目录> --inputs <幕1.mp4> <幕2.mp4>
+<ENV_PY> <SKILL_ROOT>\scripts\burn_subtitles.py --project <项目根目录>
+<ENV_PY> <SKILL_ROOT>\scripts\mux_voiceover.py --project <项目根目录>
+<ENV_PY> <SKILL_ROOT>\scripts\validate_final_media.py --project <项目根目录>
+<ENV_PY> <SKILL_ROOT>\scripts\run_phase.py --project <项目根目录> --phase final-delivery
+<ENV_PY> <SKILL_ROOT>\scripts\coordinator_cli.py project-status --project <项目根目录>
+<ENV_PY> <SKILL_ROOT>\scripts\coordinator_cli.py validate-draft-result --task <绝对task.json>
+<ENV_PY> <SKILL_ROOT>\scripts\coordinator_cli.py parse-initial-approval --project <项目根目录> --reply <用户完整回复> --output <项目\.work\selection.json> [能力参数]
+<ENV_PY> <SKILL_ROOT>\scripts\annotation_dispatch.py observe --manifest <dispatch-manifest.json> --task-id <taskId> --child-running
+<ENV_PY> <SKILL_ROOT>\scripts\approve_final_media.py --project <项目根目录> --identity-hash <FINAL_IDENTITY>
 ```
 
 `prepare_*`/`agent_first` 只冻结 attempt、task descriptor 或有序 unit；这些 artifact 不包含宿主调用参数，也不等于真实派发、candidate 完成或任何批准。coordinator 必须直接使用宿主协作工具并记录真实 agent/task 映射。正式 scene 由 `sceneRender` 有界并行生成、按 plan 顺序发布；`merge_scenes.py` 在任何写入前硬校验 current approved scene bundle。

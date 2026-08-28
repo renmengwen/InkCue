@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -125,15 +126,91 @@ def _projected_summary(
     run_id: str | None,
     argv: list[str],
 ) -> dict[str, Any]:
-    """Normalize an adapter result without changing its stage-specific data."""
+    """Normalize an adapter result into a bounded, stable outer projection."""
 
     result = _base_summary(phase=phase, project_id=project.project_id, run_id=run_id)
-    result.update(dict(raw))
+    def bounded_scalar(value: Any, *, limit: int = 4096) -> Any:
+        if isinstance(value, str):
+            return value[:limit]
+        if isinstance(value, Path):
+            return str(value)[:limit]
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        return None
+
+    scalar_fields = (
+        "status", "technicalStatus", "processOutcome", "taskCount",
+        "configuredConcurrency", "effectiveConcurrency", "peakConcurrency",
+        "successCount", "failureCount", "partialSuccess", "currentIdentity",
+        "userConfirmationRequired", "nextGate", "approvalActionRequired",
+        "approvalBasis", "artifact", "artifactUrl", "previewUrl",
+        "lastCompletedStep", "formalValidationMode", "formalValidationReceipt",
+        "formalValidationRunId", "deepValidationSkipped", "deepValidationReused",
+        "deepValidationBasis", "deepValidationSkipReason", "reviewManifest",
+        "contactSheet", "contactSheetSha256", "reviewPolicy",
+        "annotationBindingSha256", "annotationReviewIdentitySha256",
+        "confirmationRequest",
+    )
+    for key in scalar_fields:
+        if key in raw:
+            value = bounded_scalar(raw[key])
+            if value is not None or raw[key] is None:
+                result[key] = value
+    raw_failures = raw.get("failures")
+    failures = raw_failures if isinstance(raw_failures, (list, tuple)) else ()
+    result["failures"] = [
+        {
+            field: bounded_scalar(item[field], limit=1000)
+            for field in ("scope", "sceneId", "taskId", "status", "code", "error", "exitCode")
+            if field in item
+            and bounded_scalar(item[field], limit=1000) is not None
+        }
+        for item in failures[:32]
+        if isinstance(item, Mapping)
+    ]
+    raw_artifact_paths = raw.get("artifactPaths")
+    artifact_paths = (
+        raw_artifact_paths
+        if isinstance(raw_artifact_paths, (list, tuple))
+        else ()
+    )
+    result["artifactPaths"] = [
+        str(item)[:2048]
+        for item in artifact_paths[:32]
+        if isinstance(item, (str, Path))
+    ]
+    if isinstance(raw.get("timingsMs"), Mapping):
+        result["timingsMs"] = {
+            str(key)[:128]: value
+            for key, value in list(raw["timingsMs"].items())[:64]
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+        }
+    # Adapter internals can contain full receipts/manifests and tens of
+    # thousands of characters.  Keep only short provider/dispatch/fallback
+    # status fields at the outer runner boundary.
+    for key in ("provider", "dispatch", "fallback", "semanticReview"):
+        value = raw.get(key)
+        if isinstance(value, Mapping):
+            result[key] = {
+                field: bounded_scalar(value[field], limit=1000)
+                for field in (
+                    "status", "mode", "provider", "model", "taskCount",
+                    "configuredConcurrency", "effectiveConcurrency",
+                    "peakConcurrency", "reason", "used", "findingsCount",
+                )
+                if field in value
+                and bounded_scalar(value[field], limit=1000) is not None
+            }
     # Adapters may use their own contract version; the outer contract is fixed.
     result["contractVersion"] = RUNNER_CONTRACT
     result["phase"] = phase
     result["projectId"] = project.project_id
-    result["runId"] = raw.get("runId") or run_id
+    raw_run_id = raw.get("runId")
+    result["runId"] = (
+        raw_run_id[:256]
+        if isinstance(raw_run_id, str) and raw_run_id
+        else run_id
+    )
     # Keep both the compact artifact field and explicit URL spelling for
     # consumers that render the summary directly.
     if "artifactUrl" not in result:
@@ -144,15 +221,30 @@ def _projected_summary(
     result["userConfirmationRequired"] = bool(
         raw.get("userConfirmationRequired", True)
     )
-    result["failures"] = list(raw.get("failures") or [])
-    if "deepValidation" not in result:
+    raw_deep = raw.get("deepValidation")
+    if isinstance(raw_deep, Mapping):
+        result["deepValidation"] = {
+            "skipped": bool(raw_deep.get("skipped")),
+            "reused": bool(raw_deep.get("reused")),
+            "reason": raw_deep.get("reason")[:1000]
+            if isinstance(raw_deep.get("reason"), str)
+            else None,
+        }
+    else:
         reused = bool(raw.get("deepValidationReused") or raw.get("formalValidationMode") == "binding")
         result["deepValidation"] = {
             "skipped": reused,
             "reused": reused,
-            "reason": raw.get("deepValidationBasis"),
+            "reason": raw.get("deepValidationBasis")[:1000]
+            if isinstance(raw.get("deepValidationBasis"), str)
+            else None,
         }
-    result.setdefault("deepValidationSkipReason", raw.get("deepValidationBasis"))
+    result.setdefault(
+        "deepValidationSkipReason",
+        raw.get("deepValidationBasis")[:1000]
+        if isinstance(raw.get("deepValidationBasis"), str)
+        else None,
+    )
     if (
         result.get("status") == "PASS"
         and result.get("nextGate")
@@ -177,7 +269,8 @@ def _projected_summary(
     # Keep a copyable recovery command; no implicit approval or retry flag is
     # ever emitted.
     project_arg = str(project.root)
-    resume = [sys.executable, "scripts/run_phase.py", "--project", project_arg, "--phase", phase]
+    runner_path = str(Path(__file__).resolve())
+    resume = [sys.executable, runner_path, "--project", project_arg, "--phase", phase]
     effective_run_id = result.get("runId")
     if effective_run_id:
         resume += ["--run-id", str(effective_run_id)]
@@ -195,10 +288,11 @@ def _projected_summary(
             str(effective_run_id),
         ]
     result["recovery"] = {
-        "resumeCommand": " ".join(resume),
+        "resumeCommand": subprocess.list2cmdline(resume),
         "lastCompletedStep": (
-            raw.get("lastCompletedStep")
+            raw.get("lastCompletedStep")[:1000]
             if phase == "final-delivery"
+            and isinstance(raw.get("lastCompletedStep"), str)
             else "annotation_review_technical" if result.get("currentIdentity") else None
         ),
     }
@@ -297,6 +391,11 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        from .cli_runtime import configure_utf8_stdio
+    except ImportError:  # pragma: no cover - direct script execution
+        from cli_runtime import configure_utf8_stdio  # type: ignore
+    configure_utf8_stdio()
     args = _parser().parse_args(argv)
     try:
         summary, exit_code = run_phase(

@@ -192,13 +192,17 @@ def _assert_current_subtitles(project: Project, manifest: Mapping[str, Any]) -> 
     selection = select_authoritative_srt(project)
     subtitles = _mapping(manifest.get("subtitles"), "subtitles")
     expected = {
-        "sourceKind": "edge-tts-narration-srt",
+        "sourceKind": "voiceover-narration-srt",
         "file": "audio/narration.srt",
         "sha256": selection.sha256,
         "timelineSha256": selection.timeline_sha256,
     }
     for field, value in expected.items():
-        if subtitles.get(field) != value:
+        actual = subtitles.get(field)
+        legacy_source_kind = (
+            field == "sourceKind" and actual == "edge-tts-narration-srt"
+        )
+        if actual != value and not legacy_source_kind:
             raise MuxStaleError(f"subtitles.{field} 与 current narration SRT 不一致")
     style = _mapping(subtitles.get("style"), "subtitles.style")
     font = _mapping(style.get("font"), "subtitles.style.font")

@@ -253,10 +253,16 @@ def content_draft_identity(draft: Mapping[str, Any]) -> str:
     return sha256_json(validate_content_draft(draft))
 
 
-def _cue_weight(text: str) -> int:
+def spoken_text_weight(text: str) -> int:
+    """Return the deterministic v1 readable-text weight used for timing estimates."""
+
     spoken = sum(1 for ch in text if unicodedata.category(ch)[0] in {"L", "N"})
     pause = len(_SENTENCE_PAUSE_RE.findall(text))
     return max(1, spoken * 100 + pause * 20)
+
+
+def _cue_weight(text: str) -> int:
+    return spoken_text_weight(text)
 
 
 def build_provisional_cues(draft: Mapping[str, Any]) -> list[dict[str, Any]]:

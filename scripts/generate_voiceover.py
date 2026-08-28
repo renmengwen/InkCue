@@ -40,6 +40,7 @@ try:
         write_json_atomic,
     )
     from .srt_timeline import parse_srt, serialize_srt
+    from .content_source import spoken_text_weight
     from .voiceover import (
         CancelledError,
         FULL_TRACK_SEGMENTATION,
@@ -93,6 +94,7 @@ except ImportError:  # pragma: no cover - direct script execution
         write_json_atomic,
     )
     from srt_timeline import parse_srt, serialize_srt
+    from content_source import spoken_text_weight
     from voiceover import (
         CancelledError,
         FULL_TRACK_SEGMENTATION,
@@ -569,6 +571,26 @@ def _sample(
     media = _media_dict(result)
     media["file"] = "previews/voice-sample.wav"
     identity = _sample_identity(plan, text, media)
+    full_text = "\n\n".join(str(unit["speechText"]) for unit in units)
+    sample_weight = spoken_text_weight(text)
+    full_weight = spoken_text_weight(full_text)
+    estimated_full_ms = max(1, round(media["durationMs"] * full_weight / sample_weight))
+    source_duration_ms = parse_srt(
+        project.path("source/source.srt").read_text(encoding="utf-8-sig")
+    )[-1]["endMs"]
+    duration_estimate = {
+        "estimatedFullDurationMs": estimated_full_ms,
+        "targetDurationMs": source_duration_ms,
+        "estimatedDeltaMs": estimated_full_ms - source_duration_ms,
+        "estimatedDeviationRatio": round(
+            abs(estimated_full_ms - source_duration_ms) / source_duration_ms,
+            6,
+        ),
+        "estimateBasis": "sample_weight_ratio_v1",
+        "sampleTextWeight": sample_weight,
+        "fullNarrationWeight": full_weight,
+        "authoritative": False,
+    }
     review_audio, audit_path = _publish_sample_review_artifacts(
         paths, plan, media, identity, raw.providerRequestId
     )
@@ -578,6 +600,7 @@ def _sample(
         "identityHash": identity,
         "media": media,
         "providerReceipt": _provider_receipt(raw.providerRequestId),
+        "durationEstimate": duration_estimate,
         "approval": {
             "approved": False,
             "identityHash": None,
@@ -2234,6 +2257,11 @@ def main(
     asr_runner: Callable[[Project, Path], Path] | None = None,
     asr_preflight: Callable[[], None] | None = None,
 ) -> int:
+    try:
+        from .cli_runtime import configure_utf8_stdio
+    except ImportError:  # pragma: no cover - direct script execution
+        from cli_runtime import configure_utf8_stdio  # type: ignore
+    configure_utf8_stdio()
     args = _parser().parse_args(argv)
     try:
         project = load_project(
@@ -2273,6 +2301,14 @@ def main(
             print(f"SAMPLE_VOICE_ID={voice}")
             print(f"SAMPLE_AUDIO_SHA256={audio_sha256}")
             print(f"SAMPLE_IDENTITY={identity}")
+            estimate = _read_json(
+                project.path("manifests/voice-manifest.json"), "voice manifest"
+            )["sample"]["durationEstimate"]
+            print(f"ESTIMATED_FULL_DURATION_MS={estimate['estimatedFullDurationMs']}")
+            print(f"TARGET_DURATION_MS={estimate['targetDurationMs']}")
+            print(f"ESTIMATED_DEVIATION_RATIO={estimate['estimatedDeviationRatio']}")
+            print("ESTIMATE_BASIS=sample_weight_ratio_v1")
+            print("ESTIMATE_AUTHORITATIVE=0")
         elif args.command == "approve-sample":
             identity = _approve_sample(project, args.identity_hash)
             print(f"SAMPLE_APPROVED_IDENTITY={identity}")

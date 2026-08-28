@@ -852,6 +852,8 @@ def _formal_render_options(
     cfg: sr.Config,
     *,
     hand_sha256: str | None,
+    scene_preset: str = "medium",
+    scene_encoder_threads: int = 0,
 ) -> dict:
     return {
         "inkPath": cfg.ink_path_mode,
@@ -873,6 +875,14 @@ def _formal_render_options(
             "edgeGrayCut": cfg.paper_edge_gray_cut,
         } if cfg.match_bg else None,
         "handSha256": hand_sha256,
+        "sceneEncoding": {
+            "contractVersion": "scene-libx264-v1",
+            "codec": "libx264",
+            "preset": scene_preset,
+            "encoderThreads": scene_encoder_threads,
+            "crf": 18,
+            "pixelFormat": "yuv420p",
+        },
     }
 
 
@@ -938,6 +948,8 @@ def _render_formal_candidate_worker(task: dict) -> dict:
 
         def observed_sink_factory(*sink_args, **sink_kwargs):
             nonlocal ffmpeg_process_count
+            sink_kwargs.setdefault("preset", task.get("scenePreset", "medium"))
+            sink_kwargs.setdefault("encoder_threads", task.get("sceneEncoderThreads", 0))
             sink = ffmpeg_frame_sink.FFmpegFrameSink(*sink_args, **sink_kwargs)
             ffmpeg_process_count += 1
             return sink
@@ -1082,6 +1094,8 @@ def _render_formal_context(
     hand_png: Path | None,
     preloaded_hand: tuple[np.ndarray, np.ndarray] | None,
     hand_sha256: str | None,
+    scene_preset: str = "medium",
+    scene_encoder_threads: int = 0,
     runtime_metrics: dict | None = None,
 ) -> tuple[Path, str]:
     prepare_started_ns = time.perf_counter_ns()
@@ -1114,6 +1128,8 @@ def _render_formal_context(
 
     def observed_sink_factory(*sink_args, **sink_kwargs):
         nonlocal ffmpeg_process_count
+        sink_kwargs.setdefault("preset", scene_preset)
+        sink_kwargs.setdefault("encoder_threads", scene_encoder_threads)
         sink = ffmpeg_frame_sink.FFmpegFrameSink(*sink_args, **sink_kwargs)
         ffmpeg_process_count += 1
         return sink
@@ -1154,7 +1170,13 @@ def _render_formal_context(
         expected_frame_count=scene["frameCount"],
         deep_receipt=_deep_receipt(candidate_media),
     )
-    render_options = _formal_render_options(args, cfg, hand_sha256=hand_sha256)
+    render_options = _formal_render_options(
+        args,
+        cfg,
+        hand_sha256=hand_sha256,
+        scene_preset=scene_preset,
+        scene_encoder_threads=scene_encoder_threads,
+    )
     manifest = render_timing.update_render_manifest(
         context,
         media=media,
@@ -1196,6 +1218,9 @@ def _run_formal(args) -> tuple[Path, str]:
     context = contexts[0]
     cfg = _formal_cfg(args, context.project.render_profile)
     hand_png, hand_data, hand_sha256 = _load_formal_hand(args, cfg)
+    encoding = project_workspace.load_workspace_config(
+        verify_writable=False
+    ).video_encoding
     return _render_formal_context(
         args,
         context,
@@ -1204,6 +1229,8 @@ def _run_formal(args) -> tuple[Path, str]:
         hand_png=hand_png,
         preloaded_hand=hand_data,
         hand_sha256=hand_sha256,
+        scene_preset=encoding.scene_preset,
+        scene_encoder_threads=encoding.scene_encoder_threads,
     )
 
 
@@ -1216,9 +1243,10 @@ def _run_formal_batch(args) -> dict:
         raise render_timing.RenderTimingError("正式 batch 没有可渲染场景")
     prepare_started_ns = time.perf_counter_ns()
     project = contexts[0].project
-    configured = project_workspace.load_workspace_config(
-        verify_writable=False
-    ).for_stage("sceneRender")
+    workspace = project_workspace.load_workspace_config(verify_writable=False)
+    configured = workspace.for_stage("sceneRender")
+    scene_preset = workspace.video_encoding.scene_preset
+    scene_encoder_threads = workspace.video_encoding.scene_encoder_threads
     cfg = _formal_cfg(args, project.render_profile)
     hand_png, hand_data, hand_sha256 = _load_formal_hand(args, cfg)
     effective = min(configured, len(contexts))
@@ -1239,6 +1267,8 @@ def _run_formal_batch(args) -> dict:
                 hand_png=hand_png,
                 preloaded_hand=hand_data,
                 hand_sha256=hand_sha256,
+                scene_preset=scene_preset,
+                scene_encoder_threads=scene_encoder_threads,
                 runtime_metrics=runtime_metrics,
             )
             scene_wall_ms = _elapsed_ms(scene_started_ns)
@@ -1285,7 +1315,13 @@ def _run_formal_batch(args) -> dict:
         )
         return summary
 
-    render_options = _formal_render_options(args, cfg, hand_sha256=hand_sha256)
+    render_options = _formal_render_options(
+        args,
+        cfg,
+        hand_sha256=hand_sha256,
+        scene_preset=scene_preset,
+        scene_encoder_threads=scene_encoder_threads,
+    )
     tasks: list[dict] = []
     expected_by_scene: dict[str, dict] = {}
     for context in contexts:
@@ -1313,6 +1349,8 @@ def _run_formal_batch(args) -> dict:
                 "bareTip": bool(args.bare_tip),
                 "imageSha256": image_sha256,
                 "annotationSha256": annotation_sha256,
+                "scenePreset": scene_preset,
+                "sceneEncoderThreads": scene_encoder_threads,
             }
         )
 
@@ -1476,6 +1514,11 @@ def _formal_error_exit_code(exc: Exception) -> int:
 
 
 def main(argv=None) -> int:
+    try:
+        from .cli_runtime import configure_utf8_stdio
+    except ImportError:  # pragma: no cover - direct script execution
+        from cli_runtime import configure_utf8_stdio  # type: ignore
+    configure_utf8_stdio()
     args = _parse_args(argv)
     if args.project or args.scene_id or args.all_scenes or args.scene_ids:
         try:

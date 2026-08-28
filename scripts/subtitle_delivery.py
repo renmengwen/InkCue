@@ -189,7 +189,7 @@ def select_authoritative_srt(project: Project) -> AuthoritativeSrt:
         raise SubtitleStaleError("audio/narration.srt 缺失或 stale，禁止回退 source SRT")
     return AuthoritativeSrt(
         mode=mode,
-        source_kind="edge-tts-narration-srt",
+        source_kind="voiceover-narration-srt",
         relative_path=relative,
         path=path,
         sha256=actual_sha,

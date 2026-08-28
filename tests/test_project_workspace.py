@@ -158,7 +158,11 @@ class ProjectWorkspaceTests(unittest.TestCase):
         )
         self.assertEqual(
             example["execution"]["videoEncoding"],
-            {"subtitlePreset": "medium"},
+            {
+                "subtitlePreset": "medium",
+                "scenePreset": "medium",
+                "sceneEncoderThreads": 0,
+            },
         )
         self.assertEqual(example["execution"]["concurrency"]["sceneRender"], 1)
         config = load_workspace_config(self.config_path)
@@ -173,9 +177,12 @@ class ProjectWorkspaceTests(unittest.TestCase):
             (SKILL_ROOT / "config" / "workspace.local.json").read_text(encoding="utf-8")
         )
         local_video = local_raw.get("execution", {}).get("videoEncoding", {})
-        self.assertEqual(set(local_video) - {"subtitlePreset"}, set())
+        self.assertEqual(
+            set(local_video) - {"subtitlePreset", "scenePreset", "sceneEncoderThreads"},
+            set(),
+        )
         self.assertEqual(local_video.get("subtitlePreset", "medium"), "medium")
-        self.assertEqual(local_raw["execution"]["concurrency"]["sceneRender"], 5)
+        self.assertEqual(local_raw["execution"]["concurrency"]["sceneRender"], 3)
         local_raw["workspaceRoot"] = str(self.workspace_root)
         local_config_path = self.case_root / "workspace-local-test.json"
         local_config_path.write_text(json.dumps(local_raw), encoding="utf-8")
@@ -183,7 +190,7 @@ class ProjectWorkspaceTests(unittest.TestCase):
             local_config_path,
             verify_writable=False,
         )
-        self.assertEqual(local_config.for_stage("sceneRender"), 5)
+        self.assertEqual(local_config.for_stage("sceneRender"), 3)
 
         relative_config = self.case_root / "relative.json"
         relative_config.write_text(

@@ -156,6 +156,8 @@ voice id；不得保存 API Key、Authorization、正文或完整 provider 响�
 voice id，审计必须明确记录 `voiceIdEchoAvailable=false`，不得把“客户端已发送”表述为
 “服务端已确认采用”。
 
+样音成功后同时输出非权威整轨时长预测：按 sample/current 全文的确定性可朗读权重比例缩放样音实测时长，记录 `estimatedFullDurationMs`、`targetDurationMs`、`estimatedDeviationRatio`、`estimateBasis=sample_weight_ratio_v1` 与 `authoritative=false`。它只用于阶段 0 提前提示明显偏差，绑定 current voice/rate/sample；不得进入作品 identity、替代完整旁白真实时钟或新增 Gate。
+
 技术校验只说明 WAV 可读、媒体合同正确，不代表 voice/rate 已获接受。样音在 `pending_initial_approval` 预项目中生成，用户必须在检查草案/制作方案的同一次阶段 0 交互中完整试听 current 样音。不得先用独立 `approve-sample` 把样音批准，再等待另一条内容选择。
 
 ```powershell

@@ -13,6 +13,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
+try:
+    from .cli_runtime import configure_utf8_stdio
+except ImportError:  # pragma: no cover - direct script/module execution
+    from cli_runtime import configure_utf8_stdio  # type: ignore
+
+# Nearly every public project CLI crosses this shared loader boundary.  The
+# helper is capture-safe, so library imports under StringIO remain untouched.
+configure_utf8_stdio()
+
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WORKSPACE_CONFIG = SKILL_ROOT / "config" / "workspace.local.json"
@@ -196,12 +205,26 @@ class ExecutionVideoEncoding:
     """正式视频编码选项；与 worker/agent 并发资源池分离。"""
 
     subtitle_preset: str = "medium"
+    scene_preset: str = "medium"
+    scene_encoder_threads: int = 0
 
     def __post_init__(self) -> None:
         _require_subtitle_preset(
             self.subtitle_preset,
             label="execution.videoEncoding.subtitlePreset",
         )
+        _require_subtitle_preset(
+            self.scene_preset,
+            label="execution.videoEncoding.scenePreset",
+        )
+        if (
+            isinstance(self.scene_encoder_threads, bool)
+            or not isinstance(self.scene_encoder_threads, int)
+            or not 0 <= self.scene_encoder_threads <= 16
+        ):
+            raise WorkspaceError(
+                "execution.videoEncoding.sceneEncoderThreads 必须是 0–16 的整数，0 表示编码器自动"
+            )
 
 
 @dataclass(frozen=True)
@@ -473,7 +496,7 @@ def _parse_video_encoding(value: Any) -> ExecutionVideoEncoding:
     label = "execution.videoEncoding"
     if not isinstance(value, dict):
         raise WorkspaceError(f"{label} 必须是 JSON 对象")
-    unknown = set(value) - {"subtitlePreset"}
+    unknown = set(value) - {"subtitlePreset", "scenePreset", "sceneEncoderThreads"}
     if unknown:
         raise WorkspaceError(f"{label} 包含未知字段: {', '.join(sorted(map(str, unknown)))}")
     preset = (
@@ -484,7 +507,20 @@ def _parse_video_encoding(value: Any) -> ExecutionVideoEncoding:
         if "subtitlePreset" in value
         else "medium"
     )
-    return ExecutionVideoEncoding(subtitle_preset=preset)
+    scene_preset = (
+        _require_subtitle_preset(
+            value["scenePreset"],
+            label=f"{label}.scenePreset",
+        )
+        if "scenePreset" in value
+        else "medium"
+    )
+    scene_threads = value.get("sceneEncoderThreads", 0)
+    return ExecutionVideoEncoding(
+        subtitle_preset=preset,
+        scene_preset=scene_preset,
+        scene_encoder_threads=scene_threads,
+    )
 
 
 def _parse_execution(

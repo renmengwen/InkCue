@@ -115,7 +115,9 @@ effective concurrency 取 configured、ready task 数、宿主已换算 child sl
 
 attempt 是 artifact 版本边界，不是 agent 生命周期边界。首次独立 draft/plan/review 使用短上下文 child；用户修订 content 草案仍创建新 attempt，但上一 attempt 的同 role child 仍存在、idle、上一结果 completed 且 role contract 兼容时，优先 followup 原 child，让它只读取新 task/base/revision 的路径与 SHA。原 child 不可用、失败、role 改变、修订升级为全面独立重写或用户明确要求换执行者时才 spawn 新 child。同一 attempt 的执行性补正也 followup 原 child；无论是否复用，磁盘 current 与 SHA 始终高于代理记忆。
 
-`contentDrafting`、`storyboardPlanning` 和 global `visualReview` 使用一 task一 child。`annotationDrafting` 保持一幕一 task/attempt/candidate/result（child 只写 candidate，result 由 coordinator 生成），但把按 plan 连续的最多 3 个 task 组成一个 dispatch unit，由同一 child 顺序执行。多个 ready unit 必须先填满 effective 并发再等待，不能串行伪装成并发。
+`contentDrafting`、`storyboardPlanning` 和 global `visualReview` 使用一 task一 child。`annotationDrafting` 保持一幕一 task/attempt/candidate/result（child 只写 candidate，result 由 coordinator 生成），但把按 plan 连续的最多 3 个 task 组成一个 dispatch unit，由同一 child 顺序执行。prepare 根据 configured concurrency 平衡连续切分：5 task/4 configured 为 `2+1+1+1`，9/3 为 `3+3+3`，5/2 为 `3+2`。多个 ready unit 必须先填满 effective 并发再等待，不能串行伪装成并发。
+
+coordinator 可在等待期间调用 `annotation_dispatch.py observe` 重验 candidate 并更新 coordinator-owned audit。首次 ready 的 candidate SHA 必须冻结；之后字节变化标记为 stale，当前观察不是 ready 时不得沿用旧 `candidateReadyAt` 建议 materialize。candidate ready 后 child 已结束则立即建议 materialize；仍运行时只等待固定 tail grace，随后返回 `finalizeRecommended=true`。公开 materialize 入口必须重验 current dispatch manifest、`finalizeRecommended` 和冻结 SHA 后才写 coordinator-owned result/materialized candidate。该 CLI 不调用、followup、取消或结束 child，也不写 result/formal/approval；coordinator 仍使用宿主协作工具处理 child 生命周期，再调用既有确定性 materialize/validate。audit 分别记录 prepare、first/last candidate ready、child tail 与 result materialize，阶段耗时不得全部留空。
 
 annotation unit 内不是“生成完三幕再统一校验”：child 每写完一个 `candidate.annotation.json` 就返回该 task 的 `candidate_ready`，coordinator 立即执行 descriptor 中的 `candidateLint.command`。只有 lint `PASS` 才允许该 child 继续 unit 内下一 task；lint `FAIL` 时只补正当前 candidate，避免统一 schema 错误扩散到整批。dispatch manifest 的 `LINT_CANDIDATE_BEFORE_NEXT_TASK` 是硬约束。
 

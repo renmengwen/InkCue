@@ -46,6 +46,8 @@ class FFmpegFrameSink:
         height: int,
         fps: int,
         expected_frame_count: int,
+        preset: str = "medium",
+        encoder_threads: int = 0,
         ffmpeg_executable: str | None = None,
         popen_factory: Callable[..., subprocess.Popen] = subprocess.Popen,
     ) -> None:
@@ -59,6 +61,14 @@ class FFmpegFrameSink:
                 raise MediaValidationError(f"{label} 必须为正整数")
         if width % 2 or height % 2:
             raise MediaValidationError("H.264/yuv420p 输出尺寸必须为偶数")
+        if preset not in {"medium", "fast", "veryfast"}:
+            raise MediaValidationError("scene preset 只允许 medium/fast/veryfast")
+        if (
+            isinstance(encoder_threads, bool)
+            or not isinstance(encoder_threads, int)
+            or not 0 <= encoder_threads <= 16
+        ):
+            raise MediaValidationError("scene encoder threads 必须是 0–16 的整数")
 
         self.output_path = Path(output_path)
         self.width = width
@@ -103,7 +113,9 @@ class FFmpegFrameSink:
             "-c:v",
             "libx264",
             "-preset",
-            "medium",
+            preset,
+            "-threads",
+            str(encoder_threads),
             "-crf",
             "18",
             "-pix_fmt",

@@ -40,7 +40,10 @@ ASR_CHANNELS = 1
 ASR_SAMPLE_WIDTH_BYTES = 2
 DEFAULT_TIMEOUT_SECONDS = 180.0
 MAX_VAD_SEGMENT_MS = 15_000
-MAX_FINAL_TIMESTAMP_OVERSHOOT_MS = 50
+# FunASR timestamps are quantised to acoustic-frame boundaries.  Only the
+# final sentence may be clamped, and only inside the same 80 ms tolerance used
+# by the final media duration contract.  Intermediate timestamps remain strict.
+MAX_FINAL_TIMESTAMP_OVERSHOOT_MS = 80
 MODEL_IDS = {
     "paraformer-zh": "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
     "fsmn-vad": "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
@@ -593,6 +596,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    try:
+        from .cli_runtime import configure_utf8_stdio
+    except ImportError:  # pragma: no cover - direct script execution
+        from cli_runtime import configure_utf8_stdio  # type: ignore
+    configure_utf8_stdio()
     args = build_parser().parse_args(argv)
     try:
         # Keep stdout machine-readable even when FunASR emits Python-level logs.

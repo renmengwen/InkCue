@@ -573,6 +573,11 @@ def _parse_arguments(arguments: list[str]) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        from .cli_runtime import configure_utf8_stdio
+    except ImportError:  # pragma: no cover - direct script execution
+        from cli_runtime import configure_utf8_stdio  # type: ignore
+    configure_utf8_stdio()
     arguments = sys.argv[1:] if argv is None else argv
     try:
         args = _parse_arguments(arguments)

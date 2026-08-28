@@ -3,7 +3,9 @@
   "workspaceRoot": "D:\\SRTWhiteboard",
   "execution": {
     "videoEncoding": {
-      "subtitlePreset": "medium"
+      "subtitlePreset": "medium",
+      "scenePreset": "medium",
+      "sceneEncoderThreads": 2
     },
     "agents": {
       "default": 4,
@@ -20,7 +22,7 @@
       "voiceValidation": 6,
       "annotationValidation": 6,
       "annotationPreview": 6,
-      "sceneRender": 5,
+      "sceneRender": 3,
       "sceneMediaValidation": 8,
       "finalMediaValidation": 8
     }

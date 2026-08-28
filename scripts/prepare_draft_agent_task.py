@@ -12,8 +12,10 @@ import math
 import os
 import re
 import sys
+import time
 import unicodedata
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -579,6 +581,8 @@ def _prepare_input(args: argparse.Namespace, draft_root: Path) -> tuple[str, Pat
 
 
 def prepare_draft_task(args: argparse.Namespace) -> dict[str, Any]:
+    prepare_started = time.perf_counter()
+    prepare_started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     workspace = load_workspace_config(args.workspace_config)
     draft_root = Path(args.draft_root).resolve(strict=False)
     expected_parent = (workspace.root / "drafts").resolve(strict=False)
@@ -693,6 +697,8 @@ def prepare_draft_task(args: argparse.Namespace) -> dict[str, Any]:
         "runId": run_id,
         "attempt": args.attempt,
         "configuredAgentConcurrency": workspace.for_role(args.role),
+        "prepareStartedAt": prepare_started_at,
+        "prepareDurationMs": round((time.perf_counter() - prepare_started) * 1000),
         "preparedTask": prepared_task,
     }
 
@@ -722,6 +728,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        from .cli_runtime import configure_utf8_stdio
+    except ImportError:  # pragma: no cover - direct script execution
+        from cli_runtime import configure_utf8_stdio  # type: ignore
+    configure_utf8_stdio()
     parser = build_parser()
     try:
         args = parser.parse_args(argv)

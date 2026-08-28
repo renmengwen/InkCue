@@ -19,6 +19,8 @@ runner 会在同一进程内复用 project/config/formal validation context（�
 
 runner 不接受自动批准参数，不读取聊天记录或项目开关推断批准。技术 PASS、candidate、receipt、agent findings、用户未反对或 AI 无异常摘要，都不能视为批准。摘要中的 `approvalWritten` 在每个 Gate 都必须为 `false`：人工模式的用户回复必须明确指向 artifact 和 identity；AI 代理模式由 coordinator 在 runner 返回后接回真实审阅、决策和既有批准脚本调用。
 
+runner 外层 stdout 使用严格白名单投影：保留状态、identity、并发、计数、artifact、短 deep-validation/timing/provider/dispatch/fallback 摘要，以及 receipt/manifest 路径；不得嵌入 adapter 的完整 `outputs`、深层 media receipt、manifest 或长日志。恢复命令中的 `run_phase.py` 必须来自 `Path(__file__).resolve()` 的绝对路径，不依赖调用者 cwd。
+
 ## final-delivery
 
 ```powershell

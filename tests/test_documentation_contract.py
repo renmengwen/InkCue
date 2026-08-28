@@ -146,7 +146,12 @@ class DocumentationContractTests(unittest.TestCase):
 
         for document in (skill, readme):
             with self.subTest(document="SKILL.md" if document is skill else "README.md"):
-                self.assertIn("python scripts/prepare_env.py --check", document.replace("\\", "/"))
+                expected = (
+                    "python <SKILL_ROOT>/scripts/prepare_env.py --check"
+                    if document is skill
+                    else "python scripts/prepare_env.py --check"
+                )
+                self.assertIn(expected, document.replace("\\", "/"))
                 self.assertIn("ENV_PY", document)
                 self.assertIn("绝对路径", document)
                 self.assertIn("裸 `python`", document)

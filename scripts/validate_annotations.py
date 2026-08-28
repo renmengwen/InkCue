@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,7 +37,11 @@ try:
         WorkerOutcome,
         execute_bounded,
     )
-    from .annotation_dispatch import build_dispatch_manifest, utc_now
+    from .annotation_dispatch import (
+        DISPATCH_MANIFEST_CONTRACT,
+        build_dispatch_manifest,
+        utc_now,
+    )
     from .annotation_contract import (
         AnnotationContractError,
         SUPPORTED_VISUAL_ELEMENTS_CONTRACTS,
@@ -79,7 +84,11 @@ except ImportError:  # pragma: no cover - direct script execution
         WorkerOutcome,
         execute_bounded,
     )
-    from annotation_dispatch import build_dispatch_manifest, utc_now
+    from annotation_dispatch import (  # type: ignore
+        DISPATCH_MANIFEST_CONTRACT,
+        build_dispatch_manifest,
+        utc_now,
+    )
     from annotation_contract import (
         AnnotationContractError,
         SUPPORTED_VISUAL_ELEMENTS_CONTRACTS,
@@ -717,12 +726,12 @@ def load_annotation_tasks_from_candidate_root(
 ) -> tuple[AnnotationDraftingTask, ...]:
     """从一个可信 run/agent-tasks root 读取 task；不接受 scope/run 逃逸。"""
 
+    if candidate_root.is_symlink():
+        raise AnnotationBatchError("candidate root 不能是符号链接")
     root = candidate_root.resolve(strict=True)
     relative = root.relative_to(project.root.resolve(strict=True))
     if len(relative.parts) != 3 or relative.parts[0] != ".work" or relative.parts[2] != "agent-tasks":
         raise AnnotationBatchError("candidate root 必须是 project/.work/<run-id>/agent-tasks")
-    if root.is_symlink():
-        raise AnnotationBatchError("candidate root 不能是符号链接")
     run_id = relative.parts[1]
     bindings = context_bindings(project, context)
     latest_task_json: dict[str, tuple[int, Path]] = {}
@@ -827,9 +836,20 @@ def build_annotation_prepare_summary(
         )
 
     unit_size = ANNOTATION_MAX_TASKS_PER_DISPATCH_UNIT
+    configured = int(audit["configuredAgentConcurrency"])
+    task_count = len(tasks)
+    desired_units = min(configured, task_count)
+    unit_count = max((task_count + unit_size - 1) // unit_size, desired_units)
+    base_size, larger_units = divmod(task_count, unit_count)
+    chunk_sizes = [
+        base_size + (1 if index < larger_units else 0)
+        for index in range(unit_count)
+    ]
     dispatch_units: list[dict[str, Any]] = []
-    for offset in range(0, len(tasks), unit_size):
-        unit_tasks = list(tasks[offset : offset + unit_size])
+    offset = 0
+    for chunk_size in chunk_sizes:
+        unit_tasks = list(tasks[offset : offset + chunk_size])
+        offset += chunk_size
         unit_number = len(dispatch_units) + 1
         result_paths = [
             str(drafting.task.context.result_json.resolve(strict=False))
@@ -878,10 +898,11 @@ def build_annotation_prepare_summary(
     ]
     dispatch_audit.setdefault("auditContractVersion", "whiteboard-annotation-preparation-audit-v1")
     timestamps = dispatch_audit.setdefault("timestamps", {})
-    timestamps.setdefault("dispatchStartedAt", None)
+    timestamps.setdefault("dispatchStartedAt", audit.get("prepareStartedAt"))
+    timestamps.setdefault("prepareStartedAt", audit.get("prepareStartedAt"))
     timestamps["prepareCompletedAt"] = utc_now()
     durations = dispatch_audit.setdefault("durationsMs", {})
-    durations.setdefault("prepare", None)
+    durations.setdefault("prepare", audit.get("prepareDurationMs"))
     durations.setdefault("candidate", None)
     durations.setdefault("childTail", None)
     durations.setdefault("resultMaterialize", None)
@@ -963,6 +984,119 @@ def _lint_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _materialize_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="为已就绪的 annotation candidate 确定性生成 coordinator result"
+    )
+    parser.add_argument("--project", required=True)
+    parser.add_argument("--candidate-root", required=True, type=Path)
+    parser.add_argument("--task-id", required=True)
+    parser.add_argument("--config")
+    parser.add_argument("--allow-v1-disabled-compat", action="store_true")
+    return parser
+
+
+def _materialize_main(argv: Sequence[str]) -> int:
+    started = time.perf_counter()
+    args = _materialize_parser().parse_args(argv)
+    try:
+        workspace = load_workspace_config(args.config)
+        project = load_project(args.project)
+        context = build_formal_validation_context(project)
+        tasks = load_annotation_tasks_from_candidate_root(
+            workspace,
+            project,
+            args.candidate_root,
+            context=context,
+        )
+        drafting = next(
+            (item for item in tasks if item.task.data["taskId"] == args.task_id),
+            None,
+        )
+        if drafting is None:
+            raise AnnotationBatchError("taskId 不在 current candidate root")
+        candidate_root = args.candidate_root.resolve(strict=True)
+        dispatch_manifest_path = candidate_root / "dispatch-manifest.json"
+        if dispatch_manifest_path.is_symlink() or not dispatch_manifest_path.is_file():
+            raise AnnotationBatchError("current dispatch manifest 缺失或为符号链接")
+        dispatch_manifest = json.loads(dispatch_manifest_path.read_text(encoding="utf-8"))
+        if (
+            not isinstance(dispatch_manifest, dict)
+            or dispatch_manifest.get("contractVersion") != DISPATCH_MANIFEST_CONTRACT
+            or Path(str(dispatch_manifest.get("candidateRoot"))).resolve(strict=True)
+            != candidate_root
+        ):
+            raise AnnotationBatchError("current dispatch manifest 合同或 candidateRoot 无效")
+        observations = dispatch_manifest.get("audit", {}).get("taskObservations", {})
+        observation = observations.get(args.task_id) if isinstance(observations, dict) else None
+        if (
+            not isinstance(observation, dict)
+            or observation.get("status") != "ready"
+            or observation.get("finalizeRecommended") is not True
+        ):
+            raise AnnotationBatchError("watchdog 尚未为 current candidate 建议 materialize")
+        frozen_sha256 = observation.get("frozenCandidateSha256")
+        if (
+            not isinstance(frozen_sha256, str)
+            or agent_sha256_file(drafting.candidate_path) != frozen_sha256
+        ):
+            raise AnnotationBatchError("current candidate 与 watchdog 冻结 SHA 不一致")
+        _materialize_coordinator_result(drafting, project=project, context=context)
+        validated = validate_agent_result(
+            drafting.task.context.result_json,
+            drafting.task,
+            dispatched_task_sha256=drafting.task.task_sha256,
+            expected_current_bindings=context_bindings(project, context),
+            output_validator=lambda kind, path: _load_visual_elements_candidate(path)
+            if kind == "annotationDrafting" and path.name == "candidate.annotation.json"
+            else None,
+        )
+        _materialize_annotation_candidate(drafting, project=project, context=context)
+        _candidate_business_validator(
+            project,
+            context,
+            drafting.scene_id,
+            drafting.materialized_path,
+            allow_v1_disabled_compat=args.allow_v1_disabled_compat,
+        )
+        duration_ms = round((time.perf_counter() - started) * 1000)
+        audit = dispatch_manifest.setdefault("audit", {})
+        audit.setdefault("timestamps", {})["resultMaterializedAt"] = utc_now()
+        audit.setdefault("durationsMs", {})["resultMaterialize"] = duration_ms
+        observation["resultMaterializedAt"] = utc_now()
+        observation["resultSha256"] = agent_sha256_file(
+            drafting.task.context.result_json
+        )
+        write_json_atomic(dispatch_manifest_path, dispatch_manifest)
+        summary = {
+            "contractVersion": "whiteboard-annotation-result-materialize-v1",
+            "operation": "materialize",
+            "status": "PASS",
+            "taskId": args.task_id,
+            "sceneId": drafting.scene_id,
+            "resultJsonPath": str(drafting.task.context.result_json.resolve(strict=True)),
+            "resultSha256": agent_sha256_file(drafting.task.context.result_json),
+            "materializedAnnotationPath": str(drafting.materialized_path.resolve(strict=True)),
+            "resultStatus": validated.data["status"],
+            "resultMaterializeMs": duration_ms,
+            "formalWritesPerformed": False,
+            "approvalWritten": False,
+        }
+        code = 0
+    except Exception as exc:
+        summary = {
+            "contractVersion": "whiteboard-annotation-result-materialize-v1",
+            "operation": "materialize",
+            "status": "FAIL",
+            "error": str(exc),
+            "formalWritesPerformed": False,
+            "approvalWritten": False,
+        }
+        code = 2
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    return code
+
+
 def _lint_main(argv: Sequence[str]) -> int:
     args = _lint_parser().parse_args(argv)
     try:
@@ -1008,6 +1142,8 @@ def _prepare_failure(exc: Exception) -> AnnotationPrepareCLIError:
 
 
 def _prepare_main(argv: Sequence[str]) -> int:
+    started = time.perf_counter()
+    started_at = utc_now()
     try:
         args = _prepare_parser().parse_args(argv)
         if args.images_confirmed is not True:
@@ -1027,6 +1163,8 @@ def _prepare_main(argv: Sequence[str]) -> int:
             scene_ids=args.scene_ids,
             run_id=args.run_id,
         )
+        audit["prepareStartedAt"] = started_at
+        audit["prepareDurationMs"] = round((time.perf_counter() - started) * 1000)
         summary = build_annotation_prepare_summary(tasks, audit)
     except Exception as exc:
         failure = _prepare_failure(exc)
@@ -1079,11 +1217,18 @@ def _validate_main(argv: Sequence[str]) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    try:
+        from .cli_runtime import configure_utf8_stdio
+    except ImportError:  # pragma: no cover - direct script execution
+        from cli_runtime import configure_utf8_stdio  # type: ignore
+    configure_utf8_stdio()
     raw = list(sys.argv[1:] if argv is None else argv)
     if raw and raw[0] == "prepare":
         return _prepare_main(raw[1:])
     if raw and raw[0] == "lint":
         return _lint_main(raw[1:])
+    if raw and raw[0] == "materialize":
+        return _materialize_main(raw[1:])
     if raw and raw[0] == "validate":
         raw = raw[1:]
     return _validate_main(raw)

@@ -253,7 +253,7 @@ def _assert_subtitle_identity(project: Project, manifest: Mapping[str, Any]) -> 
     except SubtitleDeliveryError as exc:
         raise FinalMediaStaleError(str(exc)) from exc
     subtitles = _require_mapping(manifest.get("subtitles"), "subtitles")
-    expected_kind = "source-srt" if project.voiceover_mode == "disabled" else "edge-tts-narration-srt"
+    expected_kind = "source-srt" if project.voiceover_mode == "disabled" else "voiceover-narration-srt"
     expected_values = {
         "sourceKind": expected_kind,
         "file": selection.relative_path,
@@ -261,7 +261,13 @@ def _assert_subtitle_identity(project: Project, manifest: Mapping[str, Any]) -> 
         "timelineSha256": selection.timeline_sha256,
     }
     for field, expected in expected_values.items():
-        if subtitles.get(field) != expected:
+        actual = subtitles.get(field)
+        legacy_voiceover_kind = (
+            field == "sourceKind"
+            and project.voiceover_mode != "disabled"
+            and actual == "edge-tts-narration-srt"
+        )
+        if actual != expected and not legacy_voiceover_kind:
             raise FinalMediaStaleError(f"subtitles.{field} 与 current 权威字幕不一致")
     style = _require_mapping(subtitles.get("style"), "subtitles.style")
     font = _require_mapping(style.get("font"), "subtitles.style.font")

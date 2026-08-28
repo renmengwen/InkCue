@@ -22,7 +22,9 @@
 | mode | 权威 SRT | 必须满足 |
 |---|---|---|
 | `disabled` | `source/source.srt` | 文件 SHA 同时匹配 `project.json.source.sha256`、`timing-plan.sourceSrtSha256` 和 `activeTimeline` |
-| `edge-tts` | `audio/narration.srt` | `timing-plan.activeTimeline` 必须绑定 current `audio/timeline.json`；timeline 文件必须以 `narrationSrt.file/sha256` 绑定该 SRT |
+| `edge-tts` / `minimax` / `doubao` | `audio/narration.srt` | `timing-plan.activeTimeline` 必须绑定 current `audio/timeline.json`；timeline 文件必须以 `narrationSrt.file/sha256` 绑定该 SRT |
+
+Edge、MiniMax 与豆包的新 delivery evidence 统一写 `sourceKind=voiceover-narration-srt`；历史 `edge-tts-narration-srt` 仅作为旧 manifest 的只读兼容别名，新项目和重建产物不得继续写 provider 错配的旧值。
 
 Edge 模式的外层 timing plan 保存 timeline 文件 SHA；timeline 内不保存等于自身文件 SHA 的自引用字段。任一文件缺失、hash 不匹配或 binding stale 时立即失败，禁止回退到 `source/source.srt`。Disabled 模式即使残留 narration SRT，也只能使用 source SRT。annotation 的 `subtitle` 字段不是正式烧录时间轴。
 
@@ -84,6 +86,8 @@ captioned/final 产物包含哪些阶段专属 binding。
 ```
 
 `subtitlePreset` 只允许 `medium | fast | veryfast`。缺少整个 `videoEncoding` 或只缺少 `subtitlePreset` 时，loader 直接使用默认 `medium`，无需为了默认值改写 `workspace.local.json`；非字符串、大小写变体、其他 preset 或未知字段必须拒绝。`burn_subtitles.py` 只读取该 workspace 配置，不提供临时 `--preset` 覆盖。
+
+同一对象还可配置 scene 软件编码：`scenePreset=medium|fast|veryfast` 与 `sceneEncoderThreads=0..16`（0 表示 x264 自动）。默认仍为 `medium/0` 以兼容旧配置；性能示例针对 6 核/12 线程基线使用 `sceneRender=3`、每 encoder 2 threads，避免多个 libx264 进程各自争抢全部 CPU。它不启用 GPU 编码，也不改变 FFmpeg/libx264、CRF18、yuv420p 与发布/验证边界。
 
 preset 进入 `subtitle-burn-v2` encoding contract，并随 contract 写入 delivery manifest 与 media technical receipt。它还进入 subtitle identity、captioned binding 以及 Disabled/Edge final identity，因此是正式视频字节、文件大小和 identity 的输入；这与只改变本机调度、排除在作品 identity 之外的 worker concurrency 不同。
 

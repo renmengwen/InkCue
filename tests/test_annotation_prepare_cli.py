@@ -254,11 +254,11 @@ class AnnotationPrepareCLITests(AnnotationBatchFixture):
             "--images-confirmed",
         )
         self.assertEqual(exit_code, 0)
-        self.assertEqual(summary["dispatchUnitCount"], 1)
+        self.assertEqual(summary["dispatchUnitCount"], 3)
         self.assertEqual(summary["dispatchPlan"]["granularity"], "contiguous-bundle-v1")
         self.assertEqual(summary["dispatchPlan"]["maxTasksPerDispatchUnit"], 3)
-        self.assertEqual([unit["taskCount"] for unit in summary["dispatchUnits"]], [3])
-        self.assertTrue(all(len(unit["preparedTasks"]) == 3 for unit in summary["dispatchUnits"]))
+        self.assertEqual([unit["taskCount"] for unit in summary["dispatchUnits"]], [1, 1, 1])
+        self.assertTrue(all(len(unit["preparedTasks"]) == 1 for unit in summary["dispatchUnits"]))
 
         legacy_exit, legacy_summary = self.run_prepare(
             project,
