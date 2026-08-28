@@ -66,6 +66,7 @@ identity 是规范化业务输入与合同版本的 SHA-256，不包含创建时
 | 仅 `imagePrompt`/正式 `prompt` 改变，cue 与 scene boundary 不变 | generation plan、图片及视觉下游 | current 音频、timeline、narration SRT |
 | voice/rate/朗读文本/分段/provider synthesis contract | sample/full 批准、受影响音频、timeline、SRT、annotation、视频和最终批准 | identity 未变的其他 segment |
 | source 仅改时间或 narration WAV 改变 | 时长决定、full approval、timeline、SRT、annotation 与视频下游 | 未受影响的图片/合成段 |
+| 仅 ASR/对齐/语义切句合同或 narration SRT 改变，scene 全局边界不变 | full approval、字幕烧录、captioned/final 与最终批准 | current canonical WAV、图片、annotation、scene bundle、clean master；按新 binding 重验 |
 | timing plan、render profile、字幕源/样式/字体或编码 contract 改变 | 受影响 annotation、scene/video、subtitle/final 与批准 | 未绑定输入的上游候选，需重新 binding |
 | `backgroundMusic.enabled`、内置 BGM 字节或固定混音参数改变 | final 与最终批准 | current 旁白、timeline、画面和字幕 |
 | pending 预项目的 content identity、voice/rate 或 sample identity 改变 | 初始联合 choice、sample approval 及受影响下游 | 不受影响的历史候选仅作证据 |

@@ -126,16 +126,23 @@ except ImportError:  # pragma: no cover - direct script execution / staged integ
         align_reference_audio = None  # type: ignore[assignment]
 
 try:
-    from .transcribe_narration import transcribe_narration
+    from .transcribe_narration import (
+        CONTRACT_VERSION as NARRATION_ASR_CONTRACT_VERSION,
+        transcribe_narration,
+    )
 except ImportError:  # pragma: no cover - direct script execution / staged integration
     try:
-        from transcribe_narration import transcribe_narration
+        from transcribe_narration import (  # type: ignore[no-redef]
+            CONTRACT_VERSION as NARRATION_ASR_CONTRACT_VERSION,
+            transcribe_narration,
+        )
     except ImportError:  # pragma: no cover - fail closed until the companion module is installed
+        NARRATION_ASR_CONTRACT_VERSION = "narration-funasr-token-timestamp-v3"
         transcribe_narration = None  # type: ignore[assignment]
 
 
-VOICE_TIMELINE_SCHEMA_VERSION = 1
-VOICE_TIMELINE_CONTRACT_VERSION = "audio-authoritative-timeline-v1"
+VOICE_TIMELINE_SCHEMA_VERSION = 2
+VOICE_TIMELINE_CONTRACT_VERSION = "audio-authoritative-timeline-v2"
 VOICE_CLI_CONTRACT_VERSION = "voiceover-cli-v2"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0
 LEGACY_CANONICAL_WAV_VALIDATOR_RECEIPT_VERSION = "canonical-wav-validator-receipt-v1"
@@ -1580,7 +1587,7 @@ def _build_aligned_timeline(
     }
     observed_source_text: dict[int, str] = {ordinal: "" for ordinal in expected_source_text}
     timeline_units: list[dict[str, Any]] = []
-    cursor = 0
+    previous_end_ms = -1
     previous_ordinal = 0
     for expected_index, cue in enumerate(cues, start=1):
         if not isinstance(cue, Mapping) or cue.get("index") != expected_index:
@@ -1602,10 +1609,12 @@ def _build_aligned_timeline(
             or not isinstance(start_ms, int)
             or isinstance(end_ms, bool)
             or not isinstance(end_ms, int)
-            or start_ms != cursor
+            or start_ms < 0
             or end_ms <= start_ms
+            or end_ms > composite.durationMs
+            or (previous_end_ms >= 0 and start_ms < previous_end_ms)
         ):
-            raise VoiceoverStateError("reference alignment cue 必须连续、正时长且从 0 开始")
+            raise VoiceoverStateError("reference alignment cue 必须非重叠、正时长且位于整轨范围内")
         if not isinstance(text, str) or not text.strip():
             raise VoiceoverStateError("reference alignment cue 文本不能为空")
         if cue.get("sourceCueRange") != [ordinal, ordinal]:
@@ -1627,24 +1636,39 @@ def _build_aligned_timeline(
                 "voiceSynthesisIdentityHash": full_track_unit["voiceSynthesisIdentityHash"],
             }
         )
-        cursor = end_ms
+        previous_end_ms = end_ms
         previous_ordinal = ordinal
-    if cursor != composite.durationMs:
-        raise VoiceoverStateError("reference alignment 最后一条 cue 未收口到整轨真实时长")
     if observed_source_text != expected_source_text:
         raise VoiceoverStateError("reference alignment 文本未逐字覆盖已确认 source SRT")
 
     fps = int(project.render_profile["fps"])
     scenes: list[dict[str, Any]] = []
-    scene_cursor = 0
     frame_cursor = 0
-    for scene_index, spec in enumerate(scene_specs):
+    aligned_scenes = alignment.get("scenes")
+    if not isinstance(aligned_scenes, list) or len(aligned_scenes) != len(scene_specs):
+        raise VoiceoverStateError("reference alignment scenes 与已批准语义场景数量不一致")
+    scene_cursor = 0
+    for scene_index, (spec, aligned_scene) in enumerate(zip(scene_specs, aligned_scenes)):
+        if not isinstance(aligned_scene, Mapping):
+            raise VoiceoverStateError("reference alignment scene 结构无效")
         scene_units = [item for item in timeline_units if item["sceneId"] == spec["sceneId"]]
         if not scene_units:
             raise VoiceoverStateError(f"{spec['sceneId']} 未覆盖任何对齐 cue")
-        end_ms = composite.durationMs if scene_index == len(scene_specs) - 1 else scene_units[-1]["endMs"]
-        if scene_units[0]["startMs"] != scene_cursor or scene_units[-1]["endMs"] != end_ms:
-            raise VoiceoverStateError(f"{spec['sceneId']} 对齐 cue 未连续覆盖场景")
+        end_ms = aligned_scene.get("endMs")
+        if (
+            aligned_scene.get("sceneId") != spec["sceneId"]
+            or aligned_scene.get("sourceCueRange") != spec["sourceCueRange"]
+            or aligned_scene.get("startMs") != scene_cursor
+            or isinstance(end_ms, bool)
+            or not isinstance(end_ms, int)
+            or end_ms <= scene_cursor
+            or end_ms > composite.durationMs
+            or scene_units[0]["startMs"] < scene_cursor
+            or scene_units[-1]["endMs"] > end_ms
+        ):
+            raise VoiceoverStateError(f"{spec['sceneId']} 对齐 scene 未连续覆盖真实音频时钟")
+        if scene_index == len(scene_specs) - 1 and end_ms != composite.durationMs:
+            raise VoiceoverStateError("reference alignment 最后一幕未收口到整轨真实时长")
         end_frame = (end_ms * fps + 999) // 1000
         scenes.append(
             {
@@ -1677,10 +1701,29 @@ def _build_aligned_timeline(
     diagnostics_summary = {
         key: value
         for key, value in dict(diagnostics).items()
-        if key in {"matchRatio", "normalizedEditRatio", "asrCueCount", "outputCueCount"}
-        and isinstance(value, (int, float))
-        and not isinstance(value, bool)
+        if (
+            key in {
+                "matchRatio",
+                "normalizedEditRatio",
+                "asrCueCount",
+                "outputCueCount",
+                "maxBoundaryDisplacementTokens",
+            }
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+        )
     } if isinstance(diagnostics, Mapping) else {}
+    if isinstance(diagnostics, Mapping):
+        diagnostics_summary.update(
+            {
+                "tokenTimingUsed": diagnostics.get("tokenTimingUsed") is True,
+                "qualityGatePassed": diagnostics.get("qualityGatePassed") is True,
+                "captionSegmentationContract": diagnostics.get(
+                    "captionSegmentationContract"
+                ),
+                "subtitleGaps": copy.deepcopy(diagnostics.get("subtitleGaps")),
+            }
+        )
     timeline = {
         "schemaVersion": VOICE_TIMELINE_SCHEMA_VERSION,
         "contractVersion": VOICE_TIMELINE_CONTRACT_VERSION,
@@ -1847,17 +1890,26 @@ def _run_local_asr(project: Project, narration_path: Path) -> Path:
         raise VoiceoverStateError("本地 narration ASR rawSrtPath 不存在")
     duration_ms = payload.get("durationMs")
     sentence_count = payload.get("sentenceCount")
+    token_count = payload.get("tokenCount")
     timing = payload.get("timingValidation")
     if (
-        isinstance(duration_ms, bool)
+        payload.get("contractVersion") != NARRATION_ASR_CONTRACT_VERSION
+        or payload.get("evidenceKind") != "token_timestamp"
+        or isinstance(duration_ms, bool)
         or not isinstance(duration_ms, int)
         or duration_ms <= 0
         or isinstance(sentence_count, bool)
         or not isinstance(sentence_count, int)
         or sentence_count <= 0
+        or isinstance(token_count, bool)
+        or not isinstance(token_count, int)
+        or token_count != sentence_count
         or not isinstance(timing, Mapping)
+        or timing.get("evidenceKind") != "token_timestamp"
     ):
-        raise VoiceoverStateError("本地 narration ASR 摘要缺少有效时长、句数或时间校验")
+        raise VoiceoverStateError(
+            "本地 narration ASR 摘要缺少有效的 v3 token 时间证据"
+        )
     return raw_srt_path
 
 
@@ -1944,19 +1996,43 @@ def validate_current_voiceover(
         raise ApprovalGateError("audio timeline 未绑定 current narration.srt")
     if timeline.get("narrationSrt", {}).get("file") != "audio/narration.srt":
         raise VoiceoverStateError("audio timeline narrationSrt.file 无效")
-    if timeline.get("units", [{}])[0].get("startMs") != 0:
-        raise VoiceoverStateError("audio timeline 第一 unit 必须从 0 开始")
-    previous = 0
-    for unit in timeline.get("units", []):
-        if unit.get("startMs") != previous or unit.get("endMs", 0) <= previous:
-            raise VoiceoverStateError("audio timeline units 必须连续且正时长")
-        previous = unit["endMs"]
-    if previous != composite.durationMs:
-        raise VoiceoverStateError("audio timeline 未收口到整轨实测时长")
+    if (
+        timeline.get("schemaVersion") != VOICE_TIMELINE_SCHEMA_VERSION
+        or timeline.get("contractVersion") != VOICE_TIMELINE_CONTRACT_VERSION
+    ):
+        raise ApprovalGateError("audio timeline 合同版本已 stale，必须重新执行 token 对齐")
+    alignment_diagnostics = timeline.get("alignment", {}).get("diagnostics", {})
+    if (
+        not isinstance(alignment_diagnostics, Mapping)
+        or alignment_diagnostics.get("tokenTimingUsed") is not True
+        or alignment_diagnostics.get("qualityGatePassed") is not True
+        or alignment_diagnostics.get("captionSegmentationContract")
+        != "reference-punctuation-caption-v1"
+    ):
+        raise VoiceoverStateError("audio timeline 缺少 token 级时间与语义安全切句 QA")
+    timeline_units = timeline.get("units")
+    if not isinstance(timeline_units, list) or not timeline_units:
+        raise VoiceoverStateError("audio timeline units 不能为空")
+    previous = -1
+    for unit in timeline_units:
+        start_ms = unit.get("startMs")
+        end_ms = unit.get("endMs")
+        if (
+            isinstance(start_ms, bool)
+            or not isinstance(start_ms, int)
+            or isinstance(end_ms, bool)
+            or not isinstance(end_ms, int)
+            or start_ms < 0
+            or end_ms <= start_ms
+            or end_ms > composite.durationMs
+            or (previous >= 0 and start_ms < previous)
+        ):
+            raise VoiceoverStateError("audio timeline units 必须非重叠、正时长且位于整轨范围内")
+        previous = end_ms
     narration_cues = parse_srt(paths["srt"].read_text(encoding="utf-8-sig"))
-    if len(narration_cues) != len(timeline.get("units", [])):
+    if len(narration_cues) != len(timeline_units):
         raise VoiceoverStateError("narration SRT cue 数与 timeline units 不一致")
-    for cue, unit in zip(narration_cues, timeline["units"]):
+    for cue, unit in zip(narration_cues, timeline_units):
         if (
             cue["startMs"] != unit["startMs"]
             or cue["endMs"] != unit["endMs"]

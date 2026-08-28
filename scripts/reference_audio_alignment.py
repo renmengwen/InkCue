@@ -1,14 +1,13 @@
-"""Align an authoritative reference SRT to sentence-level ASR timing.
+"""Align an authoritative reference SRT to token-level ASR timing.
 
 The reference text always wins.  ASR text is used only to locate acoustic
-boundaries in that text.  The first version deliberately fails closed when
-there are not enough real ASR boundaries to preserve every confirmed source
-cue boundary; it never manufactures timing from character proportions.
+boundaries in that text. The aligner fails closed when real token boundaries
+cannot preserve every semantic caption boundary; it never manufactures timing
+from character proportions.
 """
 
 from __future__ import annotations
 
-import bisect
 import difflib
 import unicodedata
 from collections.abc import Mapping, Sequence
@@ -22,6 +21,8 @@ except ImportError:  # direct scripts import
 
 DEFAULT_MIN_MATCH_RATIO = 0.72
 DEFAULT_MAX_NORMALIZED_EDIT_RATIO = 0.35
+# Legacy public thresholds are retained for import compatibility. The active
+# token-alignment path uses the caption-specific limits declared below.
 DEFAULT_MAX_CUE_MS_PER_CHARACTER = 1_200.0
 DEFAULT_MAX_CUE_RATE_MULTIPLIER = 4.0
 DEFAULT_MIN_RATE_OUTLIER_DURATION_MS = 10_000
@@ -47,24 +48,6 @@ def normalise_alignment_text(text: str) -> str:
     """Return the punctuation-insensitive form used for alignment checks."""
 
     return "".join(_normalised_characters(text))
-
-
-def _raw_boundaries(text: str) -> tuple[str, list[int]]:
-    """Return normalised text and raw offsets for its semantic boundaries.
-
-    Punctuation between two spoken characters stays with the preceding span,
-    which preserves natural Chinese subtitle punctuation when a cue is split.
-    """
-
-    characters: list[str] = []
-    raw_starts: list[int] = []
-    for raw_offset, raw_character in enumerate(text):
-        for character in _normalised_characters(raw_character):
-            characters.append(character)
-            raw_starts.append(raw_offset)
-    if not characters:
-        return "", [0]
-    return "".join(characters), [0, *raw_starts[1:], len(text)]
 
 
 def _levenshtein_distance(left: str, right: str) -> tuple[int, str]:
@@ -95,41 +78,6 @@ def _levenshtein_distance(left: str, right: str) -> tuple[int, str]:
     return previous[-1], "exact"
 
 
-def _asr_to_reference_boundary_map(asr_text: str, reference_text: str) -> list[int]:
-    """Map every ASR character boundary to a monotonic reference boundary."""
-
-    matcher = difflib.SequenceMatcher(None, asr_text, reference_text, autojunk=False)
-    mapped: list[int | None] = [None] * (len(asr_text) + 1)
-    for tag, asr_start, asr_end, ref_start, ref_end in matcher.get_opcodes():
-        asr_length = asr_end - asr_start
-        ref_length = ref_end - ref_start
-        if tag == "equal":
-            for offset in range(asr_length + 1):
-                mapped[asr_start + offset] = ref_start + offset
-        elif asr_length == 0:
-            mapped[asr_start] = ref_end
-        elif ref_length == 0:
-            for offset in range(asr_length + 1):
-                mapped[asr_start + offset] = ref_start
-        else:
-            for offset in range(asr_length + 1):
-                mapped[asr_start + offset] = round(
-                    ref_start + ref_length * offset / asr_length
-                )
-
-    mapped[0] = 0
-    mapped[-1] = len(reference_text)
-    previous = 0
-    resolved: list[int] = []
-    for value in mapped:
-        current = previous if value is None else max(previous, int(value))
-        current = min(current, len(reference_text))
-        resolved.append(current)
-        previous = current
-    resolved[-1] = len(reference_text)
-    return resolved
-
-
 def _select_distinct_acoustic_boundaries(
     mapped_positions: Sequence[int], required_positions: Sequence[int]
 ) -> list[int]:
@@ -139,7 +87,8 @@ def _select_distinct_acoustic_boundaries(
     required_count = len(required_positions)
     if required_count > internal_count:
         raise ReferenceAlignmentError(
-            "ASR 有效句级边界少于原稿 cue 边界，无法在不估算时间的前提下保持原稿 cue"
+            "ASR 有效 token 边界少于必需的语义字幕边界，"
+            "无法在不估算时间的前提下安全切分"
         )
     if not required_positions:
         return []
@@ -296,6 +245,114 @@ def _validate_timing_plausibility(
         )
 
 
+_CAPTION_BREAKS = frozenset("，,。.!！？?；;：:")
+_CAPTION_CLOSERS = frozenset("”’）》】〉」』")
+_CAPTION_TARGET_TOKENS = 28
+_CAPTION_HARD_MAX_TOKENS = 48
+_MAX_BOUNDARY_DISPLACEMENT_TOKENS = 12
+_MAX_CAPTION_CHARACTERS_PER_SECOND = 12.0
+
+
+def _alignment_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    ascii_buffer: list[str] = []
+
+    def flush_ascii() -> None:
+        if ascii_buffer:
+            tokens.append("".join(ascii_buffer).casefold())
+            ascii_buffer.clear()
+
+    for character in unicodedata.normalize("NFKC", text):
+        if character.isascii() and character.isalnum():
+            ascii_buffer.append(character)
+            continue
+        flush_ascii()
+        if "\u3400" <= character <= "\u9fff":
+            tokens.append(character)
+        elif character.isalnum():
+            tokens.append(character.casefold())
+    flush_ascii()
+    return tokens
+
+
+def _caption_atoms(text: str) -> list[str]:
+    atoms: list[str] = []
+    start = 0
+    index = 0
+    while index < len(text):
+        if text[index] not in _CAPTION_BREAKS:
+            index += 1
+            continue
+        end = index + 1
+        while end < len(text) and text[end] in _CAPTION_CLOSERS:
+            end += 1
+        atoms.append(text[start:end])
+        start = end
+        index = end
+    if start < len(text):
+        atoms.append(text[start:])
+    return [atom for atom in atoms if atom]
+
+
+def _caption_spans(text: str, *, source_ordinal: int) -> list[str]:
+    atoms = _caption_atoms(text)
+    if not atoms:
+        raise ReferenceAlignmentError(f"原稿 cue {source_ordinal} 没有可朗读文字")
+    for atom in atoms:
+        if len(_alignment_tokens(atom)) > _CAPTION_HARD_MAX_TOKENS:
+            raise ReferenceAlignmentError(
+                f"原稿 cue {source_ordinal} 存在超过 {_CAPTION_HARD_MAX_TOKENS} token 且无安全标点的长句；"
+                "拒绝从词语中间估算切分"
+            )
+
+    spans: list[str] = []
+    current = ""
+    for atom in atoms:
+        combined = current + atom
+        if current and len(_alignment_tokens(combined)) > _CAPTION_TARGET_TOKENS:
+            spans.append(current)
+            current = atom
+        else:
+            current = combined
+    if current:
+        spans.append(current)
+    if "".join(spans) != text:
+        raise ReferenceAlignmentError("内部错误：语义字幕切分未逐字覆盖原稿")
+    return spans
+
+
+def _token_boundary_map(asr_tokens: Sequence[str], reference_tokens: Sequence[str]) -> list[int]:
+    matcher = difflib.SequenceMatcher(None, asr_tokens, reference_tokens, autojunk=False)
+    mapped: list[int | None] = [None] * (len(asr_tokens) + 1)
+    for tag, asr_start, asr_end, ref_start, ref_end in matcher.get_opcodes():
+        asr_length = asr_end - asr_start
+        ref_length = ref_end - ref_start
+        if tag == "equal":
+            for offset in range(asr_length + 1):
+                mapped[asr_start + offset] = ref_start + offset
+        elif asr_length == 0:
+            mapped[asr_start] = ref_end
+        elif ref_length == 0:
+            for offset in range(asr_length + 1):
+                mapped[asr_start + offset] = ref_start
+        else:
+            for offset in range(asr_length + 1):
+                mapped[asr_start + offset] = round(
+                    ref_start + ref_length * offset / asr_length
+                )
+    mapped[0] = 0
+    mapped[-1] = len(reference_tokens)
+    previous = 0
+    resolved: list[int] = []
+    for value in mapped:
+        current = previous if value is None else max(previous, int(value))
+        current = min(current, len(reference_tokens))
+        resolved.append(current)
+        previous = current
+    resolved[-1] = len(reference_tokens)
+    return resolved
+
+
 def align_reference_audio(
     reference_srt: str,
     asr_srt: str,
@@ -305,12 +362,11 @@ def align_reference_audio(
     min_match_ratio: float = DEFAULT_MIN_MATCH_RATIO,
     max_normalized_edit_ratio: float = DEFAULT_MAX_NORMALIZED_EDIT_RATIO,
 ) -> dict[str, Any]:
-    """Bind authoritative reference text to sentence-level ASR timing.
+    """Bind authoritative text to one-token-per-cue acoustic timestamps.
 
-    The returned cues are continuous from 0 through ``audio_duration_ms``.
-    Each cue contains an exact slice of one source cue and therefore never
-    crosses a confirmed scene.  Text equality and all timing invariants are
-    checked again before returning.
+    Caption text is segmented only at punctuation from the approved source.
+    Real leading, trailing and inter-caption pauses remain gaps in the SRT.
+    Sentence-level ASR input is rejected because it cannot prove word timing.
     """
 
     if (
@@ -331,43 +387,57 @@ def align_reference_audio(
 
     scene_ranges = _resolve_scene_ranges(scene_specs, len(reference_cues))
     scene_by_source = _source_scene_lookup(scene_ranges, len(reference_cues))
-
-    reference_parts: list[str] = []
-    reference_boundaries = [0]
-    raw_boundaries_by_cue: list[list[int]] = []
-    for cue in reference_cues:
-        normalised, raw_boundaries = _raw_boundaries(cue["text"])
-        if not normalised:
-            raise ReferenceAlignmentError(
-                f"原稿 cue {cue['sourceOrdinal']} 只有标点或空白，无法绑定真实语音"
+    reference_tokens: list[str] = []
+    captions: list[dict[str, Any]] = []
+    required_positions: list[int] = []
+    for source_cue in reference_cues:
+        source_ordinal = source_cue["sourceOrdinal"]
+        for text in _caption_spans(source_cue["text"], source_ordinal=source_ordinal):
+            span_tokens = _alignment_tokens(text)
+            if not span_tokens:
+                raise ReferenceAlignmentError(
+                    f"原稿 cue {source_ordinal} 的语义字幕只有标点或空白"
+                )
+            start_token = len(reference_tokens)
+            reference_tokens.extend(span_tokens)
+            captions.append(
+                {
+                    "sourceCueOrdinal": source_ordinal,
+                    "sceneId": scene_by_source[source_ordinal],
+                    "text": text,
+                    "startToken": start_token,
+                    "endToken": len(reference_tokens),
+                }
             )
-        reference_parts.append(normalised)
-        raw_boundaries_by_cue.append(raw_boundaries)
-        reference_boundaries.append(reference_boundaries[-1] + len(normalised))
-    reference_text = "".join(reference_parts)
+            required_positions.append(len(reference_tokens))
+    required_positions = required_positions[:-1]
 
     lexical_asr_cues: list[dict[str, Any]] = []
     ignored_asr_cues: list[int] = []
-    asr_parts: list[str] = []
-    asr_boundaries = [0]
+    asr_tokens: list[str] = []
     for cue in parsed_asr_cues:
-        normalised = normalise_alignment_text(cue["text"])
-        if not normalised:
+        tokens = _alignment_tokens(cue["text"])
+        if not tokens:
             ignored_asr_cues.append(cue["sourceOrdinal"])
             continue
+        if len(tokens) != 1:
+            raise ReferenceAlignmentError(
+                f"ASR cue {cue['sourceOrdinal']} 含 {len(tokens)} 个语义 token；"
+                "新对齐合同要求一条 cue 对应一个真实 token 时间戳"
+            )
         if cue["endMs"] > audio_duration_ms:
             raise ReferenceAlignmentError(
                 f"ASR cue {cue['sourceOrdinal']} 超出音频总时长 {audio_duration_ms}ms"
             )
         lexical_asr_cues.append(cue)
-        asr_parts.append(normalised)
-        asr_boundaries.append(asr_boundaries[-1] + len(normalised))
+        asr_tokens.append(tokens[0])
     if not lexical_asr_cues:
-        raise ReferenceAlignmentError("ASR SRT 没有可对齐的文字 cue")
-    asr_text = "".join(asr_parts)
+        raise ReferenceAlignmentError("ASR SRT 没有可对齐的 token cue")
 
-    matcher = difflib.SequenceMatcher(None, asr_text, reference_text, autojunk=False)
-    matched_characters = sum(block.size for block in matcher.get_matching_blocks())
+    reference_text = "".join(reference_tokens)
+    asr_text = "".join(asr_tokens)
+    character_matcher = difflib.SequenceMatcher(None, asr_text, reference_text, autojunk=False)
+    matched_characters = sum(block.size for block in character_matcher.get_matching_blocks())
     match_ratio = matched_characters / max(len(reference_text), len(asr_text))
     edit_distance, edit_method = _levenshtein_distance(asr_text, reference_text)
     edit_ratio = edit_distance / max(len(reference_text), len(asr_text))
@@ -384,11 +454,15 @@ def align_reference_audio(
         "normalizedEditDistance": edit_distance,
         "normalizedEditRatio": round(edit_ratio, 6),
         "editDistanceMethod": edit_method,
+        "timingFallbackUsed": False,
+        "tokenTimingUsed": True,
+        "captionSegmentationContract": "reference-punctuation-caption-v1",
         "thresholds": {
             "minMatchRatio": min_match_ratio,
             "maxNormalizedEditRatio": max_normalized_edit_ratio,
+            "maxBoundaryDisplacementTokens": _MAX_BOUNDARY_DISPLACEMENT_TOKENS,
+            "maxCaptionCharactersPerSecond": _MAX_CAPTION_CHARACTERS_PER_SECOND,
         },
-        "timingFallbackUsed": False,
     }
     if match_ratio < min_match_ratio or edit_ratio > max_normalized_edit_ratio:
         diagnostics["status"] = "FAIL"
@@ -397,9 +471,7 @@ def align_reference_audio(
             diagnostics=diagnostics,
         )
 
-    character_map = _asr_to_reference_boundary_map(asr_text, reference_text)
-    mapped_positions = [character_map[position] for position in asr_boundaries]
-    required_positions = reference_boundaries[1:-1]
+    mapped_positions = _token_boundary_map(asr_tokens, reference_tokens)
     try:
         selected_boundaries = _select_distinct_acoustic_boundaries(
             mapped_positions, required_positions
@@ -407,107 +479,103 @@ def align_reference_audio(
     except ReferenceAlignmentError as exc:
         diagnostics["status"] = "FAIL"
         diagnostics["availableInternalAcousticBoundaries"] = len(mapped_positions) - 2
-        diagnostics["requiredSourceCueBoundaries"] = len(required_positions)
+        diagnostics["requiredCaptionBoundaries"] = len(required_positions)
         raise ReferenceAlignmentError(str(exc), diagnostics=diagnostics) from exc
 
-    snapped = dict(zip(selected_boundaries, required_positions, strict=True))
-    snapped_positions = list(mapped_positions)
-    for acoustic_index, reference_position in snapped.items():
-        snapped_positions[acoustic_index] = reference_position
-    anchors = [(0, 0), *sorted(snapped.items()), (len(snapped_positions) - 1, len(reference_text))]
-    for (left_index, left_position), (right_index, right_position) in zip(anchors, anchors[1:]):
-        previous = left_position
-        for acoustic_index in range(left_index + 1, right_index):
-            position = min(max(snapped_positions[acoustic_index], previous), right_position)
-            snapped_positions[acoustic_index] = position
-            previous = position
-        snapped_positions[left_index] = left_position
-        snapped_positions[right_index] = right_position
-
-    # Acoustic intervals begin at each lexical ASR cue.  Empty mapped intervals
-    # are absorbed by the preceding returned cue rather than inventing text.
-    pieces: list[dict[str, Any]] = []
-    source_ends = reference_boundaries[1:]
-    for acoustic_index, (start_position, end_position) in enumerate(
-        zip(snapped_positions, snapped_positions[1:])
-    ):
-        if end_position <= start_position:
-            continue
-        source_index = bisect.bisect_right(source_ends, start_position)
-        if source_index >= len(reference_cues):
-            raise ReferenceAlignmentError("内部错误：对齐位置超出原稿")
-        source_start = reference_boundaries[source_index]
-        source_end = reference_boundaries[source_index + 1]
-        if end_position > source_end:
-            raise ReferenceAlignmentError("内部错误：最终 cue 跨越原稿 cue 边界")
-        local_start = start_position - source_start
-        local_end = end_position - source_start
-        raw_boundaries = raw_boundaries_by_cue[source_index]
-        text = reference_cues[source_index]["text"][
-            raw_boundaries[local_start] : raw_boundaries[local_end]
-        ]
-        if not text:
-            raise ReferenceAlignmentError("内部错误：非空语义 span 产生了空字幕")
-        pieces.append(
-            {
-                "acousticIndex": acoustic_index,
-                "sourceCueOrdinal": source_index + 1,
-                "sceneId": scene_by_source[source_index + 1],
-                "text": text,
-            }
+    boundary_displacements = [
+        abs(mapped_positions[acoustic_index] - required_position)
+        for acoustic_index, required_position in zip(
+            selected_boundaries, required_positions, strict=True
         )
-    if not pieces:
-        raise ReferenceAlignmentError("对齐后没有生成任何字幕 cue")
+    ]
+    max_displacement = max(boundary_displacements, default=0)
+    diagnostics["maxBoundaryDisplacementTokens"] = max_displacement
+    if max_displacement > _MAX_BOUNDARY_DISPLACEMENT_TOKENS:
+        diagnostics["status"] = "FAIL"
+        raise ReferenceAlignmentError(
+            f"字幕语义边界与声学 token 边界最多偏移 {max_displacement} token，拒绝发布",
+            diagnostics=diagnostics,
+        )
 
-    acoustic_starts = [0] + [cue["startMs"] for cue in lexical_asr_cues[1:]]
+    acoustic_boundaries = [0, *selected_boundaries, len(lexical_asr_cues)]
     cues: list[dict[str, Any]] = []
-    for index, piece in enumerate(pieces, start=1):
-        start_ms = 0 if index == 1 else cues[-1]["endMs"]
-        end_ms = (
-            audio_duration_ms
-            if index == len(pieces)
-            else acoustic_starts[pieces[index]["acousticIndex"]]
-        )
+    rate_outliers: list[dict[str, Any]] = []
+    for index, (caption, left, right) in enumerate(
+        zip(captions, acoustic_boundaries, acoustic_boundaries[1:]), start=1
+    ):
+        if right <= left:
+            raise ReferenceAlignmentError("ASR token 边界无法形成正时长字幕")
+        start_ms = lexical_asr_cues[left]["startMs"]
+        end_ms = lexical_asr_cues[right - 1]["endMs"]
         if end_ms <= start_ms:
-            raise ReferenceAlignmentError("ASR 声学边界无法形成递增正时长字幕")
+            raise ReferenceAlignmentError("ASR token 时间无法形成正时长字幕")
+        semantic_characters = len(normalise_alignment_text(caption["text"]))
+        characters_per_second = semantic_characters * 1000 / (end_ms - start_ms)
+        if characters_per_second > _MAX_CAPTION_CHARACTERS_PER_SECOND:
+            rate_outliers.append(
+                {
+                    "index": index,
+                    "charactersPerSecond": round(characters_per_second, 3),
+                    "startMs": start_ms,
+                    "endMs": end_ms,
+                }
+            )
         cues.append(
             {
                 "index": index,
                 "sourceOrdinal": index,
-                "sourceCueOrdinal": piece["sourceCueOrdinal"],
-                "sourceCueRange": [piece["sourceCueOrdinal"], piece["sourceCueOrdinal"]],
-                "sceneId": piece["sceneId"],
+                "sourceCueOrdinal": caption["sourceCueOrdinal"],
+                "sourceCueRange": [caption["sourceCueOrdinal"], caption["sourceCueOrdinal"]],
+                "sceneId": caption["sceneId"],
                 "startMs": start_ms,
                 "endMs": end_ms,
-                "text": piece["text"],
+                "text": caption["text"],
             }
         )
+    if rate_outliers:
+        diagnostics["status"] = "FAIL"
+        diagnostics["captionRateOutliers"] = rate_outliers
+        raise ReferenceAlignmentError(
+            "字幕局部阅读速度超过声学对齐上限，拒绝发布",
+            diagnostics=diagnostics,
+        )
 
-    final_raw_text = "".join(cue["text"] for cue in cues)
     reference_raw_text = "".join(cue["text"] for cue in reference_cues)
-    if final_raw_text != reference_raw_text:
+    if "".join(cue["text"] for cue in cues) != reference_raw_text:
         raise ReferenceAlignmentError("最终字幕未逐字、按序覆盖权威原稿（含原始标点）")
-    if normalise_alignment_text(final_raw_text) != reference_text:
-        raise ReferenceAlignmentError("最终字幕规范化文本与权威原稿不一致")
-    if cues[0]["startMs"] != 0 or cues[-1]["endMs"] != audio_duration_ms:
-        raise ReferenceAlignmentError("最终字幕没有从 0 连续收口到音频总时长")
     for previous, current in zip(cues, cues[1:]):
-        if previous["endMs"] != current["startMs"]:
-            raise ReferenceAlignmentError("最终字幕时间不连续")
-        if previous["sceneId"] == current["sceneId"]:
-            continue
-        if previous["sourceCueOrdinal"] >= current["sourceCueOrdinal"]:
+        if current["startMs"] < previous["endMs"]:
+            raise ReferenceAlignmentError("最终字幕时间重叠或乱序")
+        if previous["sceneId"] != current["sceneId"] and (
+            previous["sourceCueOrdinal"] >= current["sourceCueOrdinal"]
+        ):
             raise ReferenceAlignmentError("scene 切换没有遵循原稿 cue 顺序")
 
-    _validate_timing_plausibility(
-        cues,
-        reference_cues,
-        audio_duration_ms,
-        diagnostics,
-    )
+    gaps = [
+        current["startMs"] - previous["endMs"]
+        for previous, current in zip(cues, cues[1:])
+        if current["startMs"] > previous["endMs"]
+    ]
+    diagnostics["outputCueCount"] = len(cues)
+    diagnostics["subtitleGaps"] = {
+        "count": len(gaps),
+        "totalMs": sum(gaps),
+        "leadingMs": cues[0]["startMs"],
+        "trailingMs": audio_duration_ms - cues[-1]["endMs"],
+    }
+    diagnostics["qualityGatePassed"] = True
+    diagnostics["selectedCaptionBoundaries"] = [
+        {
+            "captionEndIndex": index + 1,
+            "acousticBoundaryIndex": acoustic_index,
+            "timeMs": lexical_asr_cues[acoustic_index]["startMs"],
+            "displacementTokens": boundary_displacements[index],
+        }
+        for index, acoustic_index in enumerate(selected_boundaries)
+    ]
 
     scenes: list[dict[str, Any]] = []
-    for scene_id, first_source, last_source in scene_ranges:
+    for scene_index, (scene_id, first_source, last_source) in enumerate(scene_ranges):
         scene_cues = [
             cue
             for cue in cues
@@ -515,33 +583,29 @@ def align_reference_audio(
         ]
         if not scene_cues:
             raise ReferenceAlignmentError(f"{scene_id} 没有最终字幕 cue")
+        start_ms = 0 if scene_index == 0 else scenes[-1]["endMs"]
+        if scene_index == len(scene_ranges) - 1:
+            end_ms = audio_duration_ms
+        else:
+            next_first_source = scene_ranges[scene_index + 1][1]
+            next_cue = next(
+                cue for cue in cues if cue["sourceCueOrdinal"] == next_first_source
+            )
+            end_ms = next_cue["startMs"]
+        if end_ms <= start_ms:
+            raise ReferenceAlignmentError(f"{scene_id} 无法形成连续正时长场景")
         scenes.append(
             {
                 "sceneId": scene_id,
                 "sourceCueRange": [first_source, last_source],
                 "narrationCueRange": [scene_cues[0]["index"], scene_cues[-1]["index"]],
-                "startMs": scene_cues[0]["startMs"],
-                "endMs": scene_cues[-1]["endMs"],
-                "sceneDurationMs": scene_cues[-1]["endMs"] - scene_cues[0]["startMs"],
+                "startMs": start_ms,
+                "endMs": end_ms,
+                "sceneDurationMs": end_ms - start_ms,
             }
         )
-    if scenes[0]["startMs"] != 0 or scenes[-1]["endMs"] != audio_duration_ms:
-        raise ReferenceAlignmentError("scene 未覆盖完整音频")
-    for previous, current in zip(scenes, scenes[1:]):
-        if previous["endMs"] != current["startMs"]:
-            raise ReferenceAlignmentError("scene 时间不连续")
-
-    diagnostics["outputCueCount"] = len(cues)
-    diagnostics["snappedSourceBoundaries"] = [
-        {
-            "sourceCueEndOrdinal": index + 1,
-            "acousticBoundaryIndex": acoustic_index,
-            "timeMs": acoustic_starts[acoustic_index],
-        }
-        for index, acoustic_index in enumerate(selected_boundaries)
-    ]
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "cues": cues,
         "scenes": scenes,
         "diagnostics": diagnostics,

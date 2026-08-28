@@ -391,8 +391,12 @@ def compile_ass(
     )
 
 
-def find_subtitle_gap(cues: Sequence[Mapping[str, Any]]) -> dict[str, int] | None:
-    """Return the first real leading/inter-cue gap, never a fabricated one."""
+def find_subtitle_gap(
+    cues: Sequence[Mapping[str, Any]],
+    *,
+    total_duration_ms: int | None = None,
+) -> dict[str, int] | None:
+    """Return the first real leading/inter-cue/trailing gap."""
 
     previous_end = 0
     for cue in cues:
@@ -404,6 +408,19 @@ def find_subtitle_gap(cues: Sequence[Mapping[str, Any]]) -> dict[str, int] | Non
                 "sampleMs": previous_end + (start_ms - previous_end) // 2,
             }
         previous_end = int(cue["endMs"])
+    if total_duration_ms is not None:
+        if (
+            isinstance(total_duration_ms, bool)
+            or not isinstance(total_duration_ms, int)
+            or total_duration_ms < previous_end
+        ):
+            raise SubtitleDeliveryError("subtitle gap 总时长无效或早于末条 cue")
+        if total_duration_ms > previous_end:
+            return {
+                "startMs": previous_end,
+                "endMs": total_duration_ms,
+                "sampleMs": previous_end + (total_duration_ms - previous_end) // 2,
+            }
     return None
 
 

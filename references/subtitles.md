@@ -30,13 +30,13 @@ Edge 模式的外层 timing plan 保存 timeline 文件 SHA；timeline 内不保
 
 所有 SRT 都由 `scripts/srt_timeline.py` 严格解析：UTF-8 BOM、CRLF 和多行 cue 可读取；空文本、零时长、倒序或重叠 cue 拒绝。`sourceOrdinal` 是稳定 cue 身份，原文件中的合法编号只记录为 `originalIndex`。
 
-Disabled 的画面与字幕从全局 0 开始，以 source SRT 最后一条 cue 的 `endMs` 收口；第一条 cue 前的空白和跨幕 cue 空档不能因分幕而消失。Edge narration SRT 从 canonical audio timeline 的 0 开始连续派生。两种模式的 scene 都使用 timing plan 中的全局 `startMs/endMs`；annotation 元素仍使用从本幕 0 开始的局部时间。
+Disabled 的画面与字幕从全局 0 开始，以 source SRT 最后一条 cue 的 `endMs` 收口；第一条 cue 前的空白和跨幕 cue 空档不能因分幕而消失。旁白 narration SRT 从 canonical audio timeline 的 token 级声学区间派生，允许首字前、句间和末字后的真实无字幕空档，不要求 cue 从 0 连续铺满整轨。两种模式的 scene 仍使用 timing plan 中连续覆盖整轨的全局 `startMs/endMs`；annotation 元素仍使用从本幕 0 开始的局部时间。
 
 ## 旁白阶段与正式字幕的边界
 
 Edge/MiniMax/豆包 `full` 生成 current `audio/narration.srt`，但此时尚未生图。人工模式只有用户完整试听后才绑定 `FULL_IDENTITY`；自主模式以阶段 0 用户批准的 current 样音为声音主观依据，在 canonical WAV 完整解码、FunASR、原稿对齐、timeline/narration SRT/current identity 与时长偏差等严格技术证据通过后写“用户样音授权后的技术推进” basis，不声称 AI 完整试听。
 
-字幕文本/时序由技术 binding 保证，视觉判断统一留给下列有真实画面的步骤：
+字幕文本/时序必须先通过 token 时间、语义切句、断词、局部阅读速度和真实 gap QA，再由 current binding 保证；视觉判断统一留给下列有真实画面的步骤：
 
 - `final-video-only.mp4` 技术验证通过后重新从 current 权威 SRT 编译正式 `subtitles/final.ass`；
 - `burn_subtitles.py` 把正式 ASS 烧录到 current clean master；
@@ -147,7 +147,7 @@ subtitles / captionedVideo / final / finalApproval
 
 ## Contact sheet 与 gap 证据
 
-每次烧录生成 `previews/final-subtitle-contact-sheet.png`，固定抽取首条、中间条和末条字幕中点。只有权威 SRT 存在真实前导或 cue 间空档时，才额外抽取空档中点并记录范围；没有空档时 manifest 必须写：
+每次烧录生成 `previews/final-subtitle-contact-sheet.png`，固定抽取首条、中间条和末条字幕中点。只有权威 SRT 存在真实前导、cue 间或尾部空档时，才额外抽取空档中点并记录范围；没有空档时 manifest 必须写：
 
 ```json
 "gapEvidence": "not_applicable_no_gap"

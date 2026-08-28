@@ -144,13 +144,29 @@ def _expected_frame_count(project: Project) -> int:
     return count
 
 
+def _timing_duration_ms(project: Project) -> int:
+    scenes = project.timing_plan.get("scenes")
+    if not isinstance(scenes, list) or not scenes:
+        raise SubtitleDeliveryError("timing plan 缺少 scenes")
+    duration_ms = scenes[-1].get("endMs")
+    if (
+        isinstance(duration_ms, bool)
+        or not isinstance(duration_ms, int)
+        or duration_ms <= 0
+    ):
+        raise SubtitleDeliveryError("timing plan 权威总时长无效")
+    return duration_ms
+
+
 def _timing_plan_sha(project: Project) -> str:
     if project.timing_plan_persisted:
         return sha256_file(project.timing_plan_path)
     return sha256_json(project.timing_plan)
 
 
-def _sample_times(cues: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], Any]:
+def _sample_times(
+    cues: Sequence[Mapping[str, Any]], *, total_duration_ms: int
+) -> tuple[list[dict[str, Any]], Any]:
     indexes = sorted({0, len(cues) // 2, len(cues) - 1})
     samples = [
         {
@@ -160,7 +176,7 @@ def _sample_times(cues: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any
         }
         for index in indexes
     ]
-    gap = find_subtitle_gap(cues)
+    gap = find_subtitle_gap(cues, total_duration_ms=total_duration_ms)
     if gap is not None:
         samples.append({"kind": "gap", "timestampMs": gap["sampleMs"]})
     return samples, gap
@@ -171,9 +187,10 @@ def _generate_contact_sheet(
     ffmpeg_exe: str,
     video: Path,
     cues: Sequence[Mapping[str, Any]],
+    total_duration_ms: int,
     run_dir: Path,
 ) -> tuple[Path, list[dict[str, Any]], Any]:
-    samples, gap = _sample_times(cues)
+    samples, gap = _sample_times(cues, total_duration_ms=total_duration_ms)
     frames: list[Image.Image] = []
     frame_paths: list[Path] = []
     try:
@@ -661,6 +678,7 @@ def burn_project(
             ffmpeg_exe=ffmpeg_exe,
             video=caption_candidate,
             cues=selection.cues,
+            total_duration_ms=_timing_duration_ms(project),
             run_dir=run_dir,
         )
         caption_for_final = run_dir / "final.tmp.mp4"
