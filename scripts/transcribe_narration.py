@@ -414,19 +414,40 @@ def _validated_sentences(
                 raise NarrationTranscriptionError(
                     f"token {ordinal} 与前一 token 重叠 {overlap_ms}ms，超过可审计恢复上限"
                 )
+            previous_start = sentences[-1]["startMs"]
+            original_previous_end = previous_end
+            # FunASR frame quantisation may give adjacent tokens overlapping
+            # intervals. Moving only the latter start to the former end can
+            # collapse a short token completely. Partition the ambiguous
+            # overlap at one shared boundary instead: the earlier token ends
+            # there and the latter starts there. The boundary remains inside
+            # the union of the two real acoustic intervals and both tokens
+            # must retain a positive duration.
+            minimum_boundary = previous_start + 1
+            maximum_boundary = end_ms - 1
+            if minimum_boundary > maximum_boundary:
+                raise NarrationTranscriptionError(
+                    f"token {ordinal} 的重叠区间无法恢复为两个正时长 token"
+                )
+            shared_boundary = (start_ms + original_previous_end) // 2
+            shared_boundary = min(
+                maximum_boundary,
+                max(minimum_boundary, shared_boundary),
+            )
+            sentences[-1]["endMs"] = shared_boundary
             overlap_adjustments.append(
                 {
                     "ordinal": ordinal,
+                    "originalPreviousEndMs": original_previous_end,
                     "originalStartMs": start_ms,
-                    "adjustedStartMs": previous_end,
+                    "sharedBoundaryMs": shared_boundary,
+                    "adjustedPreviousEndMs": shared_boundary,
+                    "adjustedStartMs": shared_boundary,
                     "overlapMs": overlap_ms,
                 }
             )
-            start_ms = previous_end
-            if end_ms <= start_ms:
-                raise NarrationTranscriptionError(
-                    f"token {ordinal} 在小重叠修复后没有正时长"
-                )
+            start_ms = shared_boundary
+            previous_end = shared_boundary
         if end_ms > duration_ms:
             overshoot_ms = end_ms - duration_ms
             if (
