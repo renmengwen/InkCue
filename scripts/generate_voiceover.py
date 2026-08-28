@@ -128,16 +128,25 @@ except ImportError:  # pragma: no cover - direct script execution / staged integ
 try:
     from .transcribe_narration import (
         CONTRACT_VERSION as NARRATION_ASR_CONTRACT_VERSION,
+        MAX_VAD_SEGMENT_MS as NARRATION_ASR_MAX_VAD_SEGMENT_MS,
+        SEGMENT_RECONSTRUCTION_CONTRACT as NARRATION_ASR_RECONSTRUCTION_CONTRACT,
+        VAD_SEGMENTATION_CONTRACT as NARRATION_ASR_SEGMENTATION_CONTRACT,
         transcribe_narration,
     )
 except ImportError:  # pragma: no cover - direct script execution / staged integration
     try:
         from transcribe_narration import (  # type: ignore[no-redef]
             CONTRACT_VERSION as NARRATION_ASR_CONTRACT_VERSION,
+            MAX_VAD_SEGMENT_MS as NARRATION_ASR_MAX_VAD_SEGMENT_MS,
+            SEGMENT_RECONSTRUCTION_CONTRACT as NARRATION_ASR_RECONSTRUCTION_CONTRACT,
+            VAD_SEGMENTATION_CONTRACT as NARRATION_ASR_SEGMENTATION_CONTRACT,
             transcribe_narration,
         )
     except ImportError:  # pragma: no cover - fail closed until the companion module is installed
-        NARRATION_ASR_CONTRACT_VERSION = "narration-funasr-vad-token-evidence-v4"
+        NARRATION_ASR_CONTRACT_VERSION = "narration-funasr-vad-token-evidence-v5"
+        NARRATION_ASR_MAX_VAD_SEGMENT_MS = 15_000
+        NARRATION_ASR_RECONSTRUCTION_CONTRACT = "funasr-vad-segment-token-reconstruction-v2"
+        NARRATION_ASR_SEGMENTATION_CONTRACT = "paraformer-vad-15s-rate-guard-v1"
         transcribe_narration = None  # type: ignore[assignment]
 
 
@@ -1805,6 +1814,12 @@ def _load_asr_acoustic_evidence(asr_srt_path: Path) -> dict[str, Any]:
         or receipt.get("contractVersion") != NARRATION_ASR_CONTRACT_VERSION
         or not isinstance(segment_evidence, Mapping)
         or segment_evidence.get("validated") is not True
+        or segment_evidence.get("contractVersion")
+        != NARRATION_ASR_RECONSTRUCTION_CONTRACT
+        or segment_evidence.get("maxVadSegmentMs")
+        != NARRATION_ASR_MAX_VAD_SEGMENT_MS
+        or segment_evidence.get("segmentationContract")
+        != NARRATION_ASR_SEGMENTATION_CONTRACT
         or segment_evidence.get("reconstructionMatchesTopLevel") is not True
         or not isinstance(segment_evidence.get("segmentCount"), int)
         or segment_evidence.get("segmentCount", 0) <= 0
@@ -1812,6 +1827,12 @@ def _load_asr_acoustic_evidence(asr_srt_path: Path) -> dict[str, Any]:
         or segment_evidence.get("tokenCount", 0) <= 0
         or not isinstance(receipt_evidence, Mapping)
         or receipt_evidence.get("validated") is not True
+        or receipt_evidence.get("contractVersion")
+        != segment_evidence.get("contractVersion")
+        or receipt_evidence.get("maxVadSegmentMs")
+        != NARRATION_ASR_MAX_VAD_SEGMENT_MS
+        or receipt_evidence.get("segmentationContract")
+        != segment_evidence.get("segmentationContract")
         or receipt_evidence.get("reconstructedSequenceSha256")
         != segment_evidence.get("reconstructedSequenceSha256")
         or receipt_evidence.get("topLevelSequenceSha256")
@@ -1820,11 +1841,14 @@ def _load_asr_acoustic_evidence(asr_srt_path: Path) -> dict[str, Any]:
         or timing.get("evidenceKind") != "vad_segment_token_timestamp"
         or timing.get("segmentEvidenceValidated") is not True
     ):
-        raise VoiceoverStateError("ASR 分段 token/timestamp 证据未通过 v4 fail-closed 合同")
+        raise VoiceoverStateError("ASR 分段 token/timestamp 证据未通过 v5 fail-closed 合同")
     return {
+        "asrContractVersion": NARRATION_ASR_CONTRACT_VERSION,
         "contractVersion": segment_evidence.get("contractVersion"),
         "validated": True,
         "evidenceKind": "vad_segment_token_timestamp",
+        "maxVadSegmentMs": NARRATION_ASR_MAX_VAD_SEGMENT_MS,
+        "segmentationContract": segment_evidence.get("segmentationContract"),
         "segmentCount": segment_evidence["segmentCount"],
         "tokenCount": segment_evidence["tokenCount"],
         "reconstructionMatchesTopLevel": True,
@@ -2002,7 +2026,7 @@ def _run_local_asr(project: Project, narration_path: Path) -> Path:
         or timing.get("reconstructionMatchesTopLevel") is not True
     ):
         raise VoiceoverStateError(
-            "本地 narration ASR 摘要缺少有效的 v4 VAD 分段 token 时间证据"
+            "本地 narration ASR 摘要缺少有效的 v5 VAD 分段 token 时间证据"
         )
     return raw_srt_path
 
@@ -2114,14 +2138,25 @@ def validate_current_voiceover(
         != "reference-punctuation-caption-v1"
         or not isinstance(acoustic_evidence, Mapping)
         or acoustic_evidence.get("validated") is not True
+        or acoustic_evidence.get("asrContractVersion")
+        != NARRATION_ASR_CONTRACT_VERSION
+        or acoustic_evidence.get("contractVersion")
+        != NARRATION_ASR_RECONSTRUCTION_CONTRACT
+        or acoustic_evidence.get("maxVadSegmentMs")
+        != NARRATION_ASR_MAX_VAD_SEGMENT_MS
+        or acoustic_evidence.get("segmentationContract")
+        != NARRATION_ASR_SEGMENTATION_CONTRACT
         or acoustic_evidence.get("evidenceKind")
         != "vad_segment_token_timestamp"
         or acoustic_evidence.get("reconstructionMatchesTopLevel") is not True
         or not isinstance(local_acoustic_rate, Mapping)
+        or local_acoustic_rate.get("rateFloorPassed") is not True
+        or local_acoustic_rate.get("rateCeilingPassed") is not True
+        or local_acoustic_rate.get("rateVariationPassed") is not True
         or local_acoustic_rate.get("outlierCount") != 0
     ):
         raise VoiceoverStateError(
-            "audio timeline 缺少 v4 VAD 分段 token 证据、局部漂移或语义安全切句 QA"
+            "audio timeline 缺少 v5 VAD 分段 token 证据、双向局部漂移或语义安全切句 QA"
         )
     timeline_units = timeline.get("units")
     if not isinstance(timeline_units, list) or not timeline_units:

@@ -80,7 +80,7 @@ topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经�
 6. `imagePrompt`（content draft）到 formal generation plan 的 `prompt` 只允许 coordinator 确定性映射；child 不接收完整主对话、完整 SRT、provider 凭据、长日志或批准信息。详见 [references/prompt-writing.md](references/prompt-writing.md) 与 [references/subagent-orchestration.md](references/subagent-orchestration.md)。
 7. 每幕只表达一个核心视觉命题；可独立揭示的 2–3 个视觉簇之间保持真实纸面留白，不以道路/河流/山脉/箭头等贯穿结构连接，除非该结构本身不可分割。annotation 按连续墨迹簇划分，最多 3 个且不为凑数强拆。
 8. reveal 时间严格串行、不可重叠；空间 region 仅在真实遮挡/交界处适度重叠；`protectedRegions` 只能保护正确分区中不可避免的局部，不能掩盖错误分区。
-9. 旁白字幕必须使用可一一对应的 FunASR token 时间戳；句级边界不得用于估算词内时间。正式 runner 固定使用 Paraformer 支持的 30 秒 VAD 上限，保存每个 VAD 子结果的 token/timestamp，并按分段原序重建后与 FunASR 顶层数组逐项核对；只比较全局 cardinality 不算可信证据。字幕只在已确认原稿的标点或原始 cue 边界安全切分，禁止把金额、数字词组、英文词、固定词语或连续汉字从中间截断；真实前导、句间和尾部停顿允许保持无字幕空档。token 证据不足、分段重建不一致、边界位移过大、滑动窗口局部语速异常或断词 QA 失败时必须 fail-closed。scene 边界不得早于本幕最后一个声学 token 结束；真实停顿内只能采用记录了 basis 的边界，禁止统一大延迟。
+9. 旁白字幕必须使用可一一对应的 FunASR token 时间戳；句级边界不得用于估算词内时间。正式 runner 固定使用 15 秒 VAD 上限，保存每个 VAD 子结果的 token/timestamp，并按分段原序重建后与 FunASR 顶层数组逐项核对；只比较全局 cardinality 或证明同一次推理内部自洽不算声学准确证据。字幕只在已确认原稿的标点或原始 cue 边界安全切分，禁止把金额、数字词组、英文词、固定词语或连续汉字从中间截断；真实前导、句间和尾部停顿允许保持无字幕空档。token 证据不足、分段重建不一致、边界位移过大、滑动窗口局部语速低于下限、超过上限、最快/最慢波动比异常或断词 QA 失败时必须 fail-closed。scene 边界不得早于本幕最后一个声学 token 结束；真实停顿内只能采用记录了 basis 的边界，禁止统一大延迟。
 10. 图片采用 `continue_independent`：单幕失败不阻止其他幕候选，但任一必需 scene 缺失/失败/stale 时 batch 总状态为 FAIL，不得启动全量预览或写批准。完整 TTS 固定为一个 full-track task；不得因 provider/ASR 失败回退成逐句多请求。
 11. provider worker 或宿主图片结果导入只能写已登记 attempt 的 candidate/去敏 receipt；coordinator 按 `prepared → requesting → candidate_ready → publishing → validated` 串行 checkpoint、重验、原子发布和清理。`gpt-login` 只替换图片字节来源，不另建 Gate、manifest 或发布链。
 12. `sceneRender` 是当前正式单幕候选的有界并行能力；worker 数只读 workspace `execution.concurrency.sceneRender`（缺失继承 pool default，最终默认 1，范围 1–16），候选完成顺序不得改变 generation plan 顺序或正式 manifest。
@@ -225,6 +225,6 @@ python <SKILL_ROOT>\scripts\prepare_env.py
 - generation plan、manifest、图片 SHA、1920×1080 实际尺寸和线稿确认均 current。
 - 正式 scene 使用 current `assets/drawing-hand.png`，manifest `handSha256` 匹配；`@moveR` 版权层未经明确授权不得修改或移除。
 - 单幕和 clean master 帧数符合累计全局帧边界并全部完整解码；merge 已校验获批 bundle。
-- `subtitles/final.ass`、字体 hash、样式 hash、权威 SRT 与 contact sheet 写入 delivery evidence；旁白字幕必须通过 VAD 分段 token 重建、顶层逐项一致性、语义切句、断词、滑动窗口局部阅读速度、scene 尾音边界与真实 gap QA。
+- `subtitles/final.ass`、字体 hash、样式 hash、权威 SRT 与 contact sheet 写入 delivery evidence；旁白字幕必须通过 15 秒 VAD 分段 token 重建、顶层逐项一致性、语义切句、断词、滑动窗口局部语速下限/上限/波动比、scene 尾音边界与真实 gap QA。
 - disabled final 必须 1 路 H.264、0 音频；旁白 final 必须 1 路 H.264 + 1 路 24kHz mono AAC；两者都有可见烧录字幕。
 - 自动测试不调用真实 provider；外网或服务不可用写 `BLOCKED`，不以 fixture PASS、SKIP 或技术 `validated` 冒充外部或质量批准 PASS。

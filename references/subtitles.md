@@ -36,7 +36,7 @@ Disabled 的画面与字幕从全局 0 开始，以 source SRT 最后一条 cue 
 
 Edge/MiniMax/豆包 `full` 生成 current `audio/narration.srt`，但此时尚未生图。人工模式只有用户完整试听后才绑定 `FULL_IDENTITY`；自主模式以阶段 0 用户批准的 current 样音为声音主观依据，在 canonical WAV 完整解码、FunASR、原稿对齐、timeline/narration SRT/current identity 与时长偏差等严格技术证据通过后写“用户样音授权后的技术推进” basis，不声称 AI 完整试听。
 
-字幕文本/时序必须先通过 VAD 分段 token/timestamp 重建、顶层逐项一致性、语义切句、断词、caption 与滑动窗口局部阅读速度、scene 尾音边界和真实 gap QA，再由 current binding 保证；视觉判断统一留给下列有真实画面的步骤：
+字幕文本/时序必须先通过 15 秒 VAD 分段 token/timestamp 重建、顶层逐项一致性、语义切句、断词、caption 与滑动窗口局部语速下限/上限/波动比、scene 尾音边界和真实 gap QA，再由 current binding 保证；视觉判断统一留给下列有真实画面的步骤：
 
 - `final-video-only.mp4` 技术验证通过后重新从 current 权威 SRT 编译正式 `subtitles/final.ass`；
 - `burn_subtitles.py` 把正式 ASS 烧录到 current clean master；

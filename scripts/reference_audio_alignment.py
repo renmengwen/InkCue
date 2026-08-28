@@ -251,7 +251,11 @@ _CAPTION_TARGET_TOKENS = 28
 _CAPTION_HARD_MAX_TOKENS = 48
 _MAX_BOUNDARY_DISPLACEMENT_TOKENS = 12
 _MAX_CAPTION_CHARACTERS_PER_SECOND = 9.0
+# 单向上限只能发现 token 被压缩；30 秒连续语音回归曾把块前半段拉慢、
+# 后半段追平而仍低于上限。下限与同窗口规模最快/最慢比共同拒绝这种失真。
+_MIN_LOCAL_ACOUSTIC_CHARACTERS_PER_SECOND = 2.0
 _MAX_LOCAL_ACOUSTIC_CHARACTERS_PER_SECOND = 8.5
+_MAX_LOCAL_ACOUSTIC_RATE_VARIATION_RATIO = 3.0
 _LOCAL_ACOUSTIC_WINDOW_TOKENS = (16, 32, 48)
 
 
@@ -359,12 +363,17 @@ def _validate_local_acoustic_rate(
     lexical_asr_cues: Sequence[Mapping[str, Any]],
     diagnostics: dict[str, Any],
 ) -> None:
-    """用滑动 token 窗口拒绝局部压缩和长段累计漂移。"""
+    """用滑动 token 窗口拒绝局部拉伸、压缩和长段累计漂移。"""
 
-    outliers: list[dict[str, Any]] = []
+    fast_outliers: list[dict[str, Any]] = []
+    slow_outliers: list[dict[str, Any]] = []
+    variation_outliers: list[dict[str, Any]] = []
     maximum_rate = 0.0
     maximum_window: dict[str, Any] | None = None
+    minimum_rate: float | None = None
+    minimum_window: dict[str, Any] | None = None
     for window_tokens in _LOCAL_ACOUSTIC_WINDOW_TOKENS:
+        window_metrics: list[dict[str, Any]] = []
         if len(lexical_asr_cues) < window_tokens:
             continue
         for start_index in range(0, len(lexical_asr_cues) - window_tokens + 1):
@@ -391,24 +400,77 @@ def _validate_local_acoustic_rate(
             if rate > maximum_rate:
                 maximum_rate = rate
                 maximum_window = metric
+            if minimum_rate is None or rate < minimum_rate:
+                minimum_rate = rate
+                minimum_window = metric
             if rate > _MAX_LOCAL_ACOUSTIC_CHARACTERS_PER_SECOND:
-                outliers.append(metric)
+                fast_outliers.append(metric)
+            if rate < _MIN_LOCAL_ACOUSTIC_CHARACTERS_PER_SECOND:
+                slow_outliers.append(metric)
+            window_metrics.append(metric)
+
+        if window_metrics:
+            slowest = min(window_metrics, key=lambda item: item["charactersPerSecond"])
+            fastest = max(window_metrics, key=lambda item: item["charactersPerSecond"])
+            variation_ratio = (
+                fastest["charactersPerSecond"] / slowest["charactersPerSecond"]
+            )
+            if variation_ratio > _MAX_LOCAL_ACOUSTIC_RATE_VARIATION_RATIO:
+                variation_outliers.append(
+                    {
+                        "windowTokens": window_tokens,
+                        "ratio": round(variation_ratio, 3),
+                        "slowest": slowest,
+                        "fastest": fastest,
+                    }
+                )
 
     diagnostics["localAcousticRate"] = {
         "windowTokenCounts": list(_LOCAL_ACOUSTIC_WINDOW_TOKENS),
+        "minCharactersPerSecond": _MIN_LOCAL_ACOUSTIC_CHARACTERS_PER_SECOND,
         "maxCharactersPerSecond": _MAX_LOCAL_ACOUSTIC_CHARACTERS_PER_SECOND,
+        "maxVariationRatio": _MAX_LOCAL_ACOUSTIC_RATE_VARIATION_RATIO,
+        "observedMinCharactersPerSecond": (
+            round(minimum_rate, 3) if minimum_rate is not None else None
+        ),
+        "observedMinWindow": minimum_window,
         "observedMaxCharactersPerSecond": round(maximum_rate, 3),
         "observedMaxWindow": maximum_window,
-        "outlierCount": len(outliers),
-        "outliers": outliers[:20],
+        "rateFloorPassed": not slow_outliers,
+        "rateCeilingPassed": not fast_outliers,
+        "rateVariationPassed": not variation_outliers,
+        "slowOutlierCount": len(slow_outliers),
+        "fastOutlierCount": len(fast_outliers),
+        "variationOutlierCount": len(variation_outliers),
+        "outlierCount": (
+            len(slow_outliers) + len(fast_outliers) + len(variation_outliers)
+        ),
+        "slowOutliers": slow_outliers[:20],
+        "fastOutliers": fast_outliers[:20],
+        "variationOutliers": variation_outliers[:20],
     }
-    if outliers:
+    if slow_outliers or fast_outliers or variation_outliers:
         diagnostics["status"] = "FAIL"
-        first = outliers[0]
+        if slow_outliers:
+            first = slow_outliers[0]
+            reason = (
+                f"{first['startMs']}–{first['endMs']}ms 的 "
+                f"{first['charactersPerSecond']} chars/s 低于下限"
+            )
+        elif fast_outliers:
+            first = fast_outliers[0]
+            reason = (
+                f"{first['startMs']}–{first['endMs']}ms 的 "
+                f"{first['charactersPerSecond']} chars/s 超过上限"
+            )
+        else:
+            first = variation_outliers[0]
+            reason = (
+                f"{first['windowTokens']}-token 窗口的最快/最慢语速比 "
+                f"{first['ratio']} 超过上限"
+            )
         raise ReferenceAlignmentError(
-            "ASR token 时间存在局部异常压缩或累计漂移："
-            f"{first['startMs']}–{first['endMs']}ms 的 "
-            f"{first['charactersPerSecond']} chars/s 超过上限",
+            f"ASR token 时间存在局部异常拉伸、压缩或累计漂移：{reason}",
             diagnostics=diagnostics,
         )
 
@@ -522,7 +584,9 @@ def align_reference_audio(
             "maxNormalizedEditRatio": max_normalized_edit_ratio,
             "maxBoundaryDisplacementTokens": _MAX_BOUNDARY_DISPLACEMENT_TOKENS,
             "maxCaptionCharactersPerSecond": _MAX_CAPTION_CHARACTERS_PER_SECOND,
+            "minLocalAcousticCharactersPerSecond": _MIN_LOCAL_ACOUSTIC_CHARACTERS_PER_SECOND,
             "maxLocalAcousticCharactersPerSecond": _MAX_LOCAL_ACOUSTIC_CHARACTERS_PER_SECOND,
+            "maxLocalAcousticRateVariationRatio": _MAX_LOCAL_ACOUSTIC_RATE_VARIATION_RATIO,
             "localAcousticWindowTokens": list(_LOCAL_ACOUSTIC_WINDOW_TOKENS),
         },
     }

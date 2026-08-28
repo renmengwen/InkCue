@@ -231,7 +231,7 @@ validated | failed | cancelled | unknown_external_outcome
 
 ## Canonical 完整音频与时间轴
 
-唯一整轨 task 成功后发布 `audio/narration.wav`，随后直接调用当前 skill 内部 `transcribe_narration` Python API。runner 使用本地 Paraformer + FSMN-VAD + CT-Punc，固定 `max_single_segment_time=30000`，并在同一次推理中捕获每个 VAD 子结果的原始 token/timestamp。runner 必须逐段验证 cardinality 和声学包络，按 FunASR 的 VAD 原序重建全局 token 流，再与顶层 `raw_text/timestamp` 逐项核对；只比较两个顶层数组的总数量不得发布。完整分段 token 证据写入 `transcript.raw.json`，摘要与 SHA 写入 receipt。连续 ASCII 词（例如 `Claude`）按一个 FunASR token 解析，汉字按单字 token；仅有句级 `sentence_info` 时不得发布字幕时间轴。ASR 只提供真实声学时间，最终字幕文字必须来自已确认 source 原稿。对齐成功后再原子发布：
+唯一整轨 task 成功后发布 `audio/narration.wav`，随后直接调用当前 skill 内部 `transcribe_narration` Python API。runner 使用本地 Paraformer + FSMN-VAD + CT-Punc，固定 `max_single_segment_time=15000`，并在同一次推理中捕获每个 VAD 子结果的原始 token/timestamp。runner 必须逐段验证 cardinality 和声学包络，按 FunASR 的 VAD 原序重建全局 token 流，再与顶层 `raw_text/timestamp` 逐项核对；只比较两个顶层数组的总数量或证明同一次推理内部自洽不得作为声学准确性 PASS。完整分段 token 证据写入 `transcript.raw.json`，摘要与 SHA 写入 receipt。连续 ASCII 词（例如 `Claude`）按一个 FunASR token 解析，汉字按单字 token；仅有句级 `sentence_info` 时不得发布字幕时间轴。ASR 只提供真实声学时间，最终字幕文字必须来自已确认 source 原稿。对齐成功后再原子发布：
 
 ```text
 audio/narration.wav
@@ -254,11 +254,11 @@ FULL_IDENTITY=<64位 sha256>
 - scene 仍从全局 0 连续覆盖整轨并以 `ffprobe` 实测 duration 收口；字幕空档不改变 scene 全局时钟。
 - scene 保留已批准语义 cue 边界，连续覆盖全部 unit，最后一幕以整轨时长收口。
 - 每幕记录全局 `startMs/endMs` 及累计计算的 `startFrame/endFrameExclusive/frameCount`。
-- 包含 source SRT、voice plan audit、audio 与 narration SRT 的 current binding，以及 `tokenTimingUsed=true`、`qualityGatePassed=true`、`captionSegmentationContract=reference-punctuation-caption-v1`、VAD 分段重建 evidence、顶层逐项一致性、滑动窗口局部语速 QA 和真实 gap 摘要。
+- 包含 source SRT、voice plan audit、audio 与 narration SRT 的 current binding，以及 `tokenTimingUsed=true`、`qualityGatePassed=true`、`captionSegmentationContract=reference-punctuation-caption-v1`、15 秒 VAD 分段重建 evidence、顶层逐项一致性、滑动窗口局部语速下限/上限/最快最慢波动比 QA 和真实 gap 摘要。
 
-`audio/narration.srt` 的文字逐字来自已确认 source 原稿，时间来自最终整轨 WAV 的 FunASR token 级声学边界；cue 不跨 scene，且只允许在原稿标点或原始 cue 边界切分。不得把金额、数字词组、ASCII 单词、固定词语或连续汉字从中间截断。对齐器必须检查全局文本匹配、语义边界与 token 边界的位移、caption 与 16/32/48-token 滑动窗口局部语速、断词和时间重叠；任一 QA 不满足即 fail-closed。scene N 的边界不得早于本幕最后一个声学 token 的结束；若与下一 cue 之间存在真实停顿，只在该停顿内取可审计中点并记录 `lastNarratedTokenEndMs/nextNarratedTokenStartMs/availablePauseMs/boundaryBasis`，不使用统一固定延迟。它不复制 source SRT 的 provisional 时间戳，也不能由字幕阶段手工改写。所有音频旁白模式唯一使用该文件。
+`audio/narration.srt` 的文字逐字来自已确认 source 原稿，时间来自最终整轨 WAV 的 FunASR token 级声学边界；cue 不跨 scene，且只允许在原稿标点或原始 cue 边界切分。不得把金额、数字词组、ASCII 单词、固定词语或连续汉字从中间截断。对齐器必须检查全局文本匹配、语义边界与 token 边界的位移、caption 与 16/32/48-token 滑动窗口局部语速下限、上限和最快/最慢波动比、断词和时间重叠；任一 QA 不满足即 fail-closed。scene N 的边界不得早于本幕最后一个声学 token 的结束；若与下一 cue 之间存在真实停顿，只在该停顿内取可审计中点并记录 `lastNarratedTokenEndMs/nextNarratedTokenStartMs/availablePauseMs/boundaryBasis`，不使用统一固定延迟。它不复制 source SRT 的 provisional 时间戳，也不能由字幕阶段手工改写。所有音频旁白模式唯一使用该文件。
 
-真实静音可以产生 SRT gap：首字开口前不提前显示字幕，句间停顿超过声学 token 间距时可以短暂无字幕，末字结束后不得为“收口到整轨”而把末句强行延长至音频末尾。scene/timing plan 仍覆盖完整音频，因此画面和 AAC 时长不受影响。旧 `audio-authoritative-timeline-v1/v2`、只有句级时间证据或只有顶层 cardinality 证据的项目必须重新执行本地 ASR/对齐；若 synthesis identity 与 canonical WAV 仍 current，禁止重新请求 TTS provider。
+真实静音可以产生 SRT gap：首字开口前不提前显示字幕，句间停顿超过声学 token 间距时可以短暂无字幕，末字结束后不得为“收口到整轨”而把末句强行延长至音频末尾。scene/timing plan 仍覆盖完整音频，因此画面和 AAC 时长不受影响。旧 `audio-authoritative-timeline-v1/v2`、`narration-funasr-vad-token-evidence-v4`、只有句级时间证据、只有顶层 cardinality 证据或缺少双向局部语速 QA 的项目必须重新执行本地 ASR/对齐；若 synthesis identity 与 canonical WAV 仍 current，禁止重新请求 TTS provider。
 
 只读技术验证：
 

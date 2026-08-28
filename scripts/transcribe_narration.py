@@ -34,16 +34,19 @@ except ImportError:  # Direct ``scripts/transcribe_narration.py`` execution.
     from srt_timeline import serialize_srt
 
 
-CONTRACT_VERSION = "narration-funasr-vad-token-evidence-v4"
+CONTRACT_VERSION = "narration-funasr-vad-token-evidence-v5"
 MODEL_CONTRACT = "narration-asr-models-v1"
 ASR_SAMPLE_RATE = 16_000
 ASR_CHANNELS = 1
 ASR_SAMPLE_WIDTH_BYTES = 2
 DEFAULT_TIMEOUT_SECONDS = 180.0
-# Paraformer 的公开长音频范式以 30 秒作为单段上限。更短的强制切段会在
-# 连续语音中制造人为断点；当前项目已经证明 15 秒切段会把断点后的 token
-# 压缩到错误时间。这里固定模型支持的 30 秒，不允许调用点临时覆盖。
-MAX_VAD_SEGMENT_MS = 30_000
+# Paraformer 在接近 30 秒的连续语音块内可能返回顺序自洽、但块内被非线性
+# 拉伸的 token 时间戳。15 秒块仍可能在强制边界附近产生局部压缩，因此不能
+# 单靠缩短块长保证正确；reference_audio_alignment 的双向局部语速 Gate 必须
+# 同时通过。这里固定为 15 秒并写入 v5 evidence，禁止调用点临时覆盖。
+MAX_VAD_SEGMENT_MS = 15_000
+VAD_SEGMENTATION_CONTRACT = "paraformer-vad-15s-rate-guard-v1"
+SEGMENT_RECONSTRUCTION_CONTRACT = "funasr-vad-segment-token-reconstruction-v2"
 # FunASR timestamps are quantised to acoustic-frame boundaries.  Only the
 # final token may be clamped, and only inside the same 80 ms tolerance used
 # by the final media duration contract.  Intermediate timestamps remain strict.
@@ -473,7 +476,7 @@ def _rebuild_vad_segment_tokens(
             or end_ms > duration_ms + MAX_FINAL_TIMESTAMP_OVERSHOOT_MS
             or end_ms - start_ms > MAX_VAD_SEGMENT_MS + MAX_FINAL_TIMESTAMP_OVERSHOOT_MS
         ):
-            raise NarrationTranscriptionError(f"VAD segment {ordinal} 范围无效或越过固定 30 秒合同")
+            raise NarrationTranscriptionError(f"VAD segment {ordinal} 范围无效或越过固定 15 秒合同")
         segments.append((start_ms, end_ms))
         previous_start = start_ms
 
@@ -577,8 +580,10 @@ def _rebuild_vad_segment_tokens(
         )
 
     evidence = {
-        "contractVersion": "funasr-vad-segment-token-reconstruction-v1",
+        "contractVersion": SEGMENT_RECONSTRUCTION_CONTRACT,
         "validated": True,
+        "maxVadSegmentMs": MAX_VAD_SEGMENT_MS,
+        "segmentationContract": VAD_SEGMENTATION_CONTRACT,
         "segmentCount": len(segment_evidence),
         "tokenCount": len(reconstructed),
         "topLevelTokenCount": len(top_tokens),
@@ -882,7 +887,7 @@ def transcribe_narration(
             "predTimestamp": True,
             "returnRawText": True,
             "maxVadSegmentMs": MAX_VAD_SEGMENT_MS,
-            "segmentationContract": "paraformer-vad-30s-v1",
+            "segmentationContract": VAD_SEGMENTATION_CONTRACT,
         },
         "sentenceCount": len(sentences),
         "tokenCount": len(sentences),
@@ -894,6 +899,8 @@ def transcribe_narration(
                 for key in (
                     "contractVersion",
                     "validated",
+                    "maxVadSegmentMs",
+                    "segmentationContract",
                     "segmentCount",
                     "tokenCount",
                     "topLevelTokenCount",
@@ -979,8 +986,11 @@ if __name__ == "__main__":
 
 __all__ = [
     "CONTRACT_VERSION",
+    "MAX_VAD_SEGMENT_MS",
     "MODEL_CONTRACT",
     "MODEL_IDS",
     "NarrationTranscriptionError",
+    "SEGMENT_RECONSTRUCTION_CONTRACT",
+    "VAD_SEGMENTATION_CONTRACT",
     "transcribe_narration",
 ]
