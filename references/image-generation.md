@@ -79,7 +79,8 @@ output/final.mp4
 - topic/text 内容草案使用 `imagePrompt`，formal generation plan 的 scene 字段固定为 `prompt`；用户批准 current 草案后，只能由 coordinator 做 `imagePrompt` → formal `prompt` 的确定性映射，文本与 scene 顺序保持不变。正式 plan 不接受 `imagePrompt`，provider 也不直接消费内容草案。
 
 - `outputCanvas` 为 `1920×1080`、`#F5EBD7`、`contain`。
-- `constraints.forbidText` 严格为 `true`。
+- `constraints.forbidText` 必须是布尔值；新计划默认 `false`，允许语义需要的画内文字。
+  `true` 只用于旧项目或明确要求禁字的计划，不是 skill 的全局限制。
 - `globalPrompt` 非空，并完整包含 Skill 的统一视觉规范。
 - 每幕 `sceneId` 唯一、`sceneDurationMs` 为正整数。
 - `outputFile` 是不含目录和 `..` 的唯一 `.png` 文件名。
@@ -95,7 +96,7 @@ output/final.mp4
 
 每个非空 scene 的 `prompt` 必须是去空白后非空字符串。缺失或空白 prompt 会在读取 provider 配置、创建 client 或发出任何 provider 请求前以 plan 错误拒绝，禁止只用 `globalPrompt` 静默继续。
 
-每幕都是不共享对话或上一张图片的独立 provider 请求。每个 scene `prompt` 必须在本条内重复该图成立所需的画布、纸张、线稿、配色、按该幕实际语义确定的造型锚点、构图、留白和禁字/禁水印要求；不得使用“延续”“沿用”“同上”“上一幕”“参照前图”等跨请求指代。运行时虽然会确定性拼接 `globalPrompt`，但这不能作为省略 scene 自包含约束的理由。
+每幕都是不共享对话或上一张图片的独立 provider 请求。每个 scene `prompt` 必须在本条内重复该图成立所需的画布、纸张、线稿、配色、按该幕实际语义确定的造型锚点、构图、留白、画内文字策略和禁水印要求；默认允许语义需要的画内文字，使用时须明确准确内容并避免乱码、拼写错误或意外文字。不得使用“延续”“沿用”“同上”“上一幕”“参照前图”等跨请求指代。运行时虽然会确定性拼接 `globalPrompt`，但这不能作为省略 scene 自包含约束的理由。
 
 ### 场景与提示词视觉拓扑
 
@@ -183,7 +184,7 @@ coordinator 先冻结 `attemptId`、image input identity、candidate/receipt/for
 - `previews/social-cover.png`（1920×1080）；
 - `manifests/cover-manifest.json`（封面 SHA、语义输入快照、`coverFrameRange`、`visualReviewExcluded=true`）。
 
-后续成片封装可将封面替换到最终静音视频的第 0 帧，保持总帧数、音频和字幕时间轴不变；当前首版不把封面作为 scene 渲染或 annotation。单幕/成品的视觉语义检查应排除 manifest 声明的 `coverFrameRange`，避免封面文字触发“场景源图禁字”误判；H.264 解码、尺寸、fps、帧数、SHA、streams 和完整性等技术检查仍必须包含该帧。
+后续成片封装可将封面替换到最终静音视频的第 0 帧，保持总帧数、音频和字幕时间轴不变；当前首版不把封面作为 scene 渲染或 annotation。单幕/成品的视觉语义检查应排除 manifest 声明的 `coverFrameRange`，避免把封面的独立标题排版套用普通 scene 的语义与构图规则；H.264 解码、尺寸、fps、帧数、SHA、streams 和完整性等技术检查仍必须包含该帧。
 
 网络错误、超时、HTTP 408、429 和 5xx 最多自动尝试 3 次，并使用指数退避和少量抖动。400、401、403、404、非法响应、图片安全约束失败和路径冲突不自动重试。
 
@@ -231,7 +232,7 @@ coordinator 先冻结 `attemptId`、image input identity、candidate/receipt/for
 - `manifests/line-art-review-manifest.json`：current 技术证据，绑定 project、generation plan SHA、generation manifest SHA、场景顺序，以及每张 current PNG 的相对路径、SHA 和 bytes；输出 `lineArtReviewIdentitySha256`，但不写人工批准。
 - `reviews/line-art-review-<identity前12位>.md`：面向用户的有序审阅文件，按 scene ID 展示 current 图片、全分辨率相对链接和必要的场景语义/提示词。它只是由 manifest identity 派生的审阅视图，不是第二份机器权威源。
 
-coordinator 在人工模式面向用户时只能交付可点击 review 文件链接、完整 identity、场景计数和异常 scene 摘要；不得把全部 PNG、完整提示词或 Markdown 全文重新嵌入主聊天。`user_first` 时 coordinator 不为介绍文件而逐张打开图片；`agent_first` 时 visualReview child 在新鲜短上下文中查看 current PNG，把完整意见留在 attempt 的 `findings.json/result.json`，coordinator 只接收结果路径、status、validator 状态和精简摘要，不得重复逐图审阅。AI 代理模式必须使用 `agent_first`，coordinator 在重验 child 确已具备 `viewImage`、实际检查全量 current PNG 且 findings/current binding 完整后独立决策。
+coordinator 在人工模式面向用户时只能交付可点击 review 文件链接、完整 identity、场景计数和异常 scene 摘要；不得把全部 PNG、完整提示词或 Markdown 全文重新嵌入主聊天。`user_first` 时 coordinator 不为介绍文件而逐张打开图片；`agent_first` 时 visualReview child 在新鲜短上下文中查看 current PNG，把完整意见留在 attempt 的 `findings.json/result.json`，coordinator 只接收结果路径、status、validator 状态和精简摘要，不得重复逐图审阅。AI 代理模式必须使用 `agent_first`，coordinator 在重验 child 确已具备 `viewImage`、实际检查全量 current PNG 且 findings/current binding 完整后独立决策。`forbidText=false` 时，审阅不得因 scene 含文字本身判失败，只核对文字是否符合语义、清晰正确且没有乱码或意外内容；`true` 时才按该计划的显式禁字要求检查。
 
 人工模式下，用户仍须回到聊天，以 current identity 明确确认全部线稿，或按 scene ID 指出需要修改的幕。AI 代理模式下，coordinator 对同一 current identity 作出明确接受或驳回决定；驳回只重生需要修改的 scene 并重审 current bundle，不因普通返工等待用户。打开 Markdown、点击原图、技术 PASS、child completed、findings 无问题、用户没有反对或 AI 无异常摘要都不能单独构成批准。generation plan、generation manifest、场景顺序或任一 PNG 字节变化都会生成新 identity 和新 review 文件；旧文件可保留为历史证据，但旧批准决定不得用于 current bundle。进入 annotation 前必须复核获批准的 identity 与 current `line-art-review-manifest.json.identityHash` 一致。
 

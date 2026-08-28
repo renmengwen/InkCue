@@ -47,8 +47,10 @@ VISUAL_REVIEW_ROLE_CONTRACT = """# visualReview frozen role contract
 - 必须真实查看全部图片并保持跨幕人物、配色、纸张和构图的全局视野。
 - 只写 findings.json/result.json；不得修改图片、调用 provider、写 manifest 或批准。
 - findings 必须按 generation plan scene 顺序；技术 validated 不能替代用户逐图确认。
-- 若 task.inputs 包含封面，封面是独立 review 图片，允许文字；不得把封面文字当作普通
-  scene 源图违规。封面对应的 `coverFrameRange` 仅豁免视觉语义规则，技术检查仍完整保留。
+- 按 generation plan 的 constraints.forbidText 核对文字策略：false 时不得因图片含文字而判错，
+  只检查语义所需文字是否清晰、正确并避免乱码或意外文字；true 时才检查 scene 源图禁字。
+- 若 task.inputs 包含封面，封面是独立 review 图片，允许文字；封面对应的
+  `coverFrameRange` 仅豁免视觉语义规则，技术检查仍完整保留。
 """
 HOST_VISUAL_REVIEW_CAPABILITIES = (
     "readFiles",

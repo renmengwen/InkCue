@@ -76,7 +76,8 @@ FIXED_CANVAS = {
 }
 DEFAULT_GLOBAL_PROMPT = (
     "暖米黄纸张背景上的简洁白板手绘线稿，统一黑色墨线、少量柔和强调色、"
-    "清晰留白与横向构图；画面不得包含任何文字、字母、数字、水印或标志。"
+    "清晰留白与横向构图；语义需要的画内文字应清晰、正确，避免乱码、"
+    "意外文字、供应商水印或无关品牌标志。"
 )
 
 WORKER_STAGE_FIELDS = {
@@ -722,7 +723,7 @@ def create_generation_plan(
             "projectId": project_id,
             "outputCanvas": dict(FIXED_CANVAS),
             "globalPrompt": DEFAULT_GLOBAL_PROMPT,
-            "constraints": {"forbidText": True},
+            "constraints": {"forbidText": False},
             "scenesDirectory": "scenes",
             "manifestFile": "manifests/generation-manifest.json",
             "scenes": [],
@@ -769,8 +770,8 @@ def validate_generation_plan_data(plan: Any, *, project_id: str) -> dict[str, An
     if not isinstance(prompt, str) or not prompt.strip():
         raise ProjectValidationError("globalPrompt 不能为空")
     constraints = plan.get("constraints")
-    if not isinstance(constraints, dict) or constraints.get("forbidText") is not True:
-        raise ProjectValidationError("constraints.forbidText 必须严格为 true")
+    if not isinstance(constraints, dict) or not isinstance(constraints.get("forbidText"), bool):
+        raise ProjectValidationError("constraints.forbidText 必须是布尔值")
     if plan.get("scenesDirectory") != "scenes":
         raise ProjectValidationError("scenesDirectory 必须为 scenes")
     if plan.get("manifestFile") != "manifests/generation-manifest.json":

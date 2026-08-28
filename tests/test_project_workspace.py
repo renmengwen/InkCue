@@ -734,7 +734,7 @@ class ProjectWorkspaceTests(unittest.TestCase):
         self.assertEqual(project.plan["projectId"], project.project_id)
         self.assertEqual(project.plan["outputCanvas"], FIXED_CANVAS)
         self.assertEqual(project.plan["scenes"], [])
-        self.assertTrue(project.plan["constraints"]["forbidText"])
+        self.assertFalse(project.plan["constraints"]["forbidText"])
         for relative in [
             "source/source.srt",
             "planning/generation-plan.json",
@@ -753,7 +753,7 @@ class ProjectWorkspaceTests(unittest.TestCase):
     def test_create_with_confirmed_plan_injects_project_id_and_validates(self) -> None:
         plan = create_generation_plan(str(uuid.uuid4()))
         plan.pop("projectId")
-        plan["globalPrompt"] = "统一手绘线条、暖米黄背景、画面无文字"
+        plan["globalPrompt"] = "统一手绘线条、暖米黄背景、语义文字清晰正确"
         plan["scenes"] = [
             {
                 "sceneId": "scene-01",
@@ -1079,7 +1079,7 @@ class ProjectWorkspaceTests(unittest.TestCase):
             ("单幕缺提示词", lambda p: p["scenes"][0].pop("prompt")),
             ("单幕空提示词", lambda p: p["scenes"][0].__setitem__("prompt", " \t ")),
             ("画布变化", lambda p: p["outputCanvas"].__setitem__("width", 1280)),
-            ("禁字非真", lambda p: p["constraints"].__setitem__("forbidText", 1)),
+            ("禁字字段非布尔", lambda p: p["constraints"].__setitem__("forbidText", 1)),
             ("非正时长", lambda p: p["scenes"][0].__setitem__("sceneDurationMs", 0)),
             ("目录穿越", lambda p: p["scenes"][0].__setitem__("outputFile", "../bad.png")),
             ("非PNG", lambda p: p["scenes"][0].__setitem__("outputFile", "bad.jpg")),

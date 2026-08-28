@@ -51,14 +51,14 @@ def topic_draft() -> dict:
                 "name": "压力与回避",
                 "coreIdea": "压力触发短暂回避",
                 "visualSubject": "人物面对任务后转向轻松活动",
-                "imagePrompt": "人物面对任务清单后转向轻松活动,主体分区清晰,不得出现文字。",
+                "imagePrompt": "人物面对写有“任务”的清单后转向轻松活动,主体分区清晰,文字清晰正确。",
             },
             {
                 "sceneId": "scene-02",
                 "name": "缩小第一步",
                 "coreIdea": "用足够小的行动打断回避",
                 "visualSubject": "人物沿短小台阶走向任务",
-                "imagePrompt": "人物沿着很短的台阶迈出第一步,留白充足,不得出现文字。",
+                "imagePrompt": "人物沿着标有数字“1”的很短台阶迈出第一步,留白充足,数字清晰正确。",
             },
         ],
     }
@@ -156,7 +156,7 @@ class ContentDraftValidationTests(unittest.TestCase):
         ):
             draft = topic_draft()
             draft["scenes"][1]["imagePrompt"] = (
-                f"{marker}，横向暖米黄纸张白板手绘，不得出现文字。"
+                f"{marker}，横向暖米黄纸张白板手绘，画内标签清晰正确。"
             )
             with self.subTest(marker=marker), self.assertRaisesRegex(
                 ContentSourceError, "独立请求可用的自包含提示词"

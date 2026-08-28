@@ -54,6 +54,7 @@ topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经�
 - 五类持久化 identity 必须绑定 current 字节和证据：`SAMPLE_IDENTITY`、`FULL_IDENTITY`、`annotationReviewIdentitySha256`、`sceneReviewIdentityHash`、`FINAL_IDENTITY`。批准脚本仅批准刚检查的 identity。
 - AI 视觉批准必须真实查看 current 图片/视频；能力不足时 `BLOCKED`。自主声音/final 路径不得把技术 PASS、波形、元数据、抽帧或 child 摘要描述成已听，只能准确报告“用户样音授权后的技术推进”。
 - `unknown_external_outcome`（provider 请求后 candidate/receipt 不完整且不能按同一幂等键查询）不得普通重跑或 `--retry-failed` 自动重发；必须单独取得用户承担新外部调用的授权。新的费用、凭据或服务授权、版权授权，以及必须实质改变阶段 0/首次分镜已冻结用户意图的修改，也必须单独询问用户。冻结计划内的正常有界 provider 调用和常规返工不打断用户。
+- 图片不设全局禁字：新 generation plan 默认 `constraints.forbidText=false`，允许语义需要的画内文字。视觉核对不得因“出现文字”本身判失败，只检查文字是否清晰、正确、符合语义且没有乱码、意外内容或供应商水印；旧项目或用户明确要求的 `forbidText=true` 仍按该计划执行。
 
 本地 coordinator runner 支持 `annotation-preview` 与 `final-delivery`。前者串联 annotation 确定性校验、receipt、preview/contact sheet；后者只在 current scene bundle 已获批准后连续执行 merge/burn/可选 mux/final validation，并输出逐步耗时。两者到达质量 Gate 都必须停止并保持 `approvalWritten=false`；人工模式由 coordinator 等待用户，代理批准模式由 coordinator 在 runner 外真实审阅、决定返工或调用原批准脚本。runner 本身不读取 `agentApprovalEnabled` 来批准；逐步 CLI 始终保留为调试和恢复路径。字段、Gate 停止与恢复合同见 [references/phase-4-runner.md](references/phase-4-runner.md)。
 - runner 技术链完成并停在 Gate 时进程退出码为 0，结构化状态仍使用现有 `WAITING_HUMAN_GATE` 且 `approvalWritten=false`。退出码 0 只避免 PowerShell/桌面包装层误报技术失败，不表示批准；任何自动化都必须读取 JSON 状态，不能据退出码越过 Gate。

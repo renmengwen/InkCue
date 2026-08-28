@@ -101,10 +101,10 @@ CONTENT_ROLE_CONTRACT = """# contentDrafting frozen role contract
 - topic 只允许 generate；text 只允许 preserve/polish；voiceoverMode 必须由 skill 根目录
   config/voice-providers.local.json 的 activeProvider 派生，不能由用户或调用方选择。
 - text+preserve 不改写语义；polish 不改变事实、数字、人物、结论、因果强度或责任主体。
-- 每个 imagePrompt 必须自含暖米黄纸张、线稿、配色、主体、构图、留白和禁字/禁水印要求，不引用前图。
+- 每个 imagePrompt 必须自含暖米黄纸张、线稿、配色、主体、构图、留白和禁水印要求，不引用前图；语义需要的画内文字可以出现，但须写明准确内容并避免乱码或意外文字。
 - cue 到 scene 按视觉状态变化拆分，不按具体名词类别机械拆分；允许通过增加 scene 降低单图叙事负担，但不得预设固定场景数量。
 - 每幕只表达一个核心视觉命题；当语义包含多个可依次呈现的状态或主体时，imagePrompt 应组织 2–3 个可独立揭示的视觉区域。只有不可分割的连续主体才合并，不设固定 scene 数量。
-- imagePrompt 应明确左到右或上到下的视觉阅读方向（只作为静态构图顺序，不是绘制元数据），为每个区域指定完整主体和真实、连续的暖米黄纸面留白；不得画漫画格、编号或标题。
+- imagePrompt 应明确左到右或上到下的视觉阅读方向（只作为静态构图顺序，不是绘制元数据），为每个区域指定完整主体和真实、连续的暖米黄纸面留白；不以漫画格强行分区，语义需要的编号、短标签或标题可以保留。
 - 不得用跨区域的连续背景、共同底面、道路、长线、箭头、光束、河流、山脉或其他贯穿结构把区域连接起来；空间独立区域优先保持不遮挡，但局部接近不等于必须合并。
 - 若多个概念在视觉上确实必须组成不可分割的连续构图，则合并为一个视觉簇；不得为了凑数量强拆，也不得因为担心区域交叠把所有内容强行合并为一个簇。
 - 只写 allowedOutputs 中的 candidate.content-draft.json 与 result.json；不得运行 prepare_source.py、创建项目、调用 provider、写正式文件或批准。
@@ -119,10 +119,10 @@ CONTENT_REVISION_ROLE_CONTRACT = """# contentDrafting frozen revision role contr
 - 输出完整的 whiteboard-content-draft-v1，不输出 patch；未被修改要求触及的事实、数字、人物、结论、因果强度、责任主体、cue/scene 内容与图片约束应保持不变。
 - globalInstructions、cueChanges、sceneChanges 是要执行的修改；mustPreserve 是修改时必须继续满足的保护条件。
 - cue/scene 可因修改需要重新编号或调整映射，但最终仍须满足连续 cue、连续 scene 和每幕至少一个 cue 的完整合同。
-- 每个 imagePrompt 必须自含暖米黄纸张、线稿、配色、主体、构图、留白和禁字/禁水印要求，不引用前图。
+- 每个 imagePrompt 必须自含暖米黄纸张、线稿、配色、主体、构图、留白和禁水印要求，不引用前图；语义需要的画内文字可以出现，但须写明准确内容并避免乱码或意外文字。
 - cue 到 scene 按视觉状态变化拆分，不按具体名词类别机械拆分；允许通过增加 scene 降低单图叙事负担，但不得预设固定场景数量。
 - 每幕只表达一个核心视觉命题；当语义包含多个可依次呈现的状态或主体时，imagePrompt 应组织 2–3 个可独立揭示的视觉区域。只有不可分割的连续主体才合并，不设固定 scene 数量。
-- imagePrompt 应明确左到右或上到下的视觉阅读方向（只作为静态构图顺序，不是绘制元数据），为每个区域指定完整主体和真实、连续的暖米黄纸面留白；不得画漫画格、编号或标题。
+- imagePrompt 应明确左到右或上到下的视觉阅读方向（只作为静态构图顺序，不是绘制元数据），为每个区域指定完整主体和真实、连续的暖米黄纸面留白；不以漫画格强行分区，语义需要的编号、短标签或标题可以保留。
 - 不得用跨区域的连续背景、共同底面、道路、长线、箭头、光束、河流、山脉或其他贯穿结构把区域连接起来；空间独立区域优先保持不遮挡，但局部接近不等于必须合并。
 - 若多个概念在视觉上确实必须组成不可分割的连续构图，则合并为一个视觉簇；不得为了凑数量强拆，也不得因为担心区域交叠把所有内容强行合并为一个簇。
 - 只写 allowedOutputs 中的 candidate.content-draft.json 与 result.json；不得覆盖旧 attempt、运行 prepare_source.py、创建项目、调用 provider、写正式文件或批准。
@@ -135,10 +135,10 @@ STORYBOARD_ROLE_CONTRACT = """# storyboardPlanning frozen role contract
 - 只读取 task.json 列出的 source.srt、parsed-srt.json 和 role contract；不得从 prompt 补取字幕正文。
 - 仅为传统 SRT 生成 pre-project candidate.generation-plan.json，不携带正式 projectId，不创建项目。
 - scenes 必须按 parsed-srt 顺序覆盖全部 cue；每幕包含 sceneId、name、cueRange、sceneDurationMs、outputFile、prompt、coreIdea、visualSubject。
-- prompt 必须是可独立生图的暖米黄纸张白板线稿提示词并禁止文字、水印；不得使用 imagePrompt 或 sourceCueRange 字段。
+- prompt 必须是可独立生图的暖米黄纸张白板线稿提示词并禁止供应商水印；语义需要的画内文字可以出现，但须写明准确内容并避免乱码或意外文字；不得使用 imagePrompt 或 sourceCueRange 字段。
 - cue 到 scene 按视觉状态变化拆分，不按具体名词类别机械拆分；允许通过增加 scene 降低单图叙事负担，但不得预设固定场景数量。
 - 每幕只表达一个核心视觉命题；当语义包含多个可依次呈现的状态或主体时，prompt 应组织 2–3 个可独立揭示的视觉区域。只有不可分割的连续主体才合并，不设固定 scene 数量。
-- prompt 应明确左到右或上到下的视觉阅读方向（只作为静态构图顺序，不是绘制元数据），为每个区域指定完整主体和真实、连续的暖米黄纸面留白；不得画漫画格、编号或标题。
+- prompt 应明确左到右或上到下的视觉阅读方向（只作为静态构图顺序，不是绘制元数据），为每个区域指定完整主体和真实、连续的暖米黄纸面留白；不以漫画格强行分区，语义需要的编号、短标签或标题可以保留。
 - 不得用跨区域的连续背景、共同底面、道路、长线、箭头、光束、河流、山脉或其他贯穿结构把区域连接起来；空间独立区域优先保持不遮挡，但局部接近不等于必须合并。
 - 若多个概念在视觉上确实必须组成不可分割的连续构图，则合并为一个视觉簇；不得为了凑数量强拆，也不得因为担心区域交叠把所有内容强行合并为一个簇。
 - 只写 allowedOutputs 中的 candidate.generation-plan.json 与 result.json；不得修改 SRT、调用 provider、写策略批准或正式文件。

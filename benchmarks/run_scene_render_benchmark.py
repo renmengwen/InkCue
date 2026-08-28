@@ -186,7 +186,7 @@ def build_fixture_project(destination: Path, fixture: Mapping[str, Any]) -> Path
         "projectId": project_id,
         "outputCanvas": dict(project_workspace.FIXED_CANVAS),
         "globalPrompt": project_workspace.DEFAULT_GLOBAL_PROMPT,
-        "constraints": {"forbidText": True},
+        "constraints": {"forbidText": False},
         "scenesDirectory": "scenes",
         "manifestFile": "manifests/generation-manifest.json",
         "scenes": scenes,

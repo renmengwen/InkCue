@@ -1,6 +1,6 @@
 # 提示词与视觉拓扑合同
 
-合同版本：`whiteboard-prompt-writing-v1`
+合同版本：`whiteboard-prompt-writing-v2`
 
 本文件是白板动画视觉拓扑和提示词写作的唯一规范来源。阶段 0 的
 `contentDrafting` 使用 `imagePrompt`，传统 SRT 分镜和正式图片计划使用
@@ -24,7 +24,7 @@
 ## 2. 视觉拓扑
 
 每个 scene 的 prompt 必须明确画布、纸张、线稿/配色、该幕语义主体、构图、留白、
-禁字和禁水印要求，并且在本条内自包含。provider 请求彼此独立，不共享对话或前一张
+画内文字策略和禁水印要求，并且在本条内自包含。provider 请求彼此独立，不共享对话或前一张
 图片；不得使用“延续”“沿用”“同上”“上一幕”“参照前图”等跨请求指代。
 
 ### 2.1 独立视觉簇
@@ -77,7 +77,10 @@ generation plan 不得保留 `imagePrompt`，内容草案也不得提前把字�
    `globalPrompt` 提供，但 scene 仍不得依赖跨请求上下文）；
 2. 当前旁白对应的单一核心命题、主体和必要的动作/状态；
 3. 主体之间的空间关系、独立留白以及可被后续 annotation 分开的墨迹簇；
-4. 不出现文字、字幕、logo、水印或 provider 自带装饰；
+4. `constraints.forbidText=false`（默认）时允许语义需要的画内文字，并明确其准确内容；
+   不得因图片含文字本身判错，但应避免乱码、拼写错误、意外文字、供应商水印和无关品牌标志。
+   `constraints.forbidText=true` 只作为旧项目或显式计划的可选要求；正式字幕仍由后期统一烧录，
+   不要求图片复刻整句字幕；
 5. 不引用其他 scene、完整 SRT、主对话、provider 配置、凭据或长日志。
 
 以下写法不合格：
@@ -125,7 +128,8 @@ manifest、identity、stale、checkpoint 与批准仍由 coordinator 单写。
 4. 构图可由 1–3 个连续墨迹簇完整分区；
 5. prompt 不含时间轴、坐标控制、凭据、长上下文或批准声明；
 6. topic/text 使用 `imagePrompt`，正式 plan 使用 `prompt`，映射由 coordinator 完成；
-7. 候选通过 validator 后仍停在 current/待批准主体真实审阅，不越过质量 Gate。
+7. 默认文字策略允许画内文字；复核其语义、准确性和可读性，不把“出现文字”本身列为异常；
+8. 候选通过 validator 后仍停在 current/待批准主体真实审阅，不越过质量 Gate。
 
 命令和 provider 失败/恢复语义分别见
 [`image-generation.md`](image-generation.md)；stale、identity、retry 和

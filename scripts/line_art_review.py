@@ -132,6 +132,12 @@ def render_line_art_review_markdown(
     identity_hash: str,
 ) -> str:
     plan_by_id = {scene["sceneId"]: scene for scene in project.plan["scenes"]}
+    forbid_text = project.plan.get("constraints", {}).get("forbidText") is True
+    text_review = (
+        "禁字要求"
+        if forbid_text
+        else "画内文字是否语义需要、清晰正确且没有乱码或意外文字"
+    )
     lines = [
         "---",
         f"contractVersion: {LINE_ART_REVIEW_CONTRACT}",
@@ -145,7 +151,7 @@ def render_line_art_review_markdown(
         "",
         "全部图片已经通过 current generation plan、generation manifest、PNG、尺寸和 SHA-256 技术校验。技术通过不等于人工批准。",
         "",
-        "请按顺序查看每幕线稿，重点检查人物与物体造型、纸张、配色、构图、禁字要求，以及画面是否准确表达当前场景。",
+        f"请按顺序查看每幕线稿，重点检查人物与物体造型、纸张、配色、构图、{text_review}，以及画面是否准确表达当前场景。",
         "",
         f"确认时请回到聊天回复：`确认线稿 {identity_hash[:12]}`。如果需要修改，请直接列出 scene ID 和原因。打开本文件、打开原图或没有回复都不构成批准。",
         "",

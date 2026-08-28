@@ -26,7 +26,12 @@ from srt_timeline import SrtValidationError, parse_srt, serialize_srt
 CONTENT_DRAFT_CONTRACT_VERSION = "whiteboard-content-draft-v1"
 SOURCE_PACKAGE_CONTRACT_VERSION = "whiteboard-source-package-v1"
 PROVISIONAL_TIMING_VERSION = "provisional-cumulative-ms-v1"
-PREPARE_SOURCE_TOOL_VERSION = "prepare-source-v1"
+PREPARE_SOURCE_TOOL_VERSION = "prepare-source-v2"
+LEGACY_PREPARE_SOURCE_TOOL_VERSION = "prepare-source-v1"
+LEGACY_DEFAULT_GLOBAL_PROMPT = (
+    "暖米黄纸张背景上的简洁白板手绘线稿，统一黑色墨线、少量柔和强调色、"
+    "清晰留白与横向构图；画面不得包含任何文字、字母、数字、水印或标志。"
+)
 MIN_TARGET_SECONDS = 15
 MAX_TARGET_SECONDS = 600
 MAX_TOPIC_CHARACTERS = 200
@@ -324,7 +329,12 @@ def _safe_scene_filename(scene: Mapping[str, str]) -> str:
     return f"{scene['sceneId']}-{name or 'scene'}.png"
 
 
-def build_generation_plan(draft: Mapping[str, Any]) -> dict[str, Any]:
+def build_generation_plan(
+    draft: Mapping[str, Any],
+    *,
+    forbid_text: bool = False,
+    global_prompt: str = DEFAULT_GLOBAL_PROMPT,
+) -> dict[str, Any]:
     normalised = validate_content_draft(draft)
     cues = build_provisional_cues(normalised)
     scenes: list[dict[str, Any]] = []
@@ -354,8 +364,8 @@ def build_generation_plan(draft: Mapping[str, Any]) -> dict[str, Any]:
         "schemaVersion": 1,
         "projectId": "",
         "outputCanvas": dict(FIXED_CANVAS),
-        "globalPrompt": DEFAULT_GLOBAL_PROMPT,
-        "constraints": {"forbidText": True},
+        "globalPrompt": global_prompt,
+        "constraints": {"forbidText": forbid_text},
         "scenesDirectory": "scenes",
         "manifestFile": "manifests/generation-manifest.json",
         "scenes": scenes,
@@ -372,10 +382,20 @@ def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def build_source_package(draft: Mapping[str, Any]) -> tuple[dict[str, Any], str, dict[str, Any], dict[str, Any]]:
+def build_source_package(
+    draft: Mapping[str, Any],
+    *,
+    forbid_text: bool = False,
+    global_prompt: str = DEFAULT_GLOBAL_PROMPT,
+    tool_version: str = PREPARE_SOURCE_TOOL_VERSION,
+) -> tuple[dict[str, Any], str, dict[str, Any], dict[str, Any]]:
     normalised = validate_content_draft(draft)
     source_srt = build_provisional_srt(normalised)
-    generation_plan = build_generation_plan(normalised)
+    generation_plan = build_generation_plan(
+        normalised,
+        forbid_text=forbid_text,
+        global_prompt=global_prompt,
+    )
     input_bytes = _json_file_bytes(normalised)
     srt_bytes = source_srt.encode("utf-8")
     plan_bytes = _json_file_bytes(generation_plan)
@@ -394,7 +414,7 @@ def build_source_package(draft: Mapping[str, Any]) -> tuple[dict[str, Any], str,
         "targetDurationSeconds": normalised["targetDurationSeconds"],
         "voiceoverMode": normalised["voiceoverMode"],
         "timingAlgorithmVersion": PROVISIONAL_TIMING_VERSION,
-        "toolVersion": PREPARE_SOURCE_TOOL_VERSION,
+        "toolVersion": tool_version,
         "files": {
             "input.json": {"sha256": _sha256_bytes(input_bytes)},
             "source.srt": {"sha256": _sha256_bytes(srt_bytes)},
@@ -428,7 +448,29 @@ def validate_source_package(
         raise ContentSourceError(f"source 准备包缺少文件: {exc.filename}") from exc
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ContentSourceError(f"无法读取 source 准备包: {exc}") from exc
-    expected_draft, expected_srt, expected_plan, expected_manifest = build_source_package(raw_draft)
+    raw_constraints = raw_plan.get("constraints") if isinstance(raw_plan, Mapping) else None
+    raw_forbid_text = (
+        raw_constraints.get("forbidText")
+        if isinstance(raw_constraints, Mapping)
+        and isinstance(raw_constraints.get("forbidText"), bool)
+        else False
+    )
+    raw_tool_version = raw_manifest.get("toolVersion")
+    if raw_tool_version not in {
+        PREPARE_SOURCE_TOOL_VERSION,
+        LEGACY_PREPARE_SOURCE_TOOL_VERSION,
+    }:
+        raise ContentSourceError("source 准备包 toolVersion 无效")
+    expected_draft, expected_srt, expected_plan, expected_manifest = build_source_package(
+        raw_draft,
+        forbid_text=raw_forbid_text,
+        global_prompt=(
+            LEGACY_DEFAULT_GLOBAL_PROMPT
+            if raw_tool_version == LEGACY_PREPARE_SOURCE_TOOL_VERSION
+            else DEFAULT_GLOBAL_PROMPT
+        ),
+        tool_version=raw_tool_version,
+    )
     if paths[0].read_bytes() != _json_file_bytes(expected_draft):
         raise ContentSourceError("input.json 字节不是规范化确定性输出")
     if paths[2].read_bytes() != expected_srt.encode("utf-8"):
@@ -470,7 +512,29 @@ def validate_project_source_binding(
         raise ContentSourceError(f"正式项目缺少 content source 证据: {exc.filename}") from exc
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ContentSourceError(f"无法读取正式项目 content source 证据: {exc}") from exc
-    expected_draft, expected_srt, expected_plan, expected_manifest = build_source_package(raw_draft)
+    raw_constraints = raw_plan.get("constraints") if isinstance(raw_plan, Mapping) else None
+    raw_forbid_text = (
+        raw_constraints.get("forbidText")
+        if isinstance(raw_constraints, Mapping)
+        and isinstance(raw_constraints.get("forbidText"), bool)
+        else False
+    )
+    raw_tool_version = raw_manifest.get("toolVersion")
+    if raw_tool_version not in {
+        PREPARE_SOURCE_TOOL_VERSION,
+        LEGACY_PREPARE_SOURCE_TOOL_VERSION,
+    }:
+        raise ContentSourceError("正式项目 source manifest toolVersion 无效")
+    expected_draft, expected_srt, expected_plan, expected_manifest = build_source_package(
+        raw_draft,
+        forbid_text=raw_forbid_text,
+        global_prompt=(
+            LEGACY_DEFAULT_GLOBAL_PROMPT
+            if raw_tool_version == LEGACY_PREPARE_SOURCE_TOOL_VERSION
+            else DEFAULT_GLOBAL_PROMPT
+        ),
+        tool_version=raw_tool_version,
+    )
     if raw_draft != expected_draft or raw_manifest != expected_manifest or raw_srt != expected_srt:
         raise ContentSourceError("正式项目 content source 输入、manifest 或 SRT 已失配")
     expected_plan["projectId"] = project_id
