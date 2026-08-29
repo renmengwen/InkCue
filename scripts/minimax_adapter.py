@@ -11,6 +11,7 @@ import socket
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from typing import Any, Mapping
@@ -21,8 +22,10 @@ except ImportError:  # pragma: no cover
     from voiceover import CancelledError, PermanentProviderError, RawAudioResult, RetryableProviderError, SynthesisRequest
 
 
-MINIMAX_PROVIDER_CONTRACT_VERSION = "minimax-t2a-v2-v1"
+MINIMAX_PROVIDER_CONTRACT_VERSION = "minimax-t2a-v2-native-word-subtitles-v2"
 MINIMAX_ENDPOINT = "https://api.minimaxi.com/v1/t2a_v2"
+MINIMAX_SUBTITLE_TYPE = "word"
+MAX_SUBTITLE_BYTES = 8 * 1024 * 1024
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_QUEUE_INTERVAL_SECONDS = 0.5
 DEFAULT_RATE_LIMIT_BACKOFF_SECONDS = 35.0
@@ -43,6 +46,13 @@ class _MiniMaxRetryableError(RetryableProviderError):
         super().__init__(message)
         self.rate_limited = rate_limited
         self.retry_after_seconds = retry_after_seconds
+
+
+class _MiniMaxSubtitleUnavailable(PermanentProviderError):
+    """Audio response existed, but its native subtitle artifact is unusable."""
+
+    provider_response_received = True
+    external_result_incomplete = True
 
 
 def sanitize_provider_request_id(value: object | None) -> str | None:
@@ -129,6 +139,7 @@ class MiniMaxAdapter:
                  queue_interval_seconds: float = DEFAULT_QUEUE_INTERVAL_SECONDS,
                  requests_per_minute: int | None = None,
                  rate_limit_backoff_seconds: float = DEFAULT_RATE_LIMIT_BACKOFF_SECONDS,
+                 native_word_subtitles: bool = False,
                  opener: Callable[..., Any] | None = None, sleep: Callable[[float], None] = time.sleep,
                  monotonic: Callable[[], float] = time.monotonic) -> None:
         if not isinstance(api_key, str) or not api_key.strip():
@@ -158,6 +169,7 @@ class MiniMaxAdapter:
         self.queue_interval_seconds = max(float(queue_interval_seconds), rpm_interval)
         self.requests_per_minute = requests_per_minute
         self.rate_limit_backoff_seconds = float(rate_limit_backoff_seconds)
+        self.native_word_subtitles = bool(native_word_subtitles)
         self._opener = opener or urllib.request.urlopen
         self._sleep = sleep
         self._monotonic = monotonic
@@ -211,10 +223,49 @@ class MiniMaxAdapter:
                 "text_normalization": self.text_normalization,
             },
             "audio_setting": {"sample_rate": 32000, "bitrate": 128000, "format": "mp3", "channel": 1},
-            "subtitle_enable": False,
+            "subtitle_enable": self.native_word_subtitles,
+            **(
+                {"subtitle_type": MINIMAX_SUBTITLE_TYPE}
+                if self.native_word_subtitles
+                else {}
+            ),
             "output_format": "hex",
         }
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+    def _download_subtitles(self, value: Mapping[str, Any], timeout_seconds: float) -> bytes:
+        data = value.get("data")
+        subtitle_url = data.get("subtitle_file") if isinstance(data, Mapping) else None
+        if subtitle_url is None:
+            subtitle_url = value.get("subtitle_file")
+        if not isinstance(subtitle_url, str) or not subtitle_url.strip():
+            raise _MiniMaxSubtitleUnavailable("MiniMax 返回缺少原生字幕文件")
+        parsed = urllib.parse.urlparse(subtitle_url.strip())
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise _MiniMaxSubtitleUnavailable("MiniMax 原生字幕链接必须是 HTTPS")
+        subtitle_request = urllib.request.Request(
+            subtitle_url.strip(), method="GET", headers={"Accept": "application/json"}
+        )
+        try:
+            with self._opener(subtitle_request, timeout=timeout_seconds) as response:
+                payload = response.read(MAX_SUBTITLE_BYTES + 1)
+        except urllib.error.HTTPError as exc:
+            raise _MiniMaxSubtitleUnavailable(
+                f"MiniMax 原生字幕下载失败（HTTP {exc.code}）"
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError, OSError) as exc:
+            raise _MiniMaxSubtitleUnavailable(
+                "MiniMax 原生字幕下载连接或请求超时"
+            ) from exc
+        if not payload or len(payload) > MAX_SUBTITLE_BYTES:
+            raise _MiniMaxSubtitleUnavailable("MiniMax 原生字幕文件为空或超过 8 MiB")
+        try:
+            decoded = json.loads(payload.decode("utf-8-sig"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise _MiniMaxSubtitleUnavailable("MiniMax 原生字幕文件不是有效 JSON") from exc
+        if not isinstance(decoded, (list, Mapping)):
+            raise _MiniMaxSubtitleUnavailable("MiniMax 原生字幕 JSON 顶层结构无效")
+        return payload
 
     def _request_once(self, request: SynthesisRequest) -> RawAudioResult:
         data = self._payload(request)
@@ -259,7 +310,18 @@ class MiniMaxAdapter:
             raise PermanentProviderError("MiniMax 返回了无效 hex 音频") from exc
         if not media:
             raise PermanentProviderError("MiniMax 返回了空音频")
-        return RawAudioResult(media, "audio/mpeg", sanitize_provider_request_id(value.get("trace_id")))
+        subtitle_bytes = (
+            self._download_subtitles(value, float(request.timeoutSeconds))
+            if self.native_word_subtitles
+            else None
+        )
+        return RawAudioResult(
+            media,
+            "audio/mpeg",
+            sanitize_provider_request_id(value.get("trace_id")),
+            subtitle_bytes,
+            MINIMAX_SUBTITLE_TYPE if subtitle_bytes is not None else None,
+        )
 
     def synthesize(self, request: SynthesisRequest) -> RawAudioResult:
         last: RetryableProviderError | None = None
@@ -284,4 +346,10 @@ class MiniMaxAdapter:
         raise RetryableProviderError(f"MiniMax 可重试失败已耗尽（{self.max_attempts} 次）: {last}") from last
 
 
-__all__ = ["MINIMAX_ENDPOINT", "MINIMAX_PROVIDER_CONTRACT_VERSION", "MiniMaxAdapter", "sanitize_provider_request_id"]
+__all__ = [
+    "MINIMAX_ENDPOINT",
+    "MINIMAX_PROVIDER_CONTRACT_VERSION",
+    "MINIMAX_SUBTITLE_TYPE",
+    "MiniMaxAdapter",
+    "sanitize_provider_request_id",
+]

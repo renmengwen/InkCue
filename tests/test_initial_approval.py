@@ -22,6 +22,7 @@ from initial_approval_options import (  # noqa: E402
     parse_initial_approval_response,
 )
 from project_workspace import (  # noqa: E402
+    ProjectValidationError,
     ProjectWorkspace,
     WorkspaceConfig,
     load_project,
@@ -174,6 +175,61 @@ class InitialApprovalTests(unittest.TestCase):
             },
         )
         self.assertTrue(load_project(project.root).initial_approval_completed)
+
+    def test_changed_sample_can_reopen_and_atomically_reapprove(self) -> None:
+        project = self.pending_project(voiceover_mode="edge-tts")
+        first_identity = "8" * 64
+        first_manifest = self.install_unapproved_sample(project, first_identity)
+        committed = approve_initial_project(
+            project.root,
+            self.selection(project, sample_identity=first_identity),
+            configured_image_provider_available=True,
+            sample_loader=lambda _project: (
+                copy.deepcopy(first_manifest),
+                first_identity,
+                False,
+            ),
+        )
+
+        second_identity = "9" * 64
+        second_manifest = self.install_unapproved_sample(committed, second_identity)
+        with self.assertRaisesRegex(
+            ProjectValidationError,
+            "initialApproval 未绑定 current 已联合批准样音",
+        ):
+            load_project(committed.root)
+
+        reopened = load_project(
+            committed.root,
+            allow_pending_initial_approval=True,
+        )
+        self.assertTrue(reopened.pending_initial_approval)
+        self.assertNotIn("backgroundMusic", reopened.metadata)
+        self.assertNotIn("agentApprovalEnabled", reopened.metadata)
+        self.assertNotIn("imageGenerationMode", reopened.metadata)
+
+        reapproved = approve_initial_project(
+            reopened.root,
+            self.selection(
+                reopened,
+                sample_identity=second_identity,
+                background_music_enabled=True,
+                agent_approval_enabled=False,
+            ),
+            configured_image_provider_available=True,
+            sample_loader=lambda _project: (
+                copy.deepcopy(second_manifest),
+                second_identity,
+                False,
+            ),
+        )
+        self.assertEqual(
+            reapproved.metadata["initialApproval"]["sampleIdentityHash"],
+            second_identity,
+        )
+        self.assertTrue(reapproved.background_music_enabled)
+        self.assertFalse(reapproved.agent_approval_enabled)
+        self.assertEqual(reapproved.image_generation_mode, "provider")
 
     def test_stale_content_or_sample_identity_leaves_pending_bytes_unchanged(self) -> None:
         project = self.pending_project(voiceover_mode="edge-tts")

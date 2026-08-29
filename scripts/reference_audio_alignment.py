@@ -483,6 +483,7 @@ def align_reference_audio(
     *,
     min_match_ratio: float = DEFAULT_MIN_MATCH_RATIO,
     max_normalized_edit_ratio: float = DEFAULT_MAX_NORMALIZED_EDIT_RATIO,
+    timing_validation_profile: str = "funasr-token-revalidation",
 ) -> dict[str, Any]:
     """Bind authoritative text to one-token-per-cue acoustic timestamps.
 
@@ -501,6 +502,11 @@ def align_reference_audio(
         raise ReferenceAlignmentError("min_match_ratio 必须位于 0 到 1")
     if not 0.0 <= max_normalized_edit_ratio <= 1.0:
         raise ReferenceAlignmentError("max_normalized_edit_ratio 必须位于 0 到 1")
+    if timing_validation_profile not in {
+        "funasr-token-revalidation",
+        "minimax-provider-native-word",
+    }:
+        raise ReferenceAlignmentError("timing_validation_profile 无效")
     try:
         reference_cues = parse_srt(reference_srt)
         parsed_asr_cues = parse_srt(asr_srt)
@@ -537,12 +543,16 @@ def align_reference_audio(
     lexical_asr_cues: list[dict[str, Any]] = []
     ignored_asr_cues: list[int] = []
     asr_tokens: list[str] = []
+    acoustic_token_boundaries = [0]
     for cue in parsed_asr_cues:
         tokens = _alignment_tokens(cue["text"])
         if not tokens:
             ignored_asr_cues.append(cue["sourceOrdinal"])
             continue
-        if len(tokens) != 1:
+        if (
+            timing_validation_profile == "funasr-token-revalidation"
+            and len(tokens) != 1
+        ):
             raise ReferenceAlignmentError(
                 f"ASR cue {cue['sourceOrdinal']} 含 {len(tokens)} 个语义 token；"
                 "新对齐合同要求一条 cue 对应一个真实 token 时间戳"
@@ -552,7 +562,8 @@ def align_reference_audio(
                 f"ASR cue {cue['sourceOrdinal']} 超出音频总时长 {audio_duration_ms}ms"
             )
         lexical_asr_cues.append(cue)
-        asr_tokens.append(tokens[0])
+        asr_tokens.extend(tokens)
+        acoustic_token_boundaries.append(len(asr_tokens))
     if not lexical_asr_cues:
         raise ReferenceAlignmentError("ASR SRT 没有可对齐的 token cue")
 
@@ -578,6 +589,7 @@ def align_reference_audio(
         "editDistanceMethod": edit_method,
         "timingFallbackUsed": False,
         "tokenTimingUsed": True,
+        "timingValidationProfile": timing_validation_profile,
         "captionSegmentationContract": "reference-punctuation-caption-v1",
         "thresholds": {
             "minMatchRatio": min_match_ratio,
@@ -597,9 +609,26 @@ def align_reference_audio(
             diagnostics=diagnostics,
         )
 
-    _validate_local_acoustic_rate(lexical_asr_cues, diagnostics)
+    if timing_validation_profile == "funasr-token-revalidation":
+        _validate_local_acoustic_rate(lexical_asr_cues, diagnostics)
+    else:
+        # MiniMax word 时间戳与音频来自同一次 provider 合成。这里保留原稿
+        # 覆盖、真实边界、字幕阅读上限、scene 连续性和媒体 binding，但不再
+        # 用另一套 ASR 的经验语速下限推翻 provider 自己的时间戳。
+        diagnostics["localAcousticRate"] = {
+            "policy": "not_applicable_provider_native_word_timing",
+            "rateFloorPassed": None,
+            "rateCeilingPassed": None,
+            "rateVariationPassed": None,
+            "outlierCount": None,
+        }
 
-    mapped_positions = _token_boundary_map(asr_tokens, reference_tokens)
+    token_mapped_positions = _token_boundary_map(asr_tokens, reference_tokens)
+    mapped_positions = (
+        token_mapped_positions
+        if timing_validation_profile == "funasr-token-revalidation"
+        else [token_mapped_positions[index] for index in acoustic_token_boundaries]
+    )
     try:
         selected_boundaries = _select_distinct_acoustic_boundaries(
             mapped_positions, required_positions

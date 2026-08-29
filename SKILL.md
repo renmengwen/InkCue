@@ -27,7 +27,7 @@ topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经�
 
 `imageGenerationMode = provider | gpt-login` 是正式项目字段。只有当前 Codex/ChatGPT 确实使用 GPT 账号登录且宿主内置 `image_gen` 可用时，才在上述联合确认中询问“当前登录的 GPT 账号/已配置图片供应商”；否则不询问并直接冻结为 `provider`。用户已经明确指定时不重复询问，只展示当前已采用；若明确指定 `gpt-login` 但宿主能力不可用，则 `BLOCKED`，不得静默切换 provider 或需要 API Key 的 CLI。传统 SRT 在首次分镜确认时一并冻结 BGM、代理批准和生图方式，不新增 Gate。旧项目缺失字段按 `provider` 读取；仅对尚未生图的旧项目，若当前满足 GPT 登录态与 `image_gen` 能力条件，coordinator 可在首次生图前补问一次并持久化选择。详见 [references/phase-0-content.md](references/phase-0-content.md)、[references/content-input.md](references/content-input.md) 与 [references/image-generation.md](references/image-generation.md)。
 
-`agentApprovalEnabled=false` 保持逐阶段人工 Gate。为 `true` 表示用户已经通过 current 样音授权声音主观方向，后续完整旁白与最终成片不再要求 AI 冒充完整听音：严格技术链通过后，coordinator 调用既有批准动作并把 `approvalBasis`/`reviewBasis` 记录为“用户样音授权后的技术推进”。完整旁白仍必须满足整轨单次 provider、canonical WAV、完整解码、本地 FunASR、原稿对齐、cue/scene/timeline/narration SRT、current identity 和时长偏差检查；超过 10% 时按该授权采用真实音频时钟，不再询问。最终交付仍必须满足 current full audio、字幕、AAC、流结构、完整解码、时长/帧数/尾部、BGM 固定混音和 `FINAL_IDENTITY` 技术证据。不得声称 AI 完整听过旁白或最终成片。视觉 Gate 在宿主能看图/视频时仍对 current artifact 实际检查；人工模式的完整旁白和最终看片听音 Gate 不变。
+`agentApprovalEnabled=false` 保持逐阶段人工 Gate。为 `true` 表示用户已经通过 current 样音授权声音主观方向，后续完整旁白与最终成片不再要求 AI 冒充完整听音：严格技术链通过后，coordinator 调用既有批准动作并把 `approvalBasis`/`reviewBasis` 记录为“用户样音授权后的技术推进”。完整旁白仍必须满足整轨单次 provider、canonical WAV、完整解码、原稿对齐、cue/scene/timeline/narration SRT、current identity 和时长偏差检查；Edge TTS/豆包使用本地 FunASR token 证据，MiniMax 使用同一次 T2A 响应绑定的 provider-native word 字幕证据。超过 10% 时按该授权采用真实音频时钟，不再询问。最终交付仍必须满足 current full audio、字幕、AAC、流结构、完整解码、时长/帧数/尾部、BGM 固定混音和 `FINAL_IDENTITY` 技术证据。不得声称 AI 完整听过旁白或最终成片。视觉 Gate 在宿主能看图/视频时仍对 current artifact 实际检查；人工模式的完整旁白和最终看片听音 Gate 不变。
 
 权威时钟：`disabled` 使用 `source/source.srt` 原始全局时间轴；Edge/MiniMax/豆包语音使用获批 provider 生成的真实 audio timeline 与 `audio/narration.srt`。`targetDurationSeconds` 只作内容预算和 provisional SRT，不是成片时钟。
 
@@ -35,7 +35,7 @@ topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经�
 
 1. **阶段 0：预项目、样音与一次联合确认**。先完成旁白稿、cue、scene、分镜和 generation plan 候选，创建 pending 预项目并生成 current 样音；用户以一条完整句或编号原子批准 current content/sample identity 并冻结 BGM、后续模式和生图方式。传统静音 SRT 不生成或要求样音，使用“字幕与分镜方案通过……”语义完成初始批准。
 2. **阶段 1：严格 SRT 与分镜确认**。传统 SRT 严格解析、时长约束和 `storyboardPlanning` candidate/result 交接；用户首次确认分镜并同时冻结 BGM、代理批准与生图方式后才可建项。
-3. **阶段 3：样音后语音执行**。current 样音已在初始联合批准中绑定；完整旁白仍以单次 provider 请求生成 current WAV，并完成本地 FunASR token 级时间戳、权威原稿对齐与语义安全字幕切句。人工模式完整试听并处理时长偏差；自主模式以用户样音授权为主观依据，仅在全部严格技术证据 current 后写技术推进批准，超过 10% 自动采用真实音频时钟。
+3. **阶段 3：样音后语音执行**。current 样音已在初始联合批准中绑定；完整旁白仍以单次 provider 请求生成 current WAV。Edge TTS/豆包完成本地 FunASR token 级时间戳；MiniMax 请求 `subtitle_enable=true`、`subtitle_type=word` 并绑定同次响应的原生字幕。两条路径都继续执行权威原稿覆盖、语义安全切句与 scene/timeline binding。人工模式完整试听并处理时长偏差；自主模式以用户样音授权为主观依据，仅在全部严格技术证据 current 后写技术推进批准，超过 10% 自动采用真实音频时钟。
 4. **阶段 4：真实时间轴与 review policy**。发布 timeline、narration SRT 和 `FULL_IDENTITY`；人工模式由用户选择 review policy，自主模式确定性派生 `agent_first`，但该值不表示 AI 完整试听。
 5. **阶段 5：统一线稿确认**。图片候选独立有界生成、技术校验和 global visual review；线稿保留独立质量 Gate，主窗口只交付 review 文件链接、identity、计数和异常摘要。
 6. **阶段 6：annotation、区域预览与 reveal 联合确认**。技术 current 后生成预览和项目 URL；当前批准主体一次检查 annotation、区域、`protectedRegions`、reveal 时序并绑定 current review identity。
@@ -80,7 +80,7 @@ topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经�
 6. `imagePrompt`（content draft）到 formal generation plan 的 `prompt` 只允许 coordinator 确定性映射；child 不接收完整主对话、完整 SRT、provider 凭据、长日志或批准信息。详见 [references/prompt-writing.md](references/prompt-writing.md) 与 [references/subagent-orchestration.md](references/subagent-orchestration.md)。
 7. 每幕只表达一个核心视觉命题；可独立揭示的 2–3 个视觉簇之间保持真实纸面留白，不以道路/河流/山脉/箭头等贯穿结构连接，除非该结构本身不可分割。annotation 按连续墨迹簇划分，最多 3 个且不为凑数强拆。
 8. reveal 时间严格串行、不可重叠；空间 region 仅在真实遮挡/交界处适度重叠；`protectedRegions` 只能保护正确分区中不可避免的局部，不能掩盖错误分区。
-9. 旁白字幕必须使用可一一对应的 FunASR token 时间戳；句级边界不得用于估算词内时间。正式 runner 固定使用 15 秒 VAD 上限，保存每个 VAD 子结果的 token/timestamp，并按分段原序重建后与 FunASR 顶层数组逐项核对；只比较全局 cardinality 或证明同一次推理内部自洽不算声学准确证据。字幕只在已确认原稿的标点或原始 cue 边界安全切分，禁止把金额、数字词组、英文词、固定词语或连续汉字从中间截断；真实前导、句间和尾部停顿允许保持无字幕空档。token 证据不足、分段重建不一致、边界位移过大、滑动窗口局部语速低于下限、超过上限、最快/最慢波动比异常或断词 QA 失败时必须 fail-closed。scene 边界不得早于本幕最后一个声学 token 结束；真实停顿内只能采用记录了 basis 的边界，禁止统一大延迟。
+9. 旁白字幕必须使用与 current 整轨音频绑定的真实词级边界，句级边界不得用于估算词内时间。Edge TTS/豆包正式 runner 固定使用 15 秒 VAD 上限，保存每个 FunASR VAD 子结果的 token/timestamp，并按分段原序重建后与顶层数组逐项核对；其 token 证据不足、分段重建不一致、边界位移过大、滑动窗口局部语速异常或断词 QA 失败时必须 fail-closed。MiniMax 只使用同一次 T2A 请求返回的 `subtitle_file`，请求固定为 `subtitle_enable=true`、`subtitle_type=word`；原生字幕必须与 provider contract、合成 identity、canonical audio SHA、原稿覆盖和正式 timeline 绑定，不再运行 FunASR 二次识别，也不应用本地 ASR 的局部语速下限/波动比重判。两条路径的字幕都只在已确认原稿的标点或原始 cue 边界安全切分，禁止把金额、数字词组、英文词、固定词语或连续汉字从中间截断；真实前导、句间和尾部停顿允许保持无字幕空档。scene 边界不得早于本幕最后一个真实词结束；真实停顿内只能采用记录了 basis 的边界，禁止统一大延迟。
 10. 图片采用 `continue_independent`：单幕失败不阻止其他幕候选，但任一必需 scene 缺失/失败/stale 时 batch 总状态为 FAIL，不得启动全量预览或写批准。完整 TTS 固定为一个 full-track task；不得因 provider/ASR 失败回退成逐句多请求。
 11. provider worker 或宿主图片结果导入只能写已登记 attempt 的 candidate/去敏 receipt；coordinator 按 `prepared → requesting → candidate_ready → publishing → validated` 串行 checkpoint、重验、原子发布和清理。`gpt-login` 只替换图片字节来源，不另建 Gate、manifest 或发布链。
 12. `sceneRender` 是当前正式单幕候选的有界并行能力；worker 数只读 workspace `execution.concurrency.sceneRender`（缺失继承 pool default，最终默认 1，范围 1–16），候选完成顺序不得改变 generation plan 顺序或正式 manifest。
@@ -151,7 +151,7 @@ python <SKILL_ROOT>\scripts\prepare_env.py --check
 # 上一步仅因专用环境或依赖缺失而失败时：
 python <SKILL_ROOT>\scripts\prepare_env.py
 # 捕获末行 ENV_PY；后续每次工具调用都直接使用该绝对路径，不用裸 python/py
-# 首次生成整轨旁白前准备/检查当前 skill 自带的本地 ASR：
+# Edge TTS/豆包首次生成整轨旁白前准备/检查当前 skill 自带的本地 ASR；MiniMax 跳过：
 <ENV_PY> <SKILL_ROOT>\scripts\prepare_env.py --feature narration-asr
 <ENV_PY> <SKILL_ROOT>\scripts\prepare_env.py --check --feature narration-asr
 <ENV_PY> <SKILL_ROOT>\scripts\prepare_draft_agent_task.py contentDrafting --content-input <input.json> --draft-root <draft-root>
@@ -173,7 +173,7 @@ python <SKILL_ROOT>\scripts\prepare_env.py
 <ENV_PY> <SKILL_ROOT>\scripts\generate_voiceover.py sample --project <项目根目录> --voice <voice> --rate <rate>
 <ENV_PY> <SKILL_ROOT>\scripts\generate_voiceover.py approve-sample --project <项目根目录> --identity-hash <SAMPLE_IDENTITY>
 <ENV_PY> <SKILL_ROOT>\scripts\generate_voiceover.py full --project <项目根目录>
-# CLI 正常执行时会自动调用当前 skill 内部 FunASR runner 并发布对齐结果；调试/恢复也可显式导入 ASR SRT：
+# Edge TTS/豆包正常执行时会自动调用当前 skill 内部 FunASR runner；MiniMax 自动消费 provider-native word 字幕。前两者调试/恢复也可显式导入 ASR SRT：
 <ENV_PY> <SKILL_ROOT>\scripts\generate_voiceover.py publish-alignment --project <项目根目录> --asr-srt <FunASR一-token-一-cue声学字幕.srt>
 <ENV_PY> <SKILL_ROOT>\scripts\generate_voiceover.py status --project <项目根目录>
 <ENV_PY> <SKILL_ROOT>\scripts\validate_voiceover.py --project <项目根目录> [--force-deep]
@@ -225,6 +225,6 @@ python <SKILL_ROOT>\scripts\prepare_env.py
 - generation plan、manifest、图片 SHA、1920×1080 实际尺寸和线稿确认均 current。
 - 正式 scene 使用 current `assets/drawing-hand.png`，manifest `handSha256` 匹配；`@moveR` 版权层未经明确授权不得修改或移除。
 - 单幕和 clean master 帧数符合累计全局帧边界并全部完整解码；merge 已校验获批 bundle。
-- `subtitles/final.ass`、字体 hash、样式 hash、权威 SRT 与 contact sheet 写入 delivery evidence；旁白字幕必须通过 15 秒 VAD 分段 token 重建、顶层逐项一致性、语义切句、断词、滑动窗口局部语速下限/上限/波动比、scene 尾音边界与真实 gap QA。
+- `subtitles/final.ass`、字体 hash、样式 hash、权威 SRT 与 contact sheet 写入 delivery evidence；Edge TTS/豆包字幕必须通过 15 秒 VAD 分段 token 重建、顶层逐项一致性及局部语速 QA；MiniMax 必须通过 provider-native word 字幕 receipt、audio/synthesis identity binding。全部旁白路径仍须通过原稿覆盖、语义切句、断词、scene 尾音边界与真实 gap QA。
 - disabled final 必须 1 路 H.264、0 音频；旁白 final 必须 1 路 H.264 + 1 路 24kHz mono AAC；两者都有可见烧录字幕。
 - 自动测试不调用真实 provider；外网或服务不可用写 `BLOCKED`，不以 fixture PASS、SKIP 或技术 `validated` 冒充外部或质量批准 PASS。

@@ -64,7 +64,11 @@ try:
     # top-level alias installed by scripts.voiceover.
     from .edge_tts_adapter import EdgeTtsAdapter
     from .doubao_adapter import DoubaoAdapter, DOUBAO_ENDPOINT, DOUBAO_PROVIDER_CONTRACT_VERSION
-    from .minimax_adapter import MiniMaxAdapter, MINIMAX_PROVIDER_CONTRACT_VERSION
+    from .minimax_adapter import (
+        MiniMaxAdapter,
+        MINIMAX_PROVIDER_CONTRACT_VERSION,
+        MINIMAX_SUBTITLE_TYPE,
+    )
     from .voice_provider_config import VoiceProviderConfigError, active_provider_id, load_voice_provider_config
     from . import validation_receipts
 except ImportError:  # pragma: no cover - direct script execution
@@ -79,7 +83,11 @@ except ImportError:  # pragma: no cover - direct script execution
     )
     from edge_tts_adapter import EdgeTtsAdapter
     from doubao_adapter import DoubaoAdapter, DOUBAO_ENDPOINT, DOUBAO_PROVIDER_CONTRACT_VERSION
-    from minimax_adapter import MiniMaxAdapter, MINIMAX_PROVIDER_CONTRACT_VERSION
+    from minimax_adapter import (
+        MiniMaxAdapter,
+        MINIMAX_PROVIDER_CONTRACT_VERSION,
+        MINIMAX_SUBTITLE_TYPE,
+    )
     from voice_provider_config import VoiceProviderConfigError, active_provider_id, load_voice_provider_config
     from project_workspace import (
         Project,
@@ -157,6 +165,7 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0
 LEGACY_CANONICAL_WAV_VALIDATOR_RECEIPT_VERSION = "canonical-wav-validator-receipt-v1"
 CANONICAL_WAV_VALIDATOR_RECEIPT_VERSION = validation_receipts.CANDIDATE_RECEIPT_CONTRACT_VERSION
 CANONICAL_WAV_VALIDATOR_CONTRACT_VERSION = "canonical-wav-validator-v2"
+MINIMAX_SUBTITLE_EVIDENCE_CONTRACT_VERSION = "minimax-native-word-subtitle-evidence-v1"
 
 
 class ApprovalGateError(RuntimeError):
@@ -193,6 +202,7 @@ def _voice_paths(project: Project) -> dict[str, Path]:
         "composite": project.path("audio/narration.wav"),
         "timeline": project.path("audio/timeline.json"),
         "srt": project.path("audio/narration.srt"),
+        "minimax_subtitles": project.path("audio/minimax-subtitles.json"),
     }
 
 
@@ -353,7 +363,9 @@ def _request(plan: Mapping[str, Any], text: str) -> SynthesisRequest:
     )
 
 
-def _adapter_from_plan(plan: Mapping[str, Any]) -> ProviderAdapter:
+def _adapter_from_plan(
+    plan: Mapping[str, Any], *, native_minimax_subtitles: bool = False
+) -> ProviderAdapter:
     provider_id = plan["provider"]["id"]
     configured_provider = active_provider_id()
     if configured_provider != provider_id:
@@ -376,6 +388,7 @@ def _adapter_from_plan(plan: Mapping[str, Any]) -> ProviderAdapter:
             queue_interval_seconds=float(config.get("queueIntervalMs", 500)) / 1000.0,
             requests_per_minute=int(config.get("requestsPerMinute", 20)),
             rate_limit_backoff_seconds=float(config.get("rateLimitBackoffMs", 35000)) / 1000.0,
+            native_word_subtitles=native_minimax_subtitles,
         )
     if provider_id == "doubao":
         config = load_voice_provider_config(provider_id="doubao")
@@ -805,11 +818,52 @@ def _provider_receipt(request_id: str | None) -> dict[str, Any]:
     return {"providerRequestIdHash": f"sha256:{digest[:16]}"}
 
 
+def _attempt_minimax_subtitle_candidate(
+    project: Project, segment: Mapping[str, Any]
+) -> Path:
+    return _attempt_candidate(project, segment).with_name("minimax-subtitles.json")
+
+
+def _minimax_subtitle_receipt(path: Path) -> dict[str, Any]:
+    try:
+        payload = path.read_bytes()
+        value = json.loads(payload.decode("utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise VoiceoverStateError(f"MiniMax 原生字幕文件无效: {exc}") from exc
+    if not payload or not isinstance(value, (list, dict)):
+        raise VoiceoverStateError("MiniMax 原生字幕 JSON 顶层结构无效")
+    return {
+        "contractVersion": MINIMAX_SUBTITLE_EVIDENCE_CONTRACT_VERSION,
+        "subtitleType": MINIMAX_SUBTITLE_TYPE,
+        "bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+
+def _write_minimax_subtitle_candidate(path: Path, payload: bytes) -> dict[str, Any]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        receipt = _minimax_subtitle_receipt(temporary)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    if _minimax_subtitle_receipt(path) != receipt:
+        raise VoiceoverStateError("MiniMax 原生字幕 candidate 发布后发生变化")
+    return receipt
+
+
 def _new_segment_attempt(
     project: Project,
     segment: dict[str, Any],
     unit: Mapping[str, Any],
     run_dir: Path,
+    *,
+    provider_subtitles_required: bool = False,
 ) -> dict[str, Any]:
     attempt_number = int(segment.get("attempts") or 0) + 1
     attempt_id = f"unit-{unit['index']:04d}-attempt-{attempt_number:04d}"
@@ -831,6 +885,8 @@ def _new_segment_attempt(
         "formalFile": segment["relativePath"],
         "externalOutcome": "not_started",
         "providerReceipt": None,
+        "providerSubtitles": None,
+        "providerSubtitlesRequired": provider_subtitles_required,
     }
     segment["attempts"] = attempt_number
     segment["currentAttempt"] = attempt
@@ -903,6 +959,13 @@ def _validate_attempt_candidate(
     attempt["candidateSha256"] = result.sha256
     attempt["candidateBytes"] = result.bytes
     attempt["validatorReceipt"] = receipt
+    if attempt.get("providerSubtitlesRequired") is True:
+        subtitle_candidate = _attempt_minimax_subtitle_candidate(project, segment)
+        subtitle_receipt = _minimax_subtitle_receipt(subtitle_candidate)
+        previous_subtitle_receipt = attempt.get("providerSubtitles")
+        if previous_subtitle_receipt not in (None, subtitle_receipt):
+            raise ApprovalGateError("MiniMax 原生字幕 candidate receipt 已 stale")
+        attempt["providerSubtitles"] = subtitle_receipt
     return result
 
 
@@ -928,6 +991,26 @@ def _publish_segment_candidate(project: Project, segment: dict[str, Any]) -> Non
         temporary.unlink(missing_ok=True)
     if destination.stat().st_size != expected_bytes or sha256_file(destination) != expected_sha:
         raise VoiceoverStateError("正式 segment 发布后 SHA/bytes 核对失败")
+    if attempt.get("providerSubtitlesRequired") is True:
+        subtitle_candidate = _attempt_minimax_subtitle_candidate(project, segment)
+        subtitle_receipt = attempt.get("providerSubtitles")
+        if not isinstance(subtitle_receipt, Mapping):
+            raise VoiceoverStateError("MiniMax validated attempt 缺少原生字幕 receipt")
+        destination = _voice_paths(project)["minimax_subtitles"]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with subtitle_candidate.open("rb") as source, temporary.open("wb") as handle:
+                shutil.copyfileobj(source, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            if _minimax_subtitle_receipt(temporary) != dict(subtitle_receipt):
+                raise VoiceoverStateError("MiniMax 原生字幕正式副本与 receipt 不一致")
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+        if _minimax_subtitle_receipt(destination) != dict(subtitle_receipt):
+            raise VoiceoverStateError("MiniMax 原生字幕正式发布后发生变化")
 
 
 def _apply_candidate_media(segment: dict[str, Any]) -> None:
@@ -946,6 +1029,12 @@ def _apply_candidate_media(segment: dict[str, Any]) -> None:
             "createdAt": segment.get("createdAt") or _now(),
         }
     )
+    provider_subtitles = segment["currentAttempt"].get("providerSubtitles")
+    if provider_subtitles is not None:
+        segment["providerSubtitles"] = {
+            **copy.deepcopy(provider_subtitles),
+            "relativePath": "audio/minimax-subtitles.json",
+        }
 
 
 def _synthesize_candidate_worker(
@@ -956,11 +1045,24 @@ def _synthesize_candidate_worker(
     work_dir: Path,
     adapter: ProviderAdapter,
     normalizer: Callable[..., CanonicalAudioResult],
+    provider_subtitles_required: bool,
 ) -> dict[str, Any]:
     provider_returned = False
     try:
         raw = adapter.synthesize(_request(plan, unit["speechText"]))
         provider_returned = True
+        subtitle_receipt = None
+        if provider_subtitles_required:
+            if (
+                raw.providerSubtitleType != MINIMAX_SUBTITLE_TYPE
+                or not isinstance(raw.providerSubtitleBytes, bytes)
+                or not raw.providerSubtitleBytes
+            ):
+                raise PermanentProviderError("MiniMax 整轨响应缺少 word 原生字幕")
+            subtitle_receipt = _write_minimax_subtitle_candidate(
+                candidate.with_name("minimax-subtitles.json"),
+                raw.providerSubtitleBytes,
+            )
         result = normalizer(
             raw.bytes,
             candidate,
@@ -970,11 +1072,16 @@ def _synthesize_candidate_worker(
         return {
             "result": result,
             "providerReceipt": _provider_receipt(raw.providerRequestId),
+            "providerSubtitles": subtitle_receipt,
         }
     except Exception as exc:  # classified by the single-writer coordinator
         return {
             "exception": exc,
-            "providerReturned": provider_returned,
+            "providerReturned": provider_returned
+            or getattr(exc, "provider_response_received", False),
+            "externalResultIncomplete": getattr(
+                exc, "external_result_incomplete", False
+            ),
             "candidateExists": candidate.is_file(),
         }
 
@@ -1015,6 +1122,23 @@ def _segment_is_reusable(
     }
     if any(segment.get(key) != value for key, value in expected.items()):
         raise ApprovalGateError(f"{relative} 与 validated checkpoint 媒体合同不一致")
+    provider_subtitles_required = (
+        isinstance(attempt, Mapping)
+        and attempt.get("providerSubtitlesRequired") is True
+    ) or isinstance(segment.get("providerSubtitles"), Mapping)
+    if provider_subtitles_required:
+        provider_subtitles = segment.get("providerSubtitles")
+        if not isinstance(provider_subtitles, Mapping):
+            raise ApprovalGateError("MiniMax validated segment 缺少原生字幕 binding")
+        subtitle_path = _voice_paths(project)["minimax_subtitles"]
+        if provider_subtitles.get("relativePath") != "audio/minimax-subtitles.json":
+            raise ApprovalGateError("MiniMax 原生字幕正式路径已 stale")
+        receipt = {
+            key: provider_subtitles.get(key)
+            for key in ("contractVersion", "subtitleType", "bytes", "sha256")
+        }
+        if _minimax_subtitle_receipt(subtitle_path) != receipt:
+            raise ApprovalGateError("MiniMax 原生字幕 bytes/SHA 已 stale")
     return True
 
 
@@ -1080,6 +1204,30 @@ def _recover_segment_attempt(
                 error_summary="requesting 后 candidate 不存在且 provider 不支持幂等查询",
             )
             raise ApprovalGateError("provider 结果不确定；禁止自动重复请求")
+        if attempt.get("providerSubtitlesRequired") is True:
+            try:
+                _minimax_subtitle_receipt(
+                    _attempt_minimax_subtitle_candidate(project, segment)
+                )
+            except VoiceoverStateError:
+                attempt["externalOutcome"] = "unknown"
+                _checkpoint_segment(
+                    manifest_path,
+                    manifest,
+                    plan,
+                    units,
+                    segment,
+                    status="unknown_external_outcome",
+                    error_stage="provider-subtitles",
+                    error_summary=(
+                        "requesting 后音频 candidate 已存在，但 MiniMax 原生字幕 "
+                        "candidate 缺失或无效"
+                    ),
+                )
+                raise ApprovalGateError(
+                    "MiniMax 音频 candidate 已存在但原生字幕结果不完整；"
+                    "禁止自动重复请求，需人工决定"
+                )
         attempt["externalOutcome"] = "succeeded"
         _validate_attempt_candidate(project, segment)
         _checkpoint_segment(manifest_path, manifest, plan, units, segment, status="candidate_ready")
@@ -1096,6 +1244,11 @@ def _recover_segment_attempt(
         if destination.exists():
             if destination.stat().st_size != expected_bytes or sha256_file(destination) != expected_sha:
                 raise ApprovalGateError("publishing 恢复发现正式 segment 与 candidate 冲突")
+            if (
+                project.voiceover_mode == "minimax"
+                and not _voice_paths(project)["minimax_subtitles"].is_file()
+            ):
+                _publish_segment_candidate(project, segment)
         else:
             _publish_segment_candidate(project, segment)
         _apply_candidate_media(segment)
@@ -1301,6 +1454,7 @@ def _full(
     normalizer: Callable[..., CanonicalAudioResult],
     configured_concurrency: int,
     asr_preflight: Callable[[], None],
+    require_native_minimax_subtitles: bool = False,
 ) -> str:
     plan, units = _load_current_plan_units(project)
     if (
@@ -1316,7 +1470,8 @@ def _full(
     approval = old.get("sample", {}).get("approval", {})
     if not approval.get("approved") or approval.get("identityHash") != current_sample:
         raise ApprovalGateError("未获得 current 样音 voice/rate 人工批准")
-    asr_preflight()
+    if project.voiceover_mode != "minimax":
+        asr_preflight()
     # Preserve only the current sample approval; full/timeline approvals are reset.
     manifest["sample"] = copy.deepcopy(old["sample"])
     if isinstance(configured_concurrency, bool) or not isinstance(configured_concurrency, int):
@@ -1374,7 +1529,13 @@ def _full(
         if segment.get("status") == "prepared" and isinstance(segment.get("currentAttempt"), dict):
             attempt = segment["currentAttempt"]
         else:
-            attempt = _new_segment_attempt(project, segment, unit, run_dir)
+            attempt = _new_segment_attempt(
+                project,
+                segment,
+                unit,
+                run_dir,
+                provider_subtitles_required=require_native_minimax_subtitles,
+            )
             _checkpoint_segment(paths["manifest"], manifest, plan, units, segment, status="prepared")
         attempt["externalOutcome"] = "requesting"
         _checkpoint_segment(paths["manifest"], manifest, plan, units, segment, status="requesting")
@@ -1387,6 +1548,7 @@ def _full(
             work_dir=candidate.parent,
             adapter=adapter,
             normalizer=normalizer,
+            provider_subtitles_required=require_native_minimax_subtitles,
         )
         futures[future] = (unit, segment)
 
@@ -1414,6 +1576,9 @@ def _full(
                         else:
                             attempt["externalOutcome"] = "succeeded"
                             attempt["providerReceipt"] = outcome.get("providerReceipt")
+                            attempt["providerSubtitles"] = outcome.get(
+                                "providerSubtitles"
+                            )
                             attempt["candidateSha256"] = result.sha256
                             attempt["candidateBytes"] = result.bytes
                             attempt["validatorReceipt"] = _candidate_validator_receipt(result)
@@ -1468,6 +1633,19 @@ def _full(
                             _checkpoint_segment(
                                 paths["manifest"], manifest, plan, units, segment,
                                 status="cancelled", error_stage="provider", error_summary=str(worker_error),
+                            )
+                        elif outcome.get("externalResultIncomplete") is True:
+                            attempt["externalOutcome"] = "unknown"
+                            _checkpoint_segment(
+                                paths["manifest"], manifest, plan, units, segment,
+                                status="unknown_external_outcome",
+                                error_stage="provider-subtitles",
+                                error_summary=(
+                                    "MiniMax 已返回音频响应但原生字幕不完整；禁止自动重发"
+                                ),
+                            )
+                            worker_error = ApprovalGateError(
+                                "MiniMax 音频响应后的原生字幕结果不完整；需人工决定是否重新请求"
                             )
                         elif isinstance(worker_error, (RetryableProviderError, PermanentProviderError)):
                             attempt["externalOutcome"] = "failed"
@@ -1540,7 +1718,11 @@ def _full(
     }
     manifest["alignment"] = {
         "status": "waiting_alignment",
-        "source": "external-asr-srt",
+        "source": (
+            "minimax-provider-native-word"
+            if require_native_minimax_subtitles
+            else "external-asr-srt"
+        ),
     }
     manifest["durationReview"] = {
         "sourceDurationMs": source_duration,
@@ -1755,6 +1937,9 @@ def _build_aligned_timeline(
             {
                 "tokenTimingUsed": diagnostics.get("tokenTimingUsed") is True,
                 "qualityGatePassed": diagnostics.get("qualityGatePassed") is True,
+                "timingValidationProfile": diagnostics.get(
+                    "timingValidationProfile"
+                ),
                 "captionSegmentationContract": diagnostics.get(
                     "captionSegmentationContract"
                 ),
@@ -1764,6 +1949,9 @@ def _build_aligned_timeline(
                 ),
                 "acousticEvidence": copy.deepcopy(
                     diagnostics.get("acousticEvidence")
+                ),
+                "providerNativeEvidence": copy.deepcopy(
+                    diagnostics.get("providerNativeEvidence")
                 ),
             }
         )
@@ -1795,6 +1983,126 @@ def _build_aligned_timeline(
         },
     }
     return timeline, narration_srt
+
+
+def _minimax_subtitle_items(value: object) -> list[Mapping[str, Any]]:
+    """Locate the provider's word entries without accepting unrelated arrays."""
+
+    queue: list[object] = [value]
+    while queue:
+        current = queue.pop(0)
+        if isinstance(current, list):
+            if current and all(isinstance(item, Mapping) for item in current):
+                entries = [item for item in current if isinstance(item, Mapping)]
+                if all(
+                    (
+                        (
+                            any(key in item for key in ("text", "word", "content"))
+                            and any(
+                                key in item
+                                for key in (
+                                    "start_time",
+                                    "startTime",
+                                    "begin_time",
+                                    "beginTime",
+                                )
+                            )
+                            and any(key in item for key in ("end_time", "endTime"))
+                        )
+                        or (
+                            "word" in item
+                            and "time_begin" in item
+                            and "time_end" in item
+                        )
+                    )
+                    for item in entries
+                ):
+                    return entries
+            queue.extend(current)
+        elif isinstance(current, Mapping):
+            for key in (
+                "timestamped_words",
+                "words",
+                "subtitles",
+                "subtitle",
+                "sentences",
+                "content",
+                "data",
+                "result",
+            ):
+                if key in current:
+                    queue.append(current[key])
+    raise VoiceoverStateError("MiniMax 原生字幕 JSON 没有 word 时间戳条目")
+
+
+def _minimax_time_ms(item: Mapping[str, Any], *, start: bool) -> int:
+    second_keys = ("start_time", "startTime") if start else ("end_time", "endTime")
+    millisecond_keys = (
+        ("time_begin", "begin_time", "beginTime")
+        if start
+        else ("time_end",)
+    )
+    for key in second_keys:
+        if key in item:
+            raw = item[key]
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                raise VoiceoverStateError(f"MiniMax 原生字幕 {key} 必须是数字")
+            return round(float(raw) * 1000)
+    for key in millisecond_keys:
+        if key in item:
+            raw = item[key]
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                raise VoiceoverStateError(f"MiniMax 原生字幕 {key} 必须是数字")
+            return round(float(raw))
+    raise VoiceoverStateError("MiniMax 原生字幕缺少起止时间")
+
+
+def _minimax_word_srt(path: Path, audio_duration_ms: int) -> tuple[str, dict[str, Any]]:
+    receipt = _minimax_subtitle_receipt(path)
+    try:
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise VoiceoverStateError(f"无法读取 MiniMax 原生字幕: {exc}") from exc
+    items = _minimax_subtitle_items(value)
+    cues: list[dict[str, Any]] = []
+    previous_end = -1
+    for index, item in enumerate(items, start=1):
+        text_value = next(
+            (item[key] for key in ("text", "word", "content") if key in item),
+            None,
+        )
+        if not isinstance(text_value, str) or not text_value.strip():
+            raise VoiceoverStateError(f"MiniMax 原生字幕 word[{index}] 文本为空")
+        start_ms = _minimax_time_ms(item, start=True)
+        end_ms = _minimax_time_ms(item, start=False)
+        if end_ms > audio_duration_ms and end_ms - audio_duration_ms <= 100:
+            end_ms = audio_duration_ms
+        if (
+            start_ms < 0
+            or end_ms <= start_ms
+            or end_ms > audio_duration_ms
+            or (previous_end >= 0 and start_ms < previous_end)
+        ):
+            raise VoiceoverStateError(
+                f"MiniMax 原生字幕 word[{index}] 时间必须递增且位于整轨范围内"
+            )
+        cues.append(
+            {
+                "originalIndex": index,
+                "startMs": start_ms,
+                "endMs": end_ms,
+                "text": text_value,
+            }
+        )
+        previous_end = end_ms
+    evidence = {
+        **receipt,
+        "validated": True,
+        "evidenceKind": "provider_native_word_timestamp",
+        "wordEntryCount": len(cues),
+        "audioDurationMs": audio_duration_ms,
+    }
+    return serialize_srt(cues), evidence
 
 
 def _load_asr_acoustic_evidence(asr_srt_path: Path) -> dict[str, Any]:
@@ -1861,6 +2169,78 @@ def _load_asr_acoustic_evidence(asr_srt_path: Path) -> dict[str, Any]:
     }
 
 
+def _commit_alignment(
+    project: Project,
+    plan: Mapping[str, Any],
+    units: Sequence[Mapping[str, Any]],
+    manifest: dict[str, Any],
+    composite: CanonicalAudioResult,
+    alignment: Mapping[str, Any],
+    *,
+    evidence_sha256: str,
+    alignment_source: str,
+    run_kind: str,
+) -> str:
+    paths = _voice_paths(project)
+    timeline, narration_srt = _build_aligned_timeline(
+        project,
+        plan,
+        units[0],
+        composite,
+        alignment,
+        asr_srt_sha256=evidence_sha256,
+        alignment_source=alignment_source,
+    )
+    _publish_text(paths["srt"], narration_srt)
+    write_json_atomic(paths["timeline"], timeline)
+    timeline_sha = sha256_file(paths["timeline"])
+    narration_sha = sha256_file(paths["srt"])
+    if timeline["narrationSrt"]["sha256"] != narration_sha:
+        raise VoiceoverStateError("timeline narrationSrt linkage 与正式 SRT 不一致")
+    manifest["timeline"] = {
+        "status": "validated",
+        "relativePath": "audio/timeline.json",
+        "sha256": timeline_sha,
+        "durationMs": composite.durationMs,
+        "contractVersion": VOICE_TIMELINE_CONTRACT_VERSION,
+    }
+    manifest["narrationSrt"] = {
+        "status": "validated",
+        "relativePath": "audio/narration.srt",
+        "sha256": narration_sha,
+        "cueCount": len(timeline["units"]),
+    }
+    manifest["alignment"] = {
+        "status": "validated",
+        "source": alignment_source,
+        "evidenceSha256": evidence_sha256,
+        "contractVersion": timeline["alignment"]["contractVersion"],
+    }
+    manifest["fullIdentityHash"] = _full_identity(
+        plan, manifest["composite"], manifest["timeline"], manifest["narrationSrt"]
+    )
+    manifest["fullApproval"] = {
+        "approved": False,
+        "identityHash": None,
+        "durationDecision": None,
+        "reviewPolicy": None,
+        "approvalBasis": None,
+        "reviewBasis": None,
+        "approvedAt": None,
+    }
+    manifest["runs"].append(
+        {
+            "kind": run_kind,
+            "status": "validated",
+            "startedAt": _now(),
+            "finishedAt": _now(),
+            "taskCount": 1,
+        }
+    )
+    _write_manifest(paths["manifest"], manifest, plan, units)
+    return manifest["fullIdentityHash"]
+
+
 def _publish_alignment(
     project: Project,
     asr_srt_path: Path,
@@ -1913,63 +2293,102 @@ def _publish_alignment(
         raise VoiceoverStateError("reference audio alignment 缺少 diagnostics")
     diagnostics["acousticEvidence"] = acoustic_evidence
     asr_sha = hashlib.sha256(asr_srt.encode("utf-8")).hexdigest()
-    timeline, narration_srt = _build_aligned_timeline(
+    return _commit_alignment(
         project,
         plan,
-        units[0],
+        units,
+        manifest,
         composite,
         alignment,
-        asr_srt_sha256=asr_sha,
+        evidence_sha256=asr_sha,
         alignment_source=alignment_source,
+        run_kind="publish-alignment",
     )
-    _publish_text(paths["srt"], narration_srt)
-    write_json_atomic(paths["timeline"], timeline)
-    timeline_sha = sha256_file(paths["timeline"])
-    narration_sha = sha256_file(paths["srt"])
-    if timeline["narrationSrt"]["sha256"] != narration_sha:
-        raise VoiceoverStateError("timeline narrationSrt linkage 与正式 SRT 不一致")
-    manifest["timeline"] = {
-        "status": "validated",
-        "relativePath": "audio/timeline.json",
-        "sha256": timeline_sha,
-        "durationMs": composite.durationMs,
-        "contractVersion": VOICE_TIMELINE_CONTRACT_VERSION,
-    }
-    manifest["narrationSrt"] = {
-        "status": "validated",
-        "relativePath": "audio/narration.srt",
-        "sha256": narration_sha,
-        "cueCount": len(timeline["units"]),
-    }
-    manifest["alignment"] = {
-        "status": "validated",
-        "source": alignment_source,
-        "asrSrtSha256": asr_sha,
-        "contractVersion": timeline["alignment"]["contractVersion"],
-    }
-    manifest["fullIdentityHash"] = _full_identity(
-        plan, manifest["composite"], manifest["timeline"], manifest["narrationSrt"]
+
+
+def _publish_minimax_alignment(project: Project) -> str:
+    """Publish MiniMax word timing without running a second ASR engine."""
+
+    if project.voiceover_mode != "minimax":
+        raise VoiceoverStateError("MiniMax 原生字幕入口只允许 minimax 项目")
+    if align_reference_audio is None:
+        raise VoiceoverStateError("reference audio alignment 模块尚未安装")
+    plan, units = _load_current_plan_units(project)
+    if (
+        plan["provider"]["id"] != "minimax"
+        or plan["provider"]["contractVersion"]
+        != MINIMAX_PROVIDER_CONTRACT_VERSION
+        or plan["segmentation"]["contractVersion"]
+        != FULL_TRACK_SEGMENTATION_CONTRACT_VERSION
+        or len(units) != 1
+    ):
+        raise ApprovalGateError("MiniMax voice plan 尚未启用 current 原生 word 字幕合同")
+    paths = _voice_paths(project)
+    manifest = validate_voice_manifest(
+        _read_json(paths["manifest"], "voice manifest"),
+        voice_plan=plan,
+        speech_units=units,
     )
-    manifest["fullApproval"] = {
-        "approved": False,
-        "identityHash": None,
-        "durationDecision": None,
-        "reviewPolicy": None,
-        "approvalBasis": None,
-        "reviewBasis": None,
-        "approvedAt": None,
-    }
-    manifest["runs"].append(
+    current_sample = _validate_current_sample(project, plan, manifest)
+    approval = manifest["sample"]["approval"]
+    if not approval.get("approved") or approval.get("identityHash") != current_sample:
+        raise ApprovalGateError("未获得 current 样音 voice/rate 人工批准")
+    segment = manifest["segments"][0] if len(manifest["segments"]) == 1 else None
+    attempt = segment.get("currentAttempt") if isinstance(segment, Mapping) else None
+    if (
+        not isinstance(segment, Mapping)
+        or not isinstance(attempt, Mapping)
+        or attempt.get("providerSubtitlesRequired") is not True
+        or not isinstance(attempt.get("providerSubtitles"), Mapping)
+        or not isinstance(segment.get("providerSubtitles"), Mapping)
+        or not _segment_is_reusable(project, segment, units[0])
+    ):
+        raise VoiceoverStateError("MiniMax 整轨 synthesis segment 尚未 validated")
+    composite_ref = manifest.get("composite")
+    if not isinstance(composite_ref, Mapping) or composite_ref.get("status") != "validated":
+        raise VoiceoverStateError("audio/narration.wav 尚未 validated")
+    composite = _validate_media_ref(
+        project, composite_ref, expected_file="audio/narration.wav"
+    )
+    if manifest.get("fullAudioIdentityHash") != _full_audio_identity(plan, composite_ref):
+        raise ApprovalGateError("整轨音频技术 identity 已 stale")
+    provider_srt, native_evidence = _minimax_word_srt(
+        paths["minimax_subtitles"], composite.durationMs
+    )
+    source_srt = project.path("source/source.srt").read_text(encoding="utf-8-sig")
+    alignment = align_reference_audio(
+        source_srt,
+        provider_srt,
+        project.timing_plan["scenes"],
+        composite.durationMs,
+        min_match_ratio=0.98,
+        max_normalized_edit_ratio=0.02,
+        timing_validation_profile="minimax-provider-native-word",
+    )
+    if not isinstance(alignment, Mapping):
+        raise VoiceoverStateError("MiniMax provider-native alignment 返回值无效")
+    diagnostics = alignment.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        raise VoiceoverStateError("MiniMax provider-native alignment 缺少 diagnostics")
+    native_evidence.update(
         {
-            "kind": "publish-alignment",
-            "status": "validated",
-            "startedAt": _now(),
-            "finishedAt": _now(),
-            "taskCount": 1,
+            "audioSha256": composite.sha256,
+            "fullAudioIdentityHash": manifest["fullAudioIdentityHash"],
+            "voiceSynthesisIdentityHash": units[0]["voiceSynthesisIdentityHash"],
         }
     )
-    _write_manifest(paths["manifest"], manifest, plan, units)
-    return manifest["fullIdentityHash"]
+    diagnostics["providerNativeEvidence"] = native_evidence
+    return _commit_alignment(
+        project,
+        plan,
+        units,
+        manifest,
+        composite,
+        alignment,
+        evidence_sha256=native_evidence["sha256"],
+        alignment_source="minimax-provider-native-word",
+        run_kind="publish-minimax-native-alignment",
+    )
 
 
 def _run_local_asr(project: Project, narration_path: Path) -> Path:
@@ -2130,12 +2549,46 @@ def validate_current_voiceover(
         if isinstance(alignment_diagnostics, Mapping)
         else None
     )
-    if (
+    common_alignment_invalid = (
         not isinstance(alignment_diagnostics, Mapping)
         or alignment_diagnostics.get("tokenTimingUsed") is not True
         or alignment_diagnostics.get("qualityGatePassed") is not True
         or alignment_diagnostics.get("captionSegmentationContract")
         != "reference-punctuation-caption-v1"
+    )
+    if project.voiceover_mode == "minimax":
+        native_evidence = (
+            alignment_diagnostics.get("providerNativeEvidence")
+            if isinstance(alignment_diagnostics, Mapping)
+            else None
+        )
+        subtitle_receipt = _minimax_subtitle_receipt(paths["minimax_subtitles"])
+        if (
+            common_alignment_invalid
+            or timeline.get("alignment", {}).get("source")
+            != "minimax-provider-native-word"
+            or alignment_diagnostics.get("timingValidationProfile")
+            != "minimax-provider-native-word"
+            or not isinstance(native_evidence, Mapping)
+            or native_evidence.get("validated") is not True
+            or native_evidence.get("contractVersion")
+            != MINIMAX_SUBTITLE_EVIDENCE_CONTRACT_VERSION
+            or native_evidence.get("evidenceKind")
+            != "provider_native_word_timestamp"
+            or native_evidence.get("subtitleType") != MINIMAX_SUBTITLE_TYPE
+            or native_evidence.get("sha256") != subtitle_receipt["sha256"]
+            or native_evidence.get("bytes") != subtitle_receipt["bytes"]
+            or native_evidence.get("audioSha256") != composite.sha256
+            or native_evidence.get("fullAudioIdentityHash")
+            != manifest.get("fullAudioIdentityHash")
+            or native_evidence.get("voiceSynthesisIdentityHash")
+            != units[0]["voiceSynthesisIdentityHash"]
+        ):
+            raise VoiceoverStateError(
+                "MiniMax audio timeline 缺少 current provider-native word 字幕证据"
+            )
+    elif (
+        common_alignment_invalid
         or not isinstance(acoustic_evidence, Mapping)
         or acoustic_evidence.get("validated") is not True
         or acoustic_evidence.get("asrContractVersion")
@@ -2559,29 +3012,44 @@ def main(
             print(f"SAMPLE_APPROVED_IDENTITY={identity}")
         elif args.command == "full":
             current_plan, _ = _load_current_plan_units(project)
+            require_native_minimax_subtitles = (
+                project.voiceover_mode == "minimax" and adapter is None
+            )
             audio_identity = _full(
                 project, retry_failed=args.retry_failed,
-                adapter=adapter or _adapter_from_plan(current_plan),
+                adapter=adapter or _adapter_from_plan(
+                    current_plan, native_minimax_subtitles=True
+                ),
                 normalizer=normalizer or normalize_to_candidate,
                 configured_concurrency=concurrency.for_stage("voiceGeneration"),
                 asr_preflight=asr_preflight or _preflight_narration_asr,
+                require_native_minimax_subtitles=require_native_minimax_subtitles,
             )
             print(f"FULL_AUDIO={project.path('audio/narration.wav')}")
             print(f"FULL_AUDIO_IDENTITY={audio_identity}")
-            runner = asr_runner or (_run_local_asr if argv is None else None)
-            if runner is None:
-                print("ALIGNMENT_REQUIRED=1")
-            else:
-                asr_srt_path = runner(project, project.path("audio/narration.wav"))
-                identity = _publish_alignment(
-                    project,
-                    asr_srt_path,
-                    alignment_source="internal-funasr",
+            if require_native_minimax_subtitles:
+                identity = _publish_minimax_alignment(project)
+                print(
+                    f"MINIMAX_SUBTITLES={project.path('audio/minimax-subtitles.json')}"
                 )
-                print(f"ASR_SRT={asr_srt_path}")
                 print(f"NARRATION_SRT={project.path('audio/narration.srt')}")
                 print(f"AUDIO_TIMELINE={project.path('audio/timeline.json')}")
                 print(f"FULL_IDENTITY={identity}")
+            else:
+                runner = asr_runner or (_run_local_asr if argv is None else None)
+                if runner is None:
+                    print("ALIGNMENT_REQUIRED=1")
+                else:
+                    asr_srt_path = runner(project, project.path("audio/narration.wav"))
+                    identity = _publish_alignment(
+                        project,
+                        asr_srt_path,
+                        alignment_source="internal-funasr",
+                    )
+                    print(f"ASR_SRT={asr_srt_path}")
+                    print(f"NARRATION_SRT={project.path('audio/narration.srt')}")
+                    print(f"AUDIO_TIMELINE={project.path('audio/timeline.json')}")
+                    print(f"FULL_IDENTITY={identity}")
         elif args.command == "publish-alignment":
             identity = _publish_alignment(project, args.asr_srt)
             print(f"NARRATION_SRT={project.path('audio/narration.srt')}")

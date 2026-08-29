@@ -1450,17 +1450,50 @@ def load_project(
                 ) from exc
             sample = voice_manifest.get("sample") if isinstance(voice_manifest, dict) else None
             approval = sample.get("approval") if isinstance(sample, dict) else None
-            if (
-                not _is_sha256(sample_identity)
-                or sample.get("identityHash") != sample_identity
-                or not isinstance(approval, dict)
-                or approval.get("approved") is not True
-                or approval.get("identityHash") != sample_identity
-                or approval.get("approvalBasis") != "user_joint_initial_approval"
-            ):
-                raise ProjectValidationError(
-                    "initialApproval 未绑定 current 已联合批准样音"
+            sample_binding_current = (
+                isinstance(sample, dict)
+                and _is_sha256(sample_identity)
+                and sample.get("identityHash") == sample_identity
+                and isinstance(approval, dict)
+                and approval.get("approved") is True
+                and approval.get("identityHash") == sample_identity
+                and approval.get("approvalBasis") == "user_joint_initial_approval"
+            )
+            if not sample_binding_current:
+                current_sample_identity = (
+                    sample.get("identityHash") if isinstance(sample, dict) else None
                 )
+                sample_reset_for_reapproval = (
+                    allow_pending_initial_approval
+                    and isinstance(sample, dict)
+                    and sample.get("status") == "validated"
+                    and _is_sha256(current_sample_identity)
+                    and isinstance(approval, dict)
+                    and approval.get("approved") is False
+                    and approval.get("identityHash") is None
+                    and approval.get("approvalBasis") is None
+                    and approval.get("approvedAt") is None
+                )
+                if sample_reset_for_reapproval:
+                    # 生成新的 voice/rate 样音后，磁盘上的旧联合批准会暂时
+                    # 指向旧 SAMPLE_IDENTITY。只有明确允许 pending 的阶段 0
+                    # coordinator/批准入口可以把这一严格可识别的状态投影成
+                    # pending 视图；普通下游仍 fail-closed。新的联合批准随后
+                    # 通过原子提交同时写回 current sample approval 与项目选择。
+                    metadata["initialApproval"] = {
+                        "status": INITIAL_APPROVAL_PENDING
+                    }
+                    for field in (
+                        "backgroundMusic",
+                        "agentApprovalEnabled",
+                        "imageGenerationMode",
+                    ):
+                        metadata.pop(field, None)
+                    validate_project_metadata_data(root, metadata)
+                else:
+                    raise ProjectValidationError(
+                        "initialApproval 未绑定 current 已联合批准样音"
+                    )
         elif sample_identity is not None:
             raise ProjectValidationError("静音项目 initialApproval 不得绑定样音")
     if project.pending_initial_approval and not allow_pending_initial_approval:

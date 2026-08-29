@@ -122,6 +122,8 @@ class RawAudioResult:
     bytes: bytes
     declaredFormat: str
     providerRequestId: str | None = None
+    providerSubtitleBytes: bytes | None = None
+    providerSubtitleType: str | None = None
 
 
 @runtime_checkable
@@ -1072,6 +1074,44 @@ def validate_voice_manifest(
             provider_receipt = attempt.get("providerReceipt")
             if provider_receipt is not None and not isinstance(provider_receipt, Mapping):
                 raise VoiceoverValidationError("segment.currentAttempt.providerReceipt 必须是对象或 null")
+            provider_subtitles_required = attempt.get("providerSubtitlesRequired")
+            if provider_subtitles_required is not None and not isinstance(
+                provider_subtitles_required, bool
+            ):
+                raise VoiceoverValidationError(
+                    "segment.currentAttempt.providerSubtitlesRequired 必须是布尔值"
+                )
+            provider_subtitles = attempt.get("providerSubtitles")
+            if provider_subtitles is not None and not isinstance(
+                provider_subtitles, Mapping
+            ):
+                raise VoiceoverValidationError(
+                    "segment.currentAttempt.providerSubtitles 必须是对象或 null"
+                )
+            if (
+                provider_subtitles_required is True
+                and segment.get("status") in {"candidate_ready", "publishing", "validated"}
+                and not isinstance(provider_subtitles, Mapping)
+            ):
+                raise VoiceoverValidationError(
+                    "需要 provider 字幕的 segment attempt 缺少字幕 receipt"
+                )
+        segment_provider_subtitles = segment.get("providerSubtitles")
+        if segment_provider_subtitles is not None and not isinstance(
+            segment_provider_subtitles, Mapping
+        ):
+            raise VoiceoverValidationError(
+                "segment.providerSubtitles 必须是对象或 null"
+            )
+        if (
+            segment.get("status") == "validated"
+            and isinstance(attempt, Mapping)
+            and attempt.get("providerSubtitlesRequired") is True
+            and not isinstance(segment_provider_subtitles, Mapping)
+        ):
+            raise VoiceoverValidationError(
+                "需要 provider 字幕的 validated segment 缺少正式字幕 binding"
+            )
     sample = manifest.get("sample")
     full_approval = manifest.get("fullApproval")
     if not isinstance(sample, Mapping) or not isinstance(sample.get("approval"), Mapping):

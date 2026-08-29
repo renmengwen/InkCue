@@ -32,13 +32,13 @@
 
 MiniMax T2A V2：
 
-- provider/protocol：`minimax` / `MiniMax`；contract：`minimax-t2a-v2-v1`。
+- provider/protocol：`minimax` / `MiniMax`；contract：`minimax-t2a-v2-native-word-subtitles-v2`。
 - endpoint：`https://api.minimaxi.com/v1/t2a_v2`，使用 `Authorization: Bearer <apiKey>`。
 - 配置中的 `+10%` rate、`+10%` volume、`+0Hz` pitch 分别映射为 MiniMax `speed=1.1`、`vol=1.1`、`pitch=0`；speed 限制为 `0.5–2`，pitch 限制为 `-12–12`。
-- 请求使用 `speech-2.8-hd`、`output_format=hex`、32 kHz mono MP3；返回的 hex 必须先解码，再经过 FFmpeg/ffprobe 规范化为本合同的 24 kHz mono canonical WAV。
+- 整轨请求使用 `speech-2.8-hd`、`output_format=hex`、`subtitle_enable=true`、`subtitle_type=word`、32 kHz mono MP3；返回的 hex 必须先解码，再经过 FFmpeg/ffprobe 规范化为本合同的 24 kHz mono canonical WAV。同次响应的 `subtitle_file` 必须下载为 JSON candidate，并与 provider contract、合成 identity、canonical audio SHA 和正式 timeline 绑定。当前真实响应的词级条目位于句段对象的 `timestamped_words` 数组，使用毫秒制 `time_begin/time_end`；解析器同时兼容文档形态的秒制 `start_time/end_time`。
 - API Key 只能放在未提交的 `config/voice-providers.local.json`，不写入 plan、manifest、日志或异常；`trace_id` 只保存不可逆摘要。
 
-MiniMax adapter 仅使用 Python 标准库，不需要安装额外 provider 包。可重试范围与 Edge 相同：DNS/连接、timeout、429、502、503、504；401/403、参数/音色错误、协议或媒体格式错误不自动重试，也不会自动切换 Edge。
+MiniMax adapter 仅使用 Python 标准库，不需要安装额外 provider 包。可重试范围与 Edge 相同：DNS/连接、timeout、429、502、503、504；401/403、参数/音色错误、协议或媒体格式错误不自动重试，也不会自动切换 Edge。若 T2A 已返回音频响应但 `subtitle_file` 缺失、下载失败或 JSON 无效，结果写为 `unknown_external_outcome`，不得自动重发整轨请求。
 
 MiniMax 额外使用 provider 级共享节流器：`requestsPerMinute`（默认 20）与 `queueIntervalMs` 共同生效，实际请求间隔取两者中更保守的值。该节流器在全部 `voiceGeneration` worker 间共享并加锁，不能让每个线程各自计算间隔。HTTP 429、`Retry-After`，以及 HTTP 200 响应体中的 `rate limit exceeded(RPM)` 都属于明确的可重试限流；收到后全部新请求至少延迟 `rateLimitBackoffMs`（默认 35000ms），只在当前 segment 的有界 attempt 内重试。401/403、非法 voice/参数和协议错误仍是永久失败。
 
@@ -54,7 +54,7 @@ MiniMax 额外使用 provider 级共享节流器：`requestsPerMinute`（默认 
 
 Edge TTS 不需要 API Key 或 Base URL，但不是离线模型。它依赖外网和微软语音服务，可能受服务规则、可用性、限流、音色和返回格式变化影响。不得把“无 Key”写成“无需网络”，也不得在失败后自动改 voice/rate、切换 provider 或降级到其他 TTS。
 
-Skill 不调用、不导入、不读取 Yingshu 的 API、数据库、模型配置或 `node_modules`，也不调用其他 Codex skill、PowerShell 包装器或外部 ASR 凭据。旁白对齐使用当前 skill 自带的 Python FunASR runner 和工作区本地模型缓存。当前不支持多角色、SSML、克隆音色、浏览器试听 UI 或自动 voice 推荐。BGM 只支持一个内置 CC0 固定预设：Yoiyami 的《First Light Particles》，`-15 dB`、1.2 秒淡入、1.8 秒淡出、短于成片时循环；用户只在阶段 0 选择加入或不加入，不增加独立试听或批准 Gate。
+Skill 不调用、不导入、不读取 Yingshu 的 API、数据库、模型配置或 `node_modules`，也不调用其他 Codex skill、PowerShell 包装器或外部 ASR 凭据。Edge TTS/豆包旁白对齐使用当前 skill 自带的 Python FunASR runner 和工作区本地模型缓存；MiniMax 直接使用同次 T2A 返回的 provider-native word 字幕，不启动 FunASR 二次识别。当前不支持多角色、SSML、克隆音色、浏览器试听 UI 或自动 voice 推荐。BGM 只支持一个内置 CC0 固定预设：Yoiyami 的《First Light Particles》，`-15 dB`、1.2 秒淡入、1.8 秒淡出、短于成片时循环；用户只在阶段 0 选择加入或不加入，不增加独立试听或批准 Gate。
 
 ## 环境与配置
 
@@ -67,12 +67,12 @@ python scripts/prepare_env.py
 <ENV_PY> scripts/prepare_env.py --feature edge-tts
 <ENV_PY> scripts/prepare_env.py --check --feature edge-tts
 
-# 首次整轨旁白对齐前准备一次本地 FunASR 模型；正式生成只做只读消费：
+# Edge TTS/豆包首次整轨旁白对齐前准备一次本地 FunASR 模型；MiniMax 跳过：
 <ENV_PY> scripts/prepare_env.py --feature narration-asr
 <ENV_PY> scripts/prepare_env.py --check --feature narration-asr
 ```
 
-`narration-asr` 将 Paraformer 中文 ASR、FSMN-VAD 与 CT-Punc 准备到工作区 `runtime/cache/funasr-models/`，并写入模型 receipt。正式 runner 只读取 receipt 中的本地绝对模型路径，不在旁白生成阶段隐式下载模型，也不读取 Yingshu 或其他 skill 的环境。
+`narration-asr` 仅供 Edge TTS/豆包使用：它将 Paraformer 中文 ASR、FSMN-VAD 与 CT-Punc 准备到工作区 `runtime/cache/funasr-models/`，并写入模型 receipt。正式 runner 只读取 receipt 中的本地绝对模型路径，不在旁白生成阶段隐式下载模型，也不读取 Yingshu 或其他 skill 的环境。MiniMax 整轨不要求该 feature。
 
 `config/voice-providers.example.json` 是无秘密的首版 provider 合同示例，记录 package/contract、voice、language、规范化 rate/pitch/volume、输出格式及请求策略字段。它不是凭据文件，也不允许加入 key、Cookie、Token 或临时 URL。
 
@@ -182,7 +182,7 @@ timeline 和 narration SRT 的阶段绑定。
 <ENV_PY> scripts/generate_voiceover.py full `
   --project <项目根目录> --retry-failed
 
-# 自动 ASR 未完成时，从同一 current narration.wav 恢复：
+# Edge TTS/豆包自动 ASR 未完成时，从同一 current narration.wav 恢复；MiniMax 不使用此入口：
 <ENV_PY> scripts/generate_voiceover.py publish-alignment `
   --project <项目根目录> --asr-srt <FunASR一-token-一-cue声学字幕.srt>
 ```
@@ -190,7 +190,7 @@ timeline 和 narration SRT 的阶段绑定。
 `execution.concurrency.voiceGeneration` 仍保留为工作区兼容配置，但 full-track 固定只有一个在途 task，因此 effective concurrency 恒为 0 或 1。provider worker 只产生 attempt candidate；voice manifest、正式 WAV、timeline、SRT、identity 与批准仍由 coordinator 单写：
 
 ```text
-Edge 临时媒体
+provider 临时媒体
   → FFmpeg 规范化为 pcm_s16le/mono/24000Hz WAV
   → ffprobe + RIFF/WAVE/流合同检查
   → SHA-256/bytes/duration
@@ -198,7 +198,8 @@ Edge 临时媒体
   → coordinator 写 candidate_ready / publishing checkpoint
   → coordinator 复制、fsync、原子发布唯一的 audio/segments/unit-0001.wav
   → 发布 canonical audio/narration.wav，状态进入 waiting_alignment
-  → 本地 FunASR 生成一一对应的 token 级声学 SRT
+  → Edge TTS/豆包由本地 FunASR 生成 token 级声学 SRT
+  → MiniMax 原子发布同次响应的 audio/minimax-subtitles.json，并直接消费 provider-native word 时间戳
   → 以已确认 source 原稿校正文字、按原稿标点语义安全切句并发布 timeline/narration SRT/FULL_IDENTITY
   → coordinator 核对正式 SHA/bytes 并写 validated
 ```
@@ -216,8 +217,8 @@ validated | failed | cancelled | unknown_external_outcome
 
 恢复规则：
 
-- 唯一整轨 task validated 后立即落盘并登记 hash；ASR/对齐失败不能删除或重请求该音频。
-- 内部 ASR 的逐次证据写入当前项目唯一 `.work/voice-align-<run>/`；正式项目只发布沿用现有 identity 链的 narration SRT、timeline 与 manifest 绑定，不新增 ASR Gate 或 identity。
+- 唯一整轨 task validated 后立即落盘并登记 hash；Edge TTS/豆包的 ASR/对齐失败或 MiniMax 的原生字幕对齐失败都不能删除或普通重请求该音频。
+- Edge TTS/豆包内部 ASR 的逐次证据写入当前项目唯一 `.work/voice-align-<run>/`；MiniMax 原始 word 字幕只写入当前 attempt candidate 和正式 `audio/minimax-subtitles.json`。正式项目沿用同一 FULL identity 链，不新增独立批准 Gate。
 - `--retry-failed` 只处理 failed、cancelled 或未完成的整轨 task。
 - synthesis identity、正式 WAV SHA 和媒体合同仍 current 时不重请求、不覆盖。
 - `requesting` 且 candidate 存在时直接验证并提升为 `candidate_ready`；`candidate_ready/publishing` 恢复时 provider 调用数必须为 0。
@@ -231,10 +232,11 @@ validated | failed | cancelled | unknown_external_outcome
 
 ## Canonical 完整音频与时间轴
 
-唯一整轨 task 成功后发布 `audio/narration.wav`，随后直接调用当前 skill 内部 `transcribe_narration` Python API。runner 使用本地 Paraformer + FSMN-VAD + CT-Punc，固定 `max_single_segment_time=15000`，并在同一次推理中捕获每个 VAD 子结果的原始 token/timestamp。runner 必须逐段验证 cardinality 和声学包络，按 FunASR 的 VAD 原序重建全局 token 流，再与顶层 `raw_text/timestamp` 逐项核对；只比较两个顶层数组的总数量或证明同一次推理内部自洽不得作为声学准确性 PASS。完整分段 token 证据写入 `transcript.raw.json`，摘要与 SHA 写入 receipt。连续 ASCII 词（例如 `Claude`）按一个 FunASR token 解析，汉字按单字 token；仅有句级 `sentence_info` 时不得发布字幕时间轴。ASR 只提供真实声学时间，最终字幕文字必须来自已确认 source 原稿。对齐成功后再原子发布：
+唯一整轨 task 成功后发布 `audio/narration.wav`。Edge TTS/豆包随后调用当前 skill 内部 `transcribe_narration` Python API：runner 使用本地 Paraformer + FSMN-VAD + CT-Punc，固定 `max_single_segment_time=15000`，捕获并重建每个 VAD 子结果的 token/timestamp，再与顶层数组逐项核对。MiniMax 不调用该 runner；整轨 T2A 请求固定开启 `subtitle_enable=true` 与 `subtitle_type=word`，把同次响应的 `subtitle_file` 下载、校验并原子发布为 `audio/minimax-subtitles.json`。两条路径最终都只把时间边界作为证据，正式字幕文字必须逐字来自已确认 source 原稿。对齐成功后再原子发布：
 
 ```text
 audio/narration.wav
+audio/minimax-subtitles.json  # 仅 MiniMax
 audio/timeline.json
 audio/narration.srt
 ```
@@ -246,7 +248,7 @@ FULL_AUDIO=<项目根目录>/audio/narration.wav
 FULL_IDENTITY=<64位 sha256>
 ```
 
-完整音频、timeline 与 narration SRT 均 current 后，`full` 才输出 `FULL_IDENTITY`，不再编码 1920×1080 的无画面预审视频。若内部 ASR 或参考原稿对齐失败，canonical `narration.wav` 继续保留，manifest 保持 `waiting_alignment`，已经成功的 TTS 不会重跑；此时只有 `FULL_AUDIO_IDENTITY` 可供技术恢复，不能用于 `approve-full`。环境修复后可再次执行 `full --retry-failed` 复用 current WAV，或用 `publish-alignment` 显式导入同一音频的一-token-一-cue 声学 SRT 继续，不新增人工 Gate。
+完整音频、timeline 与 narration SRT 均 current 后，`full` 才输出 `FULL_IDENTITY`，不再编码 1920×1080 的无画面预审视频。若对应 provider 的时间证据或参考原稿对齐失败，canonical `narration.wav` 继续保留，manifest 保持 `waiting_alignment`，已经成功且证据完整的 TTS 不会重跑；此时只有 `FULL_AUDIO_IDENTITY` 可供技术恢复，不能用于 `approve-full`。Edge TTS/豆包可在环境修复后再次执行 `full --retry-failed` 复用 current WAV，或用 `publish-alignment` 显式导入 token SRT。MiniMax 的音频响应若没有取得完整原生字幕则属于 `unknown_external_outcome`，不得用本地 FunASR 替代，也不得自动重发。
 
 `audio/timeline.json` 必须使用 `audio-authoritative-timeline-v3`，并满足：
 
@@ -254,11 +256,11 @@ FULL_IDENTITY=<64位 sha256>
 - scene 仍从全局 0 连续覆盖整轨并以 `ffprobe` 实测 duration 收口；字幕空档不改变 scene 全局时钟。
 - scene 保留已批准语义 cue 边界，连续覆盖全部 unit，最后一幕以整轨时长收口。
 - 每幕记录全局 `startMs/endMs` 及累计计算的 `startFrame/endFrameExclusive/frameCount`。
-- 包含 source SRT、voice plan audit、audio 与 narration SRT 的 current binding，以及 `tokenTimingUsed=true`、`qualityGatePassed=true`、`captionSegmentationContract=reference-punctuation-caption-v1`、15 秒 VAD 分段重建 evidence、顶层逐项一致性、滑动窗口局部语速下限/上限/最快最慢波动比 QA 和真实 gap 摘要。
+- 包含 source SRT、voice plan audit、audio 与 narration SRT 的 current binding，以及 `tokenTimingUsed=true`、`qualityGatePassed=true`、`captionSegmentationContract=reference-punctuation-caption-v1` 和真实 gap 摘要。Edge TTS/豆包另绑定 15 秒 VAD 分段重建、顶层逐项一致性与局部语速 QA；MiniMax 另绑定 provider-native word 字幕 SHA/bytes、合成 identity 与 audio SHA。
 
-`audio/narration.srt` 的文字逐字来自已确认 source 原稿，时间来自最终整轨 WAV 的 FunASR token 级声学边界；cue 不跨 scene，且只允许在原稿标点或原始 cue 边界切分。不得把金额、数字词组、ASCII 单词、固定词语或连续汉字从中间截断。对齐器必须检查全局文本匹配、语义边界与 token 边界的位移、caption 与 16/32/48-token 滑动窗口局部语速下限、上限和最快/最慢波动比、断词和时间重叠；任一 QA 不满足即 fail-closed。scene N 的边界不得早于本幕最后一个声学 token 的结束；若与下一 cue 之间存在真实停顿，只在该停顿内取可审计中点并记录 `lastNarratedTokenEndMs/nextNarratedTokenStartMs/availablePauseMs/boundaryBasis`，不使用统一固定延迟。它不复制 source SRT 的 provisional 时间戳，也不能由字幕阶段手工改写。所有音频旁白模式唯一使用该文件。
+`audio/narration.srt` 的文字逐字来自已确认 source 原稿，时间来自对应 provider 的 current 词级边界；cue 不跨 scene，且只允许在原稿标点或原始 cue 边界切分。不得把金额、数字词组、ASCII 单词、固定词语或连续汉字从中间截断。全部路径检查全局文本匹配、真实语义边界、caption 阅读上限、断词和时间重叠；Edge TTS/豆包额外执行 16/32/48-token 局部语速下限、上限和最快/最慢波动比，MiniMax 不使用这套面向二次 ASR 漂移的经验阈值。scene N 的边界不得早于本幕最后一个真实词结束；若与下一 cue 之间存在真实停顿，只在该停顿内取可审计中点并记录 `lastNarratedTokenEndMs/nextNarratedTokenStartMs/availablePauseMs/boundaryBasis`，不使用统一固定延迟。它不复制 source SRT 的 provisional 时间戳，也不能由字幕阶段手工改写。所有音频旁白模式唯一使用该文件。
 
-真实静音可以产生 SRT gap：首字开口前不提前显示字幕，句间停顿超过声学 token 间距时可以短暂无字幕，末字结束后不得为“收口到整轨”而把末句强行延长至音频末尾。scene/timing plan 仍覆盖完整音频，因此画面和 AAC 时长不受影响。旧 `audio-authoritative-timeline-v1/v2`、`narration-funasr-vad-token-evidence-v4`、只有句级时间证据、只有顶层 cardinality 证据或缺少双向局部语速 QA 的项目必须重新执行本地 ASR/对齐；若 synthesis identity 与 canonical WAV 仍 current，禁止重新请求 TTS provider。
+真实静音可以产生 SRT gap：首字开口前不提前显示字幕，句间停顿超过真实词间距时可以短暂无字幕，末字结束后不得为“收口到整轨”而把末句强行延长至音频末尾。scene/timing plan 仍覆盖完整音频，因此画面和 AAC 时长不受影响。旧 Edge TTS/豆包时间证据缺少 current 分段重建或局部语速 QA 时必须重新执行本地 ASR/对齐；旧 MiniMax `minimax-t2a-v2-v1` 请求没有原生字幕，不能从旧 WAV 反推 provider-native 证据，必须经新的样音批准后按新 provider contract 重新合成。
 
 只读技术验证：
 
@@ -281,7 +283,7 @@ FULL_IDENTITY=<64位 sha256>
 
 `agentApprovalEnabled` 缺失或为 `false` 时，同一条完整旁白确认请求还必须展示本次运行的生成后审阅策略：`user_first` 直接把各阶段通过技术校验的 current artifact 交给用户，`agent_first` 在交付用户前为各阶段准备一次辅助 AI 语义预审。用户应能在一次回复中同时确认完整旁白、作出所需的真实时长决定并选择策略，例如“确认完整旁白，选择 user_first”；不得先完成 `approve-full`，再设置一次只用于选择策略的独立聊天关卡。用户未指定策略时必须继续停在本 Gate 询问，禁止静默默认。
 
-`agentApprovalEnabled=true` 时，审阅策略确定性为 `agent_first`，不再询问 `user_first|agent_first`。coordinator 必须确认：整轨单次 provider 合同、canonical WAV 媒体合同与完整解码、本地 FunASR、原稿对齐、cue/scene/timeline/narration SRT binding、current `FULL_IDENTITY`、时长与偏差证据全部通过。然后使用同一原子动作并记录 `approvalBasis=user_sample_authorization_technical_validation`（或实现定义的等价固定值）。不得记录或表述为 AI 已完整试听。
+`agentApprovalEnabled=true` 时，审阅策略确定性为 `agent_first`，不再询问 `user_first|agent_first`。coordinator 必须确认：整轨单次 provider 合同、canonical WAV 媒体合同与完整解码、对应 provider 的 current 词级时间证据（Edge TTS/豆包为 FunASR，MiniMax 为同次响应原生 word 字幕）、原稿对齐、cue/scene/timeline/narration SRT binding、current `FULL_IDENTITY`、时长与偏差证据全部通过。然后使用同一原子动作并记录 `approvalBasis=user_sample_authorization_technical_validation`（或实现定义的等价固定值）。不得记录或表述为 AI 已完整试听。
 
 `audio/narration.srt` 继续作为 current 权威字幕源和技术证据，但此时尚无真实画面，因此不做字幕视觉批准。换行、对比度、遮挡与安全区统一在正式字幕 contact sheet 和最终成片中审查。
 
