@@ -169,15 +169,17 @@ coordinator 先冻结 `attemptId`、image input identity、candidate/receipt/for
 把仍在进行的请求误判为最终失败或重复发起新 attempt。进程异常退出后，只有在锁内 PID
 已确认不存在时才会清理陈旧锁。
 
-### 全片内容驱动封面（可选）
+### 全片内容驱动封面（完整 scene 集合的默认派生产物）
 
-在场景图片成功发布后，可在同一阶段显式传入 `--cover` 生成独立社交平台封面：
+当 generation manifest 中全部正式 scene 均为 `validated` 且对应文件存在时，普通生图入口在同一阶段自动生成独立社交平台封面：
 
 ```powershell
-<ENV_PY> scripts/generate_images.py --project <项目根目录> --cover
+<ENV_PY> scripts/generate_images.py --project <项目根目录>
 ```
 
-封面不是 scene 源图，也不进入 `generation-plan.json` 的普通场景集合。`cover_generation.py` 从全片 `topic/body`（或 source SRT）、全部 narration cues，以及 formal generation plan 中每个 scene 的 `coreIdea`、`visualSubject`、`prompt` 汇总语义，固定记录 `semanticSource=whole_video`。标题和副标题由本地确定性排版完成；provider 不可用或没有正式场景图时，使用暖米黄白板画布或已有 scene 图作为 fallback。
+`gpt-login` 的 `--host-results` 导入路径遵循同一规则。没有 `--cover` 参数，也不能在 scene 集合不完整时强制提前生成封面。部分 scene 批次成功时先保留其正式结果；最后一个缺失 scene 发布并使全量集合 current 后，生图入口自动补齐封面。已有且 manifest/SHA current 的封面在普通重复运行中幂等复用；使用 `--overwrite` 替换 scene 时同步重建封面。封面生成或既有封面重验失败会使本次生图命令返回失败，不得把“scene 成功、封面缺失”报告为完整生图成功。
+
+封面不是 scene 源图，也不进入 `generation-plan.json` 的普通场景集合。`cover_generation.py` 从全片 `topic/body`（或 source SRT）、全部 narration cues，以及 formal generation plan 中每个 scene 的 `coreIdea`、`visualSubject`、`prompt` 汇总语义，固定记录 `semanticSource=whole_video`。封面生成不读取或调用图片 provider；它优先使用已有正式 scene 图作为视觉底图，没有可用 scene 图时使用暖米黄白板画布，标题和副标题始终由本地确定性排版完成。
 
 成功产物为：
 

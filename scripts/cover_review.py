@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""可选封面证据的读取与视觉检查豁免边界。
+"""封面证据的读取与视觉检查豁免边界。
 
-封面是独立图片，不属于普通 scene 源图。此模块只校验封面证据的身份和
+完整 scene 集合的新生图链路默认产出封面；历史项目仍允许尚无封面。封面是
+独立图片，不属于普通 scene 源图。此模块只校验封面证据的身份和
 `coverFrameRange`，不会从任何技术媒体校验中扣除封面帧。
 """
 from __future__ import annotations
@@ -27,7 +28,7 @@ def load_cover_review(project: Any, *, required: bool = False) -> dict[str, Any]
     """读取当前封面 manifest，返回可嵌入 review/delivery evidence 的规范记录。
 
     兼容两种形态：manifest 顶层直接放 `file`/`frameRange`，或包在 `cover` 下。
-    没有封面时返回 None（首版不强制旧项目重生成封面）。
+    没有封面时返回 None（不强制历史项目立即补生成封面）。
     """
 
     manifest_path = project.path("manifests/cover-manifest.json")
@@ -43,6 +44,24 @@ def load_cover_review(project: Any, *, required: bool = False) -> dict[str, Any]
         raise CoverReviewError("封面 manifest 顶层必须是对象")
     if raw.get("projectId") not in (None, project.project_id):
         raise CoverReviewError("封面 manifest projectId 与 current project 不一致")
+    if "semanticInputs" in raw:
+        semantic_inputs = _mapping(raw.get("semanticInputs"), "cover manifest.semanticInputs")
+        current_bindings = {
+            "planSha256": sha256_file(project.plan_path) if project.plan_path.is_file() else None,
+            "sourceInputSha256": (
+                sha256_file(project.path("source/input.json"))
+                if project.path("source/input.json").is_file()
+                else None
+            ),
+            "sourceSrtSha256": (
+                sha256_file(project.path("source/source.srt"))
+                if project.path("source/source.srt").is_file()
+                else None
+            ),
+        }
+        for field, current_sha in current_bindings.items():
+            if semantic_inputs.get(field) != current_sha:
+                raise CoverReviewError(f"封面 semanticInputs.{field} 与 current 项目不一致")
     cover_value = raw.get("cover", raw)
     cover = _mapping(cover_value, "cover manifest.cover")
     file = cover.get("file")
@@ -87,4 +106,3 @@ def cover_frame_range(cover: Mapping[str, Any] | None) -> dict[str, int] | None:
         return None
     value = cover.get("frameRange")
     return dict(value) if isinstance(value, Mapping) else None
-

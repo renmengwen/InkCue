@@ -566,7 +566,7 @@ def _fresh_manifest_with_reuse(
         for field in (
             "status", "audioMime", "audioCodec", "contractVersion", "sampleRate", "channels",
             "bytes", "durationMs", "sha256", "attempts", "createdAt", "updatedAt",
-            "errorStage", "errorSummary", "currentAttempt",
+            "errorStage", "errorSummary", "currentAttempt", "providerSubtitles",
         ):
             segment[field] = copy.deepcopy(prior.get(field))
     return manifest
@@ -1988,9 +1988,7 @@ def _build_aligned_timeline(
 def _minimax_subtitle_items(value: object) -> list[Mapping[str, Any]]:
     """Locate the provider's word entries without accepting unrelated arrays."""
 
-    queue: list[object] = [value]
-    while queue:
-        current = queue.pop(0)
+    def locate(current: object) -> list[Mapping[str, Any]]:
         if isinstance(current, list):
             if current and all(isinstance(item, Mapping) for item in current):
                 entries = [item for item in current if isinstance(item, Mapping)]
@@ -2018,8 +2016,16 @@ def _minimax_subtitle_items(value: object) -> list[Mapping[str, Any]]:
                     for item in entries
                 ):
                     return entries
-            queue.extend(current)
-        elif isinstance(current, Mapping):
+
+            # MiniMax 的真实长文本响应是句段数组；每个句段各自包含一组
+            # timestamped_words。必须按句段原序汇总全部词条，不能在找到
+            # 第一组后提前返回，否则只会拿首句去覆盖整篇已确认原稿。
+            combined: list[Mapping[str, Any]] = []
+            for item in current:
+                combined.extend(locate(item))
+            return combined
+
+        if isinstance(current, Mapping):
             for key in (
                 "timestamped_words",
                 "words",
@@ -2031,7 +2037,14 @@ def _minimax_subtitle_items(value: object) -> list[Mapping[str, Any]]:
                 "result",
             ):
                 if key in current:
-                    queue.append(current[key])
+                    entries = locate(current[key])
+                    if entries:
+                        return entries
+        return []
+
+    entries = locate(value)
+    if entries:
+        return entries
     raise VoiceoverStateError("MiniMax 原生字幕 JSON 没有 word 时间戳条目")
 
 

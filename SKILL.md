@@ -37,7 +37,7 @@ topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经�
 2. **阶段 1：严格 SRT 与分镜确认**。传统 SRT 严格解析、时长约束和 `storyboardPlanning` candidate/result 交接；用户首次确认分镜并同时冻结 BGM、代理批准与生图方式后才可建项。
 3. **阶段 3：样音后语音执行**。current 样音已在初始联合批准中绑定；完整旁白仍以单次 provider 请求生成 current WAV。Edge TTS/豆包完成本地 FunASR token 级时间戳；MiniMax 请求 `subtitle_enable=true`、`subtitle_type=word` 并绑定同次响应的原生字幕。两条路径都继续执行权威原稿覆盖、语义安全切句与 scene/timeline binding。人工模式完整试听并处理时长偏差；自主模式以用户样音授权为主观依据，仅在全部严格技术证据 current 后写技术推进批准，超过 10% 自动采用真实音频时钟。
 4. **阶段 4：真实时间轴与 review policy**。发布 timeline、narration SRT 和 `FULL_IDENTITY`；人工模式由用户选择 review policy，自主模式确定性派生 `agent_first`，但该值不表示 AI 完整试听。
-5. **阶段 5：统一线稿确认**。图片候选独立有界生成、技术校验和 global visual review；线稿保留独立质量 Gate，主窗口只交付 review 文件链接、identity、计数和异常摘要。
+5. **阶段 5：统一线稿确认**。图片候选独立有界生成、技术校验和 global visual review；全部正式 scene 已 validated 且文件存在后，同一生图入口自动生成或幂等复用全片封面，不额外调用图片供应商，并把封面 manifest 交给既有 review/final 证据链消费。线稿保留独立质量 Gate，主窗口只交付 review 文件链接、identity、计数和异常摘要。
 6. **阶段 6：annotation、区域预览与 reveal 联合确认**。技术 current 后生成预览和项目 URL；当前批准主体一次检查 annotation、区域、`protectedRegions`、reveal 时序并绑定 current review identity。
 7. **阶段 7：正式 scene bundle 确认**。按 `sceneRender` 有界并行生成候选，coordinator 按 generation plan 顺序单写发布；当前批准主体一次检查有序 scene bundle 后才可合并。
 
@@ -168,6 +168,7 @@ python <SKILL_ROOT>\scripts\prepare_env.py
 <ENV_PY> <SKILL_ROOT>\scripts\voice_provider_config.py status
 <ENV_PY> <SKILL_ROOT>\scripts\generate_images.py --project <项目根目录>
 <ENV_PY> <SKILL_ROOT>\scripts\generate_images.py --project <项目根目录> --host-results <绝对JSON路径>
+# 两条正式入口都会在全部 current scene validated 后自动生成或幂等复用 previews/social-cover.png；没有 --cover 参数
 <ENV_PY> <SKILL_ROOT>\scripts\validate_generated_images.py --project <项目根目录> --review-policy user_first
 <ENV_PY> <SKILL_ROOT>\scripts\validate_generated_images.py --project <项目根目录> --review-policy agent_first
 <ENV_PY> <SKILL_ROOT>\scripts\generate_voiceover.py sample --project <项目根目录> --voice <voice> --rate <rate>

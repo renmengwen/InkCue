@@ -233,6 +233,7 @@ def _selected_scenes(
     manifest: ManifestStore,
     *,
     retry_failed: bool,
+    overwrite: bool,
 ) -> list[dict[str, Any]]:
     by_id = _scene_map(manifest)
     selected: list[dict[str, Any]] = []
@@ -249,9 +250,16 @@ def _selected_scenes(
             selected.append(scene)
         elif record.get("status") == "unknown_external_outcome":
             continue
+        elif overwrite:
+            selected.append(scene)
         elif retry_failed:
             if record.get("status") == "failed":
                 selected.append(scene)
+        elif (
+            record.get("status") == "validated"
+            and (manifest.project_root / "scenes" / scene["outputFile"]).is_file()
+        ):
+            continue
         else:
             selected.append(scene)
     return selected
@@ -402,26 +410,66 @@ def build_parser() -> argparse.ArgumentParser:
         "--host-results",
         help="gpt-login 宿主生图结果 JSON 的绝对路径",
     )
-    parser.add_argument(
-        "--cover",
-        action="store_true",
-        help="场景生图成功后，根据全片内容生成 previews/social-cover.png（独立于 scene contract）",
-    )
     return parser
 
 
-def _generate_cover_if_requested(project_root: Path, *, requested: bool, overwrite: bool) -> dict[str, Any] | None:
-    """在 coordinator 完成 scene 发布后生成独立封面；默认路径完全不触发。"""
-    if not requested:
+def _all_formal_scenes_validated(
+    project: Any,
+    manifest: ManifestStore,
+    plan_scenes: list[dict[str, Any]],
+) -> bool:
+    """只有全部正式 scene current 且文件存在时，默认封面链才可执行。"""
+    if not plan_scenes:
+        return False
+    records = _scene_map(manifest)
+    for scene in plan_scenes:
+        scene_id = scene["sceneId"]
+        record = records.get(scene_id)
+        if not isinstance(record, dict) or record.get("status") != "validated":
+            return False
+        if not (project.scenes_dir / scene["outputFile"]).is_file():
+            return False
+    return True
+
+
+def _generate_cover_if_ready(project: Any, *, ready: bool, overwrite: bool) -> dict[str, Any] | None:
+    """全部 scene 完成后生成封面；已有有效封面则幂等复用。"""
+    if not ready:
         return None
     try:
         from cover_generation import generate_cover
+        from cover_review import load_cover_review
 
-        return generate_cover(project_root, overwrite=overwrite)
+        cover_path = project.path("previews/social-cover.png")
+        manifest_path = project.path("manifests/cover-manifest.json")
+        if not overwrite and (cover_path.exists() or manifest_path.exists()):
+            try:
+                current = load_cover_review(project, required=True)
+            except ValueError:
+                result = generate_cover(project.root, overwrite=True)
+                result["status"] = "regenerated_stale"
+                return result
+            else:
+                assert current is not None
+                return {
+                    "status": "reused",
+                    "file": current["file"],
+                    "sha256": current["sha256"],
+                    "semanticSource": current["semanticSource"],
+                }
+
+        result = generate_cover(project.root, overwrite=overwrite)
+        result["status"] = "generated"
+        return result
     except (OSError, ValueError, json.JSONDecodeError) as exc:
-        # Cover is an additive artifact. Keep scene result and expose the
-        # failure in the JSON summary rather than changing scene manifests.
         return {"error": str(exc), "semanticSource": "whole_video"}
+
+
+def _cover_error(cover: dict[str, Any] | None) -> str | None:
+    if not isinstance(cover, dict):
+        return None
+    value = cover.get("error")
+    return f"封面生成失败: {value}" if isinstance(value, str) and value else None
 
 
 def _host_task_descriptor(task: GenerationTask, *, run_id: str) -> dict[str, str]:
@@ -636,25 +684,70 @@ def _run_host_image_generation(
             )
             return 1
 
-        targets = _selected_scenes(scoped_plan_scenes, manifest, retry_failed=args.retry_failed)
+        targets = _selected_scenes(
+            scoped_plan_scenes,
+            manifest,
+            retry_failed=args.retry_failed,
+            overwrite=args.overwrite,
+        )
         unknown = sum(
             record.get("status") == "unknown_external_outcome"
             for record in _scene_map(manifest).values()
         )
         if not targets:
+            try:
+                project_lock = _acquire_generation_lock(project.root)
+            except ManifestError as exc:
+                _emit(
+                    _summary(
+                        ok=False,
+                        exit_code=1,
+                        project=str(project.root),
+                        provider=HOST_IMAGE_BACKEND.name,
+                        total=len(plan_scenes),
+                        skipped=len(plan_scenes),
+                        configured_concurrency=configured_concurrency,
+                        unknown_external_outcome_count=unknown,
+                        warnings=["未生成或复用封面；请等待现有生图运行完成后读取其最终 JSON 结果"],
+                        error=str(exc),
+                    )
+                )
+                return 1
+            try:
+                manifest = ManifestStore.open(
+                    project.root,
+                    project.project_id,
+                    project.plan_path,
+                    plan_scenes,
+                )
+                unknown = sum(
+                    record.get("status") == "unknown_external_outcome"
+                    for record in _scene_map(manifest).values()
+                )
+                cover_result = _generate_cover_if_ready(
+                    project,
+                    ready=_all_formal_scenes_validated(project, manifest, plan_scenes) and unknown == 0,
+                    overwrite=args.overwrite,
+                )
+            finally:
+                _release_generation_lock(project_lock)
+            cover_error = _cover_error(cover_result)
+            exit_code = 1 if unknown or cover_error else 0
             _emit(
                 _summary(
-                    ok=unknown == 0,
-                    exit_code=1 if unknown else 0,
+                    ok=unknown == 0 and cover_error is None,
+                    exit_code=exit_code,
                     project=str(project.root),
                     provider=HOST_IMAGE_BACKEND.name,
                     total=len(plan_scenes),
                     skipped=len(plan_scenes),
                     configured_concurrency=configured_concurrency,
                     unknown_external_outcome_count=unknown,
+                    error=cover_error,
+                    cover=cover_result,
                 )
             )
-            return 1 if unknown else 0
+            return exit_code
         conflicts: list[dict[str, str]] = []
         for scene in targets:
             attempt = manifest.current_attempt(scene["sceneId"])
@@ -747,6 +840,8 @@ def _run_host_image_generation(
     adopted = 0
     unknown = 0
     succeeded = 0
+    cover_result: dict[str, Any] | None = None
+    cover_error: str | None = None
     try:
         run = manifest.resume_run(run_id)
         if (
@@ -871,21 +966,22 @@ def _run_host_image_generation(
             adopted_candidate_count=adopted,
             unknown_external_outcome_count=unknown,
         )
-        exit_code = 1 if failures else 0
+        cover_result = _generate_cover_if_ready(
+            project,
+            ready=_all_formal_scenes_validated(project, manifest, plan_scenes) and not failures,
+            overwrite=args.overwrite,
+        )
+        cover_error = _cover_error(cover_result)
+        exit_code = 1 if failures or cover_error else 0
         manifest.finish_run(run_id, exit_result=exit_code)
         manifest.save()
     finally:
         _release_generation_lock(project_lock)
 
-    cover_result = _generate_cover_if_requested(
-        project.root,
-        requested=args.cover and not failures,
-        overwrite=args.overwrite,
-    )
-    exit_code = 1 if failures else 0
+    exit_code = 1 if failures or cover_error else 0
     _emit(
         _summary(
-            ok=not failures,
+            ok=not failures and cover_error is None,
             exit_code=exit_code,
             project=str(project.root),
             provider=HOST_IMAGE_BACKEND.name,
@@ -901,6 +997,7 @@ def _run_host_image_generation(
             adopted_candidate_count=adopted,
             unknown_external_outcome_count=unknown,
             failures=failures,
+            error=cover_error,
             cover=cover_result,
         )
     )
@@ -958,7 +1055,12 @@ def main(argv: list[str] | None = None) -> int:
         warnings = verify_config_git_safety(config_path)
         provider = load_provider_config(config_path, args.provider)
         manifest = ManifestStore.open(project.root, project.project_id, project.plan_path, plan_scenes)
-        targets = _selected_scenes(scoped_plan_scenes, manifest, retry_failed=args.retry_failed)
+        targets = _selected_scenes(
+            scoped_plan_scenes,
+            manifest,
+            retry_failed=args.retry_failed,
+            overwrite=args.overwrite,
+        )
     except CredentialSafetyError as exc:
         _emit(_summary(ok=False, exit_code=3, project=project_arg, provider=args.provider, error=str(exc)))
         return 3
@@ -973,15 +1075,43 @@ def main(argv: list[str] | None = None) -> int:
             record.get("status") == "unknown_external_outcome"
             for record in _scene_map(manifest).values()
         )
-        cover_result = _generate_cover_if_requested(
-            project.root,
-            requested=args.cover and unknown == 0,
-            overwrite=args.overwrite,
-        )
+        try:
+            project_lock = _acquire_generation_lock(project.root)
+        except ManifestError as exc:
+            _emit(
+                _summary(
+                    ok=False,
+                    exit_code=1,
+                    project=str(project.root),
+                    provider=provider_name,
+                    total=len(plan_scenes),
+                    skipped=len(plan_scenes),
+                    configured_concurrency=configured_concurrency,
+                    unknown_external_outcome_count=unknown,
+                    warnings=["未生成或复用封面；请等待现有生图运行完成后读取其最终 JSON 结果"],
+                    error=str(exc),
+                )
+            )
+            return 1
+        try:
+            manifest = ManifestStore.open(project.root, project.project_id, project.plan_path, plan_scenes)
+            unknown = sum(
+                record.get("status") == "unknown_external_outcome"
+                for record in _scene_map(manifest).values()
+            )
+            cover_result = _generate_cover_if_ready(
+                project,
+                ready=_all_formal_scenes_validated(project, manifest, plan_scenes) and unknown == 0,
+                overwrite=args.overwrite,
+            )
+        finally:
+            _release_generation_lock(project_lock)
+        cover_error = _cover_error(cover_result)
+        exit_code = 1 if unknown or cover_error else 0
         _emit(
             _summary(
-                ok=unknown == 0,
-                exit_code=1 if unknown else 0,
+                ok=unknown == 0 and cover_error is None,
+                exit_code=exit_code,
                 project=str(project.root),
                 provider=provider_name,
                 total=len(plan_scenes),
@@ -989,10 +1119,11 @@ def main(argv: list[str] | None = None) -> int:
                 configured_concurrency=configured_concurrency,
                 unknown_external_outcome_count=unknown,
                 warnings=warnings,
+                error=cover_error,
                 cover=cover_result,
             )
         )
-        return 1 if unknown else 0
+        return exit_code
 
     # 所有新 attempt 的 overwrite 冲突统一在 client/worker 创建前 fail closed。
     conflicts: list[dict[str, str]] = []
@@ -1044,6 +1175,8 @@ def main(argv: list[str] | None = None) -> int:
     dispatch_tasks: list[GenerationTask] = []
     ready_candidates: list[tuple[dict[str, Any], ImageCandidate]] = []
     effective_concurrency = 0
+    cover_result: dict[str, Any] | None = None
+    cover_error: str | None = None
     try:
         if conflicts:
             manifest.begin_run(
@@ -1233,7 +1366,13 @@ def main(argv: list[str] | None = None) -> int:
                 adopted_candidate_count=adopted,
                 unknown_external_outcome_count=unknown,
             )
-            exit_code = 1 if failures else 0
+            cover_result = _generate_cover_if_ready(
+                project,
+                ready=_all_formal_scenes_validated(project, manifest, plan_scenes) and not failures,
+                overwrite=args.overwrite,
+            )
+            cover_error = _cover_error(cover_result)
+            exit_code = 1 if failures or cover_error else 0
             manifest.finish_run(run_id, exit_result=exit_code)
             manifest.save()
     except (OSError, ManifestError, ImageValidationError) as exc:
@@ -1268,15 +1407,10 @@ def main(argv: list[str] | None = None) -> int:
         except OSError:
             pass
 
-    cover_result = _generate_cover_if_requested(
-        project.root,
-        requested=args.cover and not failures,
-        overwrite=args.overwrite,
-    )
-    exit_code = 1 if failures else 0
+    exit_code = 1 if failures or cover_error else 0
     _emit(
         _summary(
-            ok=not failures,
+            ok=not failures and cover_error is None,
             exit_code=exit_code,
             project=str(project.root),
             provider=provider_name,
@@ -1293,6 +1427,7 @@ def main(argv: list[str] | None = None) -> int:
             unknown_external_outcome_count=unknown,
             failures=failures,
             warnings=warnings,
+            error=cover_error,
             cover=cover_result,
         )
     )

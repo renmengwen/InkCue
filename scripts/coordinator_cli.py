@@ -186,15 +186,31 @@ def project_status(project_path: Path) -> dict[str, Any]:
         if project.voiceover_mode != "disabled" and not project.path("previews/voice-sample.wav").is_file():
             next_gate = "sample_generation"
             next_command = [python, str(skill_root / "scripts/generate_voiceover.py"), "sample", "--project", str(project.root)]
-    elif project.voiceover_mode != "disabled" and not project.path("audio/timeline.json").is_file():
-        next_gate = "full_voiceover_alignment"
-        next_command = [
-            python,
-            str(skill_root / "scripts/generate_voiceover.py"),
-            "full",
-            "--project",
-            str(project.root),
-        ]
+    elif project.voiceover_mode != "disabled":
+        if not project.path("audio/timeline.json").is_file():
+            next_gate = "full_voiceover_alignment"
+            next_command = [
+                python,
+                str(skill_root / "scripts/generate_voiceover.py"),
+                "full",
+                "--project",
+                str(project.root),
+            ]
+        else:
+            manifest = _read_json(project.path("manifests/voice-manifest.json"))
+            full_approval = manifest.get("fullApproval")
+            full_identity = manifest.get("fullIdentityHash")
+            if (
+                not isinstance(full_approval, dict)
+                or full_approval.get("approved") is not True
+                or not isinstance(full_identity, str)
+                or full_approval.get("identityHash") != full_identity
+            ):
+                next_gate = "full_voiceover_approval"
+                next_command = None
+            else:
+                next_gate = "current_phase_review"
+                next_command = [python, str(skill_root / "scripts/run_phase.py"), "--project", str(project.root), "--phase", "annotation-preview"]
     else:
         next_gate = "current_phase_review"
         next_command = [python, str(skill_root / "scripts/run_phase.py"), "--project", str(project.root), "--phase", "annotation-preview"]
