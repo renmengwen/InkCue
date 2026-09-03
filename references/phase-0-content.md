@@ -23,7 +23,7 @@ topic/text 的正式时钟由获批真实音频 timeline 接管。
 
 ## 2. 阶段 0 预项目、样音与一次联合 Gate
 
-1. coordinator 冻结输入模式、rewritePolicy、target；旁白 provider 不询问用户，始终
+1. coordinator 冻结输入模式、rewritePolicy、target；可先用 `coordinator_cli.py visual-style-catalog` 查看目录，再用 `recommend-visual-style --content-input <input.json>` 或 `--source-srt <字幕.srt>` 取得最多 3 个推荐及理由。用户明确指定时以用户选择为准；“AI 选”也必须由 coordinator 结合推荐与上下文选出具体模板 ID，再创建 attempt，不持久化 `auto`。topic/text 在 `contentDrafting` attempt 前冻结，传统 SRT 在 `storyboardPlanning` attempt 前冻结，复用现有联合审阅而不增加选择 Gate。目录/推荐不创建 attempt、不修改项目、不调用 child/provider；显式目录输出只写选型 Markdown。旁白 provider 不询问用户，始终
    读取 skill 根目录 `config/voice-providers.local.json` 的 `activeProvider`，规范化后自动
    冻结为 `voiceoverMode=edge-tts`、`voiceoverMode=minimax` 或 `voiceoverMode=doubao`。review 只展示当前已采用的
    provider；只有用户明确要求静音时，传统 SRT 才允许显式使用 `disabled`。BGM 只允许“加入/不加入”，加入时固定使用内置 CC0 曲目与固定混音参数；后续模式只允许“逐阶段由我确认/后续由 AI 自主推进至成片”。它们不在创建 pending 预项目时预写，而是在用户选择完整句后由联合动作原子冻结。只有当前登录态 `image_gen` 与已配置图片供应商同时真实可用时，才把两种生图方式并入 8 个通过句；只有一种可用或已固定时不把生图方式作为选择轴。不可用组合不得展示。
@@ -33,7 +33,7 @@ topic/text 的正式时钟由获批真实音频 timeline 接管。
 4. 预项目中只允许阶段 0 审阅、样音生成/技术验证、草案或 voice/rate 修订与联合批准。coordinator 生成绑定 current content identity、voice plan 与项目的真实样音，向用户交付 review 与不可变样音副本。完整旁白、正式生图、annotation、render、merge、burn、mux、final 必须在入口调用统一 pending guard，不能只依赖 coordinator 记忆。
 5. coordinator 调用 `build_initial_approval_options()` 按当前真实能力生成完整自然语言句子。固定生图方式时必须逐字列出四个旁白通过句；仅当登录态 `image_gen` 与已配置图片供应商同时可用时，才把生图方式并入每条通过句并枚举 BGM × 后续模式 × 生图方式共 8 项。不可用组合不展示，active voice provider 只显示“当前已采用”。另列三条草案/样音定向返工句。传统 `disabled` SRT 不生成样音，使用“字幕与分镜方案通过……”语义。
 6. **停止等待用户的一次合法联合回复。** 用户可复制完整句或回复编号；解析结果必须结构化绑定 current content identity 与 current `SAMPLE_IDENTITY`，不得从近义自由文本猜测。项目层重验 identity、pending、选项和能力条件后原子写入 `initialApproval.status=approved`、BGM、`agentApprovalEnabled`、`imageGenerationMode` 和 sample approval。审计值为 `initialApproval.approvalBasis=user_joint_content_and_sample`、`sampleApproval.approvalBasis=user_joint_initial_approval`；静音 SRT 使用 `initialApproval.approvalBasis=user_joint_silent_plan` 且没有 sample approval。任一校验失败不留下半批准状态。
-7. 修改意见冻结为绑定 current identity 的 revision request，创建新 attempt；旧
+7. 修改意见冻结为绑定 current identity 的 revision request，创建新 attempt；模板变更同样必须创建新的 `contentDrafting` / `storyboardPlanning` attempt，不能静默改写已冻结 candidate；旧
    candidate/review 保留为历史并 stale。新 attempt 是版本边界，不要求更换执行者：上一
    `contentDrafting` child 仍存在、idle、上一结果 completed 且 role contract 兼容时，
    coordinator 优先 followup 原 child，并只交付新 task/base/revision 的路径与 SHA。原 child

@@ -505,6 +505,7 @@ def align_reference_audio(
     if timing_validation_profile not in {
         "funasr-token-revalidation",
         "minimax-provider-native-word",
+        "doubao-provider-native-word",
     }:
         raise ReferenceAlignmentError("timing_validation_profile 无效")
     try:
@@ -612,7 +613,7 @@ def align_reference_audio(
     if timing_validation_profile == "funasr-token-revalidation":
         _validate_local_acoustic_rate(lexical_asr_cues, diagnostics)
     else:
-        # MiniMax word 时间戳与音频来自同一次 provider 合成。这里保留原稿
+        # Provider-native word 时间戳与音频来自同一次合成。这里保留原稿
         # 覆盖、真实边界、字幕阅读上限、scene 连续性和媒体 binding，但不再
         # 用另一套 ASR 的经验语速下限推翻 provider 自己的时间戳。
         diagnostics["localAcousticRate"] = {

@@ -34,6 +34,10 @@ VOICE_MANIFEST_SCHEMA_VERSION = 1
 SEGMENTATION_CONTRACT_VERSION = "speech-unit-v1"
 FULL_TRACK_SEGMENTATION_CONTRACT_VERSION = "full-track-v1"
 DEFAULT_PROVIDER_CONTRACT_VERSION = "edge-tts-python-7.2.8-v1"
+DOUBAO_PROVIDER_CONTRACT_VERSION = "doubao-seed-audio-expressive-native-word-v2"
+DOUBAO_PROMPT_SPEC_VERSION = "doubao-whiteboard-single-narrator-director-v2"
+DOUBAO_MODEL = "seed-audio-1.0"
+DOUBAO_ENDPOINT = "https://openspeech.bytedance.com/api/v3/tts/create"
 SUPPORTED_PROVIDER_PROTOCOLS = {
     "edge-tts": "edge-tts",
     "minimax": "MiniMax",
@@ -124,6 +128,7 @@ class RawAudioResult:
     providerRequestId: str | None = None
     providerSubtitleBytes: bytes | None = None
     providerSubtitleType: str | None = None
+    providerMetadata: Mapping[str, Any] | None = None
 
 
 @runtime_checkable
@@ -836,6 +841,20 @@ def validate_voice_plan(value: Mapping[str, Any]) -> dict[str, Any]:
         raise VoiceoverValidationError("provider.contractVersion 不能为空")
     if not isinstance(provider.get("options", {}), Mapping):
         raise VoiceoverValidationError("provider.options 必须是对象")
+    if provider_id == "doubao":
+        options = provider.get("options", {})
+        prompt_spec = options.get("promptSpec")
+        if (
+            provider.get("contractVersion") != DOUBAO_PROVIDER_CONTRACT_VERSION
+            or options.get("model") != DOUBAO_MODEL
+            or options.get("endpoint") != DOUBAO_ENDPOINT
+            or not isinstance(prompt_spec, Mapping)
+            or prompt_spec.get("contractVersion") != DOUBAO_PROMPT_SPEC_VERSION
+            or options.get("maxTextPromptCharacters") != 3000
+            or options.get("maxAudioDurationSeconds") != 120
+            or options.get("nativeWordSubtitlesRequired") is not True
+        ):
+            raise VoiceoverValidationError("豆包 voice plan 与当前 v2 合同不匹配")
     for field in ("voice", "language", "outputFormat"):
         if not isinstance(selection.get(field), str) or not selection[field]:
             raise VoiceoverValidationError(f"selection.{field} 不能为空")
@@ -882,19 +901,22 @@ def bind_synthesis_identities(
         required = ("speechText", "sourceOrdinalRange", "sourceParts")
         if any(field not in unit for field in required):
             raise VoiceoverValidationError("speech unit 缺少 synthesis identity 输入")
-        unit["voiceSynthesisIdentityHash"] = sha256_json(
-            {
-                "speechText": unit["speechText"],
-                "sourceOrdinalRange": unit["sourceOrdinalRange"],
-                "sourceParts": unit["sourceParts"],
-                "voice": settings["voice"],
-                "normalizedRate": settings["normalizedRate"],
-                "language": settings["language"],
-                "segmentationContractVersion": contract["contractVersion"],
-                "providerContractVersion": settings["providerContractVersion"],
-                "providerOptions": plan["provider"].get("options", {}),
-            }
-        )
+        identity_inputs: dict[str, Any] = {
+            "speechText": unit["speechText"],
+            "sourceOrdinalRange": unit["sourceOrdinalRange"],
+            "sourceParts": unit["sourceParts"],
+            "voice": settings["voice"],
+            "normalizedRate": settings["normalizedRate"],
+            "language": settings["language"],
+            "segmentationContractVersion": contract["contractVersion"],
+            "providerContractVersion": settings["providerContractVersion"],
+            "providerOptions": plan["provider"].get("options", {}),
+        }
+        if plan["provider"]["id"] == "doubao":
+            prompt_sha = unit.get("providerTextPromptSha256")
+            _require_sha256(prompt_sha, label="providerTextPromptSha256")
+            identity_inputs["providerTextPromptSha256"] = prompt_sha
+        unit["voiceSynthesisIdentityHash"] = sha256_json(identity_inputs)
         bound.append(unit)
     return bound
 
@@ -952,6 +974,7 @@ def create_voice_manifest(
                 "sourceTextIdentityHash": unit["sourceTextIdentityHash"],
                 "sourceTimingIdentityHash": unit["sourceTimingIdentityHash"],
                 "voiceSynthesisIdentityHash": unit["voiceSynthesisIdentityHash"],
+                "providerTextPromptSha256": unit.get("providerTextPromptSha256"),
                 "status": "pending",
                 "relativePath": f"audio/segments/unit-{unit['index']:04d}.wav",
                 "audioMime": None,
@@ -1026,6 +1049,11 @@ def validate_voice_manifest(
             "voiceSynthesisIdentityHash",
         ):
             _require_sha256(segment.get(field), label=f"segment.{field}")
+        provider_prompt_sha = segment.get("providerTextPromptSha256")
+        if provider_prompt_sha is not None:
+            _require_sha256(
+                provider_prompt_sha, label="segment.providerTextPromptSha256"
+            )
         attempts = segment.get("attempts")
         if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 0:
             raise VoiceoverValidationError("segment.attempts 必须是非负整数")
@@ -1044,6 +1072,8 @@ def validate_voice_manifest(
                 raise VoiceoverValidationError("segment.currentAttempt.status 与 segment.status 不一致")
             if attempt.get("inputIdentitySha256") != segment.get("voiceSynthesisIdentityHash"):
                 raise VoiceoverValidationError("segment attempt 未绑定 current synthesis identity")
+            if attempt.get("providerTextPromptSha256") != provider_prompt_sha:
+                raise VoiceoverValidationError("segment attempt 未绑定 current text_prompt SHA-256")
             candidate_file = _validate_relative_file(
                 attempt.get("candidateFile"), label="segment.currentAttempt.candidateFile"
             )
@@ -1164,6 +1194,12 @@ def validate_voice_manifest(
         for unit, segment in zip(speech_units, segments):
             if segment["voiceSynthesisIdentityHash"] != unit.get("voiceSynthesisIdentityHash"):
                 raise VoiceoverValidationError("segment synthesis identity 与 speech unit 不一致")
+            if segment.get("providerTextPromptSha256") != unit.get(
+                "providerTextPromptSha256"
+            ):
+                raise VoiceoverValidationError(
+                    "segment text_prompt SHA-256 与 speech unit 不一致"
+                )
     return manifest
 
 

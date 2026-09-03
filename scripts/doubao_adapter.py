@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""豆包语音 Seed Audio HTTP adapter；只返回原始 WAV，不写项目文件。"""
+"""豆包 Seed Audio v2 adapter；原子返回音频与严格字级字幕。"""
 from __future__ import annotations
 
 import base64
@@ -35,8 +35,10 @@ except ImportError:  # pragma: no cover
     )
 
 
-DOUBAO_PROVIDER_CONTRACT_VERSION = "doubao-seed-audio-http-v1"
+DOUBAO_PROVIDER_CONTRACT_VERSION = "doubao-seed-audio-expressive-native-word-v2"
+DOUBAO_SUBTITLE_TYPE = "doubao-seed-audio-native-word-json-v1"
 DOUBAO_ENDPOINT = "https://openspeech.bytedance.com/api/v3/tts/create"
+DOUBAO_MAX_AUDIO_DURATION_SECONDS = 120
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_QUEUE_INTERVAL_SECONDS = 0.5
 _RETRYABLE_HTTP_STATUSES = {429, 502, 503, 504}
@@ -48,6 +50,13 @@ _RATE_LIMIT_MARKERS = (
     "限流",
     "请求过于频繁",
 )
+
+
+class _DoubaoSubtitleUnavailable(PermanentProviderError):
+    """响应已含可能计费的音频，但同请求原生字幕证据不完整。"""
+
+    provider_response_received = True
+    external_result_incomplete = True
 
 
 def sanitize_provider_request_id(value: object | None) -> str | None:
@@ -130,10 +139,10 @@ class DoubaoAdapter:
     ) -> None:
         if not isinstance(api_key, str) or not api_key.strip():
             raise PermanentProviderError("豆包 apiKey 未配置")
-        if not isinstance(model, str) or not model.strip():
-            raise PermanentProviderError("豆包 model 未配置")
-        if not isinstance(endpoint, str) or not endpoint.startswith("https://"):
-            raise PermanentProviderError("豆包 endpoint 必须是 HTTPS 地址")
+        if model != "seed-audio-1.0":
+            raise PermanentProviderError("豆包 model 必须为 seed-audio-1.0")
+        if endpoint != DOUBAO_ENDPOINT:
+            raise PermanentProviderError("豆包 endpoint 必须使用 Seed Audio 非流式 create 接口")
         if not isinstance(max_attempts, int) or not 1 <= max_attempts <= 10:
             raise ValueError("max_attempts 必须是 1 到 10 的整数")
         if (
@@ -189,7 +198,7 @@ class DoubaoAdapter:
                 "speech_rate": _rate(request.normalizedRate),
                 "loudness_rate": _volume(request.normalizedVolume),
                 "pitch_rate": _pitch(request.normalizedPitch),
-                "enable_subtitle": False,
+                "enable_subtitle": True,
             },
         }
         return json.dumps(
@@ -253,13 +262,146 @@ class DoubaoAdapter:
             raise PermanentProviderError("豆包语音返回了无效 Base64 音频") from exc
         if not media:
             raise PermanentProviderError("豆包语音返回了空音频")
+        try:
+            subtitle_bytes, subtitle_metadata = self._subtitle_sidecar(
+                value, text_prompt=request.text
+            )
+        except (TypeError, ValueError, KeyError) as exc:
+            raise _DoubaoSubtitleUnavailable(
+                "豆包已返回音频，但同请求原生字级字幕或时长证据无效"
+            ) from exc
         header_get = getattr(headers, "get", None)
         log_id = header_get("X-Tt-Logid") if callable(header_get) else None
         return RawAudioResult(
             media,
             "audio/wav",
             sanitize_provider_request_id(log_id),
+            subtitle_bytes,
+            DOUBAO_SUBTITLE_TYPE,
+            subtitle_metadata,
         )
+
+    @staticmethod
+    def _duration_ms(value: object, *, label: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{label} 必须是数值")
+        seconds = float(value)
+        if not math.isfinite(seconds) or seconds <= 0 or seconds > DOUBAO_MAX_AUDIO_DURATION_SECONDS:
+            raise ValueError(f"{label} 必须位于 0–120 秒")
+        return round(seconds * 1000)
+
+    @staticmethod
+    def _timestamp(value: object, *, label: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{label} 必须是非负毫秒整数")
+        return value
+
+    @classmethod
+    def _subtitle_sidecar(
+        cls, value: Mapping[str, Any], *, text_prompt: str
+    ) -> tuple[bytes, dict[str, Any]]:
+        duration_ms = cls._duration_ms(value.get("duration"), label="duration")
+        original_duration_ms = cls._duration_ms(
+            value.get("original_duration"), label="original_duration"
+        )
+        subtitle = value.get("subtitle")
+        if not isinstance(subtitle, Mapping):
+            raise ValueError("subtitle 必须是对象")
+        subtitle_text = subtitle.get("text")
+        sentences = subtitle.get("sentences")
+        if not isinstance(subtitle_text, str) or not subtitle_text.strip():
+            raise ValueError("subtitle.text 不能为空")
+        if not isinstance(sentences, list) or not sentences:
+            raise ValueError("subtitle.sentences 不能为空")
+        normalized_sentences: list[dict[str, Any]] = []
+        previous_sentence_end = -1
+        previous_word_end = -1
+        total_words = 0
+        for sentence_index, sentence in enumerate(sentences, start=1):
+            if not isinstance(sentence, Mapping):
+                raise ValueError("subtitle sentence 必须是对象")
+            start_ms = cls._timestamp(
+                sentence.get("start_time"), label=f"sentence[{sentence_index}].start_time"
+            )
+            end_ms = cls._timestamp(
+                sentence.get("end_time"), label=f"sentence[{sentence_index}].end_time"
+            )
+            sentence_text = sentence.get("text")
+            words = sentence.get("words")
+            if (
+                end_ms <= start_ms
+                or end_ms > duration_ms
+                or start_ms < previous_sentence_end
+                or not isinstance(sentence_text, str)
+                or not sentence_text.strip()
+                or not isinstance(words, list)
+                or not words
+            ):
+                raise ValueError("subtitle sentence 时间或文本结构无效")
+            normalized_words: list[dict[str, Any]] = []
+            sentence_word_text = ""
+            for word_index, word in enumerate(words, start=1):
+                if not isinstance(word, Mapping):
+                    raise ValueError("subtitle word 必须是对象")
+                word_start = cls._timestamp(
+                    word.get("start_time"),
+                    label=f"sentence[{sentence_index}].word[{word_index}].start_time",
+                )
+                word_end = cls._timestamp(
+                    word.get("end_time"),
+                    label=f"sentence[{sentence_index}].word[{word_index}].end_time",
+                )
+                word_text = word.get("text")
+                if (
+                    word_end <= word_start
+                    or word_start < start_ms
+                    or word_end > end_ms
+                    or word_start < previous_word_end
+                    or not isinstance(word_text, str)
+                    or not word_text.strip()
+                ):
+                    raise ValueError("subtitle word 时间或文本结构无效")
+                normalized_words.append(
+                    {"start_time": word_start, "end_time": word_end, "text": word_text}
+                )
+                sentence_word_text += word_text
+                previous_word_end = word_end
+                total_words += 1
+            if re.sub(r"\s+", "", sentence_word_text) != re.sub(
+                r"\s+", "", sentence_text
+            ):
+                raise ValueError("subtitle sentence.text 与 words 文本不一致")
+            normalized_sentences.append(
+                {
+                    "start_time": start_ms,
+                    "end_time": end_ms,
+                    "text": sentence_text,
+                    "words": normalized_words,
+                }
+            )
+            previous_sentence_end = end_ms
+        if re.sub(r"\s+", "", "".join(item["text"] for item in normalized_sentences)) != re.sub(
+            r"\s+", "", subtitle_text
+        ):
+            raise ValueError("subtitle.text 与 sentences 文本不一致")
+        sidecar = {
+            "contractVersion": DOUBAO_SUBTITLE_TYPE,
+            "providerContractVersion": DOUBAO_PROVIDER_CONTRACT_VERSION,
+            "textPromptSha256": hashlib.sha256(text_prompt.encode("utf-8")).hexdigest(),
+            "durationMs": duration_ms,
+            "originalDurationMs": original_duration_ms,
+            "subtitle": {"text": subtitle_text, "sentences": normalized_sentences},
+        }
+        payload = json.dumps(
+            sidecar, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return payload, {
+            "durationMs": duration_ms,
+            "originalDurationMs": original_duration_ms,
+            "textPromptSha256": sidecar["textPromptSha256"],
+            "sentenceCount": len(normalized_sentences),
+            "wordCount": total_words,
+        }
 
     def synthesize(self, request: SynthesisRequest) -> RawAudioResult:
         last_retryable: RetryableProviderError | None = None
@@ -285,6 +427,7 @@ class DoubaoAdapter:
 __all__ = [
     "DOUBAO_ENDPOINT",
     "DOUBAO_PROVIDER_CONTRACT_VERSION",
+    "DOUBAO_SUBTITLE_TYPE",
     "DoubaoAdapter",
     "sanitize_provider_request_id",
 ]

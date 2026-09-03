@@ -24,6 +24,10 @@ try:  # direct CLI execution
         build_initial_approval_options,
     )
     from project_workspace import WorkspaceError, load_workspace_config
+    from visual_style_presets import (
+        VisualStylePresetError,
+        resolve_visual_style_preset,
+    )
 except ImportError:  # imported as scripts.render_content_review
     from scripts.content_source import (
         ContentSourceError,
@@ -36,6 +40,10 @@ except ImportError:  # imported as scripts.render_content_review
         build_initial_approval_options,
     )
     from scripts.project_workspace import WorkspaceError, load_workspace_config
+    from scripts.visual_style_presets import (
+        VisualStylePresetError,
+        resolve_visual_style_preset,
+    )
 
 
 REVIEW_DOCUMENT_CONTRACT_VERSION = "whiteboard-content-review-v1"
@@ -111,6 +119,7 @@ def render_review_markdown(draft: Mapping[str, Any]) -> str:
 
     normalised = validate_content_draft(draft)
     identity = content_draft_identity(normalised)
+    visual_style = resolve_visual_style_preset(normalised["visualStylePreset"])
     provider_label = {
         "edge-tts": "Edge TTS",
         "minimax": "MiniMax",
@@ -124,12 +133,15 @@ def render_review_markdown(draft: Mapping[str, Any]) -> str:
         f"rewritePolicy: {normalised['rewritePolicy']}",
         f"targetDurationSeconds: {normalised['targetDurationSeconds']}",
         f"voiceoverMode: {normalised['voiceoverMode']}",
+        f"visualStylePreset: {visual_style.id}",
         "approvalStatus: pending",
         "---",
         "",
         "# 内容与制作方案联合审阅",
         "",
         f"当前已采用：{provider_label}（`{normalised['voiceoverMode']}`）。",
+        "",
+        f"当前采用模板：{visual_style.display_name}（{visual_style.id}）。",
         "",
         "## 原始输入",
         "",
@@ -236,8 +248,11 @@ def create_review_artifact(args: argparse.Namespace) -> dict[str, Any]:
         raise ReviewError("draft_scope_invalid")
     candidate = _validate_candidate_location(Path(args.candidate), draft_root)
     draft = _read_candidate(candidate)
+    visual_style = resolve_visual_style_preset(draft["visualStylePreset"])
     identity = content_draft_identity(draft)
-    review_relative = PurePosixPath("reviews") / f"content-review-{identity[:12]}.md"
+    review_relative = PurePosixPath("reviews") / (
+        f"content-review-{identity[:12]}-{visual_style.recipe_sha256[:12]}.md"
+    )
     review_path = draft_root.joinpath(*review_relative.parts)
     payload = render_review_markdown(draft).encode("utf-8")
     _write_bytes_atomic_once(review_path, payload)
@@ -257,6 +272,9 @@ def create_review_artifact(args: argparse.Namespace) -> dict[str, Any]:
         "reviewSha256": _sha256_bytes(payload),
         "cueCount": len(draft["narrationCues"]),
         "sceneCount": len(draft["scenes"]),
+        "visualStylePreset": visual_style.id,
+        "visualStyleDisplayName": visual_style.display_name,
+        "visualStylePromptRecipeSha256": visual_style.recipe_sha256,
         "initialApprovalOptions": list(options),
         "userConfirmationRequired": True,
         "approvalWritten": False,
@@ -315,6 +333,7 @@ def main(argv: list[str] | None = None) -> int:
         ReviewError,
         InitialApprovalOptionError,
         ContentSourceError,
+        VisualStylePresetError,
         WorkspaceError,
         OSError,
         ValueError,

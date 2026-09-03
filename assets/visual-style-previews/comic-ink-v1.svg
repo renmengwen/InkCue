@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360" role="img" aria-labelledby="title desc">
+  <title id="title">漫画墨线解释模板预览</title>
+  <desc id="desc">粗细变化的漫画墨线、暖黄重点和稀疏半色调</desc>
+  <defs>
+    <pattern id="halftone" width="12" height="12" patternUnits="userSpaceOnUse"><circle cx="3" cy="3" r="2.5" fill="#383634" opacity=".42"/></pattern>
+  </defs>
+  <rect width="640" height="360" rx="24" fill="#F5EBD7"/>
+  <g fill="none" stroke="#252423" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M66 227l57-27-17-56 60 14 29-55 35 51 60-20-9 62 58 23-48 37-17-13-77 31-25-32-61 16z" fill="#E5BC55" opacity=".72" stroke-width="9"/>
+    <path d="M133 206l42-14 25 31 47-22" stroke-width="12"/>
+    <path d="M359 85h185c25 0 45 20 45 45v46c0 25-20 45-45 45h-72l-46 42 8-42h-75c-25 0-45-20-45-45v-46c0-25 20-45 45-45z" fill="url(#halftone)" stroke-width="8"/>
+    <path d="M359 282h177" stroke-width="13"/><path d="M499 257l42 25-42 25" stroke-width="13"/>
+  </g>
+  <path d="M363 135h176M363 169h123" stroke="#F5EBD7" stroke-width="11" stroke-linecap="round"/>
+</svg>

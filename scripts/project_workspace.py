@@ -18,6 +18,19 @@ try:
 except ImportError:  # pragma: no cover - direct script/module execution
     from cli_runtime import configure_utf8_stdio  # type: ignore
 
+try:
+    from .visual_style_presets import (
+        DEFAULT_VISUAL_STYLE_PRESET_ID,
+        VisualStylePresetError,
+        resolve_visual_style_preset,
+    )
+except ImportError:  # pragma: no cover - direct script/module execution
+    from visual_style_presets import (  # type: ignore
+        DEFAULT_VISUAL_STYLE_PRESET_ID,
+        VisualStylePresetError,
+        resolve_visual_style_preset,
+    )
+
 # Nearly every public project CLI crosses this shared loader boundary.  The
 # helper is capture-safe, so library imports under StringIO remain untouched.
 configure_utf8_stdio()
@@ -99,6 +112,13 @@ AGENT_ROLE_FIELDS = {
 }
 SUBTITLE_PRESETS = frozenset({"medium", "fast", "veryfast"})
 REVIEW_POLICIES = frozenset({"user_first", "agent_first"})
+VISUAL_STYLE_PLAN_SNAPSHOT_FIELDS = frozenset(
+    {
+        "visualStylePreset",
+        "visualStyleDisplayName",
+        "visualStylePromptRecipeSha256",
+    }
+)
 
 
 class WorkspaceError(ValueError):
@@ -294,6 +314,11 @@ class Project:
     @property
     def image_generation_mode(self) -> str:
         return self.metadata.get("imageGenerationMode", "provider")
+
+    @property
+    def visual_style_preset(self) -> str:
+        """返回已冻结的具体模板 ID；旧项目缺失时兼容为首版默认模板。"""
+        return self.metadata.get("visualStylePreset", DEFAULT_VISUAL_STYLE_PRESET_ID)
 
     @property
     def initial_approval_completed(self) -> bool:
@@ -715,14 +740,23 @@ def write_json_atomic(path: str | Path, value: Mapping[str, Any]) -> None:
 def create_generation_plan(
     project_id: str,
     confirmed_plan: Mapping[str, Any] | None = None,
+    *,
+    visual_style_preset: str | None = None,
 ) -> dict[str, Any]:
     """创建计划；无显式策略时只生成有效空场景骨架。"""
     if confirmed_plan is None:
+        try:
+            preset = resolve_visual_style_preset(visual_style_preset)
+        except VisualStylePresetError as exc:
+            raise ProjectValidationError(str(exc)) from exc
         plan: dict[str, Any] = {
             "schemaVersion": PLAN_SCHEMA_VERSION,
             "projectId": project_id,
             "outputCanvas": dict(FIXED_CANVAS),
-            "globalPrompt": DEFAULT_GLOBAL_PROMPT,
+            "globalPrompt": preset.prompt_recipe,
+            "visualStylePreset": preset.id,
+            "visualStyleDisplayName": preset.display_name,
+            "visualStylePromptRecipeSha256": preset.recipe_sha256,
             "constraints": {"forbidText": False},
             "scenesDirectory": "scenes",
             "manifestFile": "manifests/generation-manifest.json",
@@ -740,6 +774,18 @@ def create_generation_plan(
         if supplied_id not in (None, "", project_id):
             raise ProjectValidationError("已确认策略中的 projectId 与新项目不一致")
         plan["projectId"] = project_id
+        if visual_style_preset is not None:
+            try:
+                requested_preset = resolve_visual_style_preset(visual_style_preset)
+            except VisualStylePresetError as exc:
+                raise ProjectValidationError(str(exc)) from exc
+            plan_preset = plan.get(
+                "visualStylePreset", DEFAULT_VISUAL_STYLE_PRESET_ID
+            )
+            if plan_preset != requested_preset.id:
+                raise ProjectValidationError(
+                    "显式 visualStylePreset 与已确认 generation plan 不一致"
+                )
     validate_generation_plan_data(plan, project_id=project_id)
     return plan
 
@@ -769,6 +815,38 @@ def validate_generation_plan_data(plan: Any, *, project_id: str) -> dict[str, An
     prompt = plan.get("globalPrompt")
     if not isinstance(prompt, str) or not prompt.strip():
         raise ProjectValidationError("globalPrompt 不能为空")
+    present_visual_style_fields = VISUAL_STYLE_PLAN_SNAPSHOT_FIELDS.intersection(plan)
+    if present_visual_style_fields and present_visual_style_fields != VISUAL_STYLE_PLAN_SNAPSHOT_FIELDS:
+        missing = VISUAL_STYLE_PLAN_SNAPSHOT_FIELDS - present_visual_style_fields
+        raise ProjectValidationError(
+            "generation plan 视觉模板快照字段不完整，缺少: " + ", ".join(sorted(missing))
+        )
+    if present_visual_style_fields:
+        visual_style_preset = plan.get("visualStylePreset")
+        if (
+            not isinstance(visual_style_preset, str)
+            or not visual_style_preset.strip()
+            or visual_style_preset == "auto"
+        ):
+            raise ProjectValidationError(
+                "visualStylePreset 必须是已解析的具体模板 ID，不能是 auto"
+            )
+        try:
+            resolve_visual_style_preset(visual_style_preset)
+        except VisualStylePresetError as exc:
+            raise ProjectValidationError(str(exc)) from exc
+        display_name = plan.get("visualStyleDisplayName")
+        if not isinstance(display_name, str) or not display_name.strip():
+            raise ProjectValidationError("visualStyleDisplayName 必须是非空字符串")
+        recipe_sha256 = plan.get("visualStylePromptRecipeSha256")
+        if not _is_sha256(recipe_sha256):
+            raise ProjectValidationError("visualStylePromptRecipeSha256 无效")
+        canonical_prompt = "\n".join(line.rstrip() for line in prompt.strip().splitlines())
+        actual_recipe_sha256 = hashlib.sha256(canonical_prompt.encode("utf-8")).hexdigest()
+        if recipe_sha256 != actual_recipe_sha256:
+            raise ProjectValidationError(
+                "globalPrompt 与冻结的 visualStylePromptRecipeSha256 不一致"
+            )
     constraints = plan.get("constraints")
     if not isinstance(constraints, dict) or not isinstance(constraints.get("forbidText"), bool):
         raise ProjectValidationError("constraints.forbidText 必须是布尔值")
@@ -1110,6 +1188,21 @@ def validate_project_metadata_data(root: Path, metadata: Any) -> dict[str, Any]:
         raise ProjectValidationError(
             "project.json imageGenerationMode 只允许 provider 或 gpt-login"
         )
+    visual_style_preset = metadata.get(
+        "visualStylePreset", DEFAULT_VISUAL_STYLE_PRESET_ID
+    )
+    if (
+        not isinstance(visual_style_preset, str)
+        or not visual_style_preset.strip()
+        or visual_style_preset == "auto"
+    ):
+        raise ProjectValidationError(
+            "project.json visualStylePreset 必须是已解析的具体模板 ID，不能是 auto"
+        )
+    try:
+        resolve_visual_style_preset(visual_style_preset)
+    except VisualStylePresetError as exc:
+        raise ProjectValidationError(str(exc)) from exc
     initial_approval = metadata.get("initialApproval")
     if initial_approval is not None:
         if schema_version != 2 or not isinstance(initial_approval, dict):
@@ -1395,6 +1488,20 @@ def load_project(
         raise ProjectValidationError(f"项目目录不存在: {root}")
     metadata = _load_project_metadata(root)
     plan = validate_generation_plan(root, project_metadata=metadata)
+    metadata_visual_style = metadata.get(
+        "visualStylePreset", DEFAULT_VISUAL_STYLE_PRESET_ID
+    )
+    plan_visual_style = plan.get(
+        "visualStylePreset", DEFAULT_VISUAL_STYLE_PRESET_ID
+    )
+    if metadata_visual_style != plan_visual_style:
+        raise ProjectValidationError(
+            "project.json visualStylePreset 与 generation plan 不一致"
+        )
+    if "visualStylePreset" in metadata and not VISUAL_STYLE_PLAN_SNAPSHOT_FIELDS.issubset(plan):
+        raise ProjectValidationError(
+            "新项目的 generation plan 必须包含完整视觉模板 prompt 快照"
+        )
     if metadata["schemaVersion"] == 1:
         # v1 兼容视图只在内存中确定性构造；忽略可能由失败升级留下的 timing plan，绝不改写项目。
         timing_plan = _build_source_timing_plan(
@@ -1618,6 +1725,7 @@ class ProjectWorkspace:
         background_music_enabled: bool | None = None,
         agent_approval_enabled: bool | None = None,
         image_generation_mode: str | None = None,
+        visual_style_preset: str | None = None,
         pending_initial_approval: bool = False,
         source_input: str | Path | None = None,
         source_manifest: str | Path | None = None,
@@ -1659,6 +1767,28 @@ class ProjectWorkspace:
                 )
         if background_music_enabled and voiceover_mode not in AUDIO_VOICEOVER_MODES:
             raise ProjectValidationError("当前 BGM 功能只允许用于旁白项目")
+        confirmed_plan_visual_style = (
+            confirmed_plan.get("visualStylePreset")
+            if isinstance(confirmed_plan, Mapping)
+            else None
+        )
+        requested_visual_style = (
+            visual_style_preset
+            if visual_style_preset is not None
+            else confirmed_plan_visual_style
+        )
+        try:
+            resolved_visual_style = resolve_visual_style_preset(requested_visual_style)
+        except VisualStylePresetError as exc:
+            raise ProjectValidationError(str(exc)) from exc
+        if (
+            visual_style_preset is not None
+            and confirmed_plan_visual_style is not None
+            and visual_style_preset != confirmed_plan_visual_style
+        ):
+            raise ProjectValidationError(
+                "显式 visualStylePreset 与已确认 generation plan 不一致"
+            )
         project_name = sanitize_project_name(name)
         source_path = _resolved(Path(source_srt))
         if not source_path.is_file():
@@ -1692,7 +1822,11 @@ class ProjectWorkspace:
         if project_root.exists():
             raise ProjectValidationError(f"项目已存在，若要续接请显式使用 --resume: {project_root}")
         project_id = str(uuid.uuid4())
-        plan = create_generation_plan(project_id, confirmed_plan)
+        plan = create_generation_plan(
+            project_id,
+            confirmed_plan,
+            visual_style_preset=resolved_visual_style.id,
+        )
         source_hash = sha256_file(source_path)
         metadata: dict[str, Any] = {
             "schemaVersion": PROJECT_SCHEMA_VERSION,
@@ -1704,6 +1838,11 @@ class ProjectWorkspace:
             "source": {"file": "source/source.srt", "sha256": source_hash},
             "paths": dict(PROJECT_PATHS_V2),
         }
+        # 旧 confirmed plan 没有模板快照时继续保持完整旧格式；loader 会在内存中
+        # 将 plan/project 两侧都兼容为默认模板。新计划才持久化显式模板 ID，避免
+        # 出现 metadata 有 ID、plan 却没有配方快照的半升级项目。
+        if VISUAL_STYLE_PLAN_SNAPSHOT_FIELDS.issubset(plan):
+            metadata["visualStylePreset"] = resolved_visual_style.id
         if pending_initial_approval:
             metadata["initialApproval"] = {"status": INITIAL_APPROVAL_PENDING}
         else:

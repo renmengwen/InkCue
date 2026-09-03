@@ -159,7 +159,7 @@ Phase 4 只能在线稿已获用户明确确认后开始。coordinator 先构建
 生图消费验证、annotation preview bundle 和 scene review bundle 都接受 `--review-policy user_first|agent_first`。两种策略都必须先完成当前阶段的确定性技术验证，并保留对应 Gate 批准；策略只决定是否准备 AI 语义审阅，不进入作品内容 identity，也不得直接写批准。
 
 - `agentApprovalEnabled` 缺失或为 `false`：在交付完整旁白、等待用户确认的同一条消息中征询策略，使用户一次回复即可同时表达完整旁白与真实时长决定以及 `user_first|agent_first` 选择。用户确认旁白但未指定时继续停在 Gate 追问，禁止静默默认。
-- `agentApprovalEnabled=true`：审阅策略确定性为 `agent_first`，不再询问。coordinator 无需伪造完整听音，但必须重验阶段 0 current 样音授权，以及整轨 provider、canonical WAV 完整解码、对应 provider 的词级时间证据（Edge TTS/豆包为本地 FunASR，MiniMax 为同次响应原生 word 字幕）、原稿对齐、timeline/narration SRT、current `FULL_IDENTITY` 和时长偏差等技术证据，按技术推进 basis 成功执行 `approve-full --review-policy agent_first` 后才能开始视觉阶段。
+- `agentApprovalEnabled=true`：审阅策略确定性为 `agent_first`，不再询问。coordinator 无需伪造完整听音，但必须重验阶段 0 current 样音授权，以及整轨 provider、canonical WAV 完整解码、对应 provider 的词级时间证据（Edge TTS 为本地 FunASR；MiniMax 为同次 T2A 响应原生 word 字幕；豆包为同次 Seed Audio 响应的 `subtitle.sentences[].words[]`，并绑定完整导演式 prompt SHA）、原稿对齐、timeline/narration SRT、current `FULL_IDENTITY` 和时长偏差等技术证据，按技术推进 basis 成功执行 `approve-full --review-policy agent_first` 后才能开始视觉阶段。
 
 两种模式都不得在旁白未获 current Gate 批准时仅凭策略选择启动生图。
 

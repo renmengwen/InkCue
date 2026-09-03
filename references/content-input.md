@@ -29,7 +29,7 @@ topic/text 的权威顺序是：
 
 用户明确要求“新任务”或“不要沿用旧任务”时，coordinator 立即停止旧项目/旧 draft 的恢复推断，为阶段 0 分配新的 `draft-root`，后续只走新建项目命令；仅在用户明确指定续接既有项目时才允许恢复。该优先级不增加状态字段或恢复协议。
 
-1. 接收原始主题或正文，并冻结 `rewritePolicy`、`targetDurationSeconds`。`voiceoverMode` 从脱敏的 active provider 状态派生，用户不在 Edge/MiniMax/豆包之间选择；只有传统 SRT 可明确 `disabled`。BGM、后续模式和生图方式不进入 content draft，也不得在创建 pending 预项目时预写为用户选择；它们只出现在能力过滤后的完整句中，由联合动作原子冻结。
+1. 接收原始主题或正文，并冻结 `rewritePolicy`、`targetDurationSeconds` 与具体 `visualStylePreset`。模板采用“AI 根据内容推荐默认值 + 用户明确覆盖”；coordinator 可先运行 `coordinator_cli.py visual-style-catalog` 查看目录，再用 `recommend-visual-style --content-input <input.json>`（传统 SRT 用 `--source-srt <字幕.srt>`）取得最多 3 个确定性候选和理由。用户明确模板时直接使用该具体 ID，优先于推荐；即使用户说“AI 选”，coordinator 也必须结合推荐与上下文选定具体 ID，并在 `contentDrafting` / `storyboardPlanning` attempt 创建前冻结，不能保存 `auto`。两个命令不创建 attempt、不修改项目或调用 child/provider；显式 `visual-style-catalog --output <目录.md>` 只生成选型目录文件。模板只进入既有草案/分镜联合审阅，不增加批准选择轴。`voiceoverMode` 从脱敏的 active provider 状态派生，用户不在 Edge/MiniMax/豆包之间选择；只有传统 SRT 可明确 `disabled`。BGM、后续模式和生图方式不进入 content draft，也不得在创建 pending 预项目时预写为用户选择；它们只出现在能力过滤后的完整句中，由联合动作原子冻结。
 2. coordinator 运行 `prepare_draft_agent_task.py contentDrafting` 冻结 attempt 和 `preparedTask`，再直接根据当前宿主状态调用 `spawn_agent` 或 `followup`；脚本不参与 dispatch/fallback 决策。首次草案默认使用短上下文 child；真实派发不可用时才由具备相同能力的 coordinator fallback。所有路径使用同一 task/result 合同。
 3. coordinator 重验 result、SHA 与 candidate 合同后，从 `candidate.content-draft.json` 确定性生成不可变 Markdown 审阅 artifact。主窗口只发送文件链接、完整 identity、cue/scene 计数和短摘要，不把长正文、逐幕提示词或整份 Markdown 读回、转述或粘贴到聊天。
 4. coordinator 确定性派生 source package，并创建 `initialApproval.status=pending` 的预项目。它只能承载阶段 0 review、current 样音、技术验证、草案/样音修订和联合动作；完整旁白、生图、annotation、render、merge、burn、mux 与 final 都必须调用 pending guard。
@@ -50,7 +50,7 @@ topic/text 的权威顺序是：
 ```text
 <workspace>/drafts/<draft-id>/
   reviews/
-    content-review-<contentDraftIdentity前12位>.md
+    content-review-<contentDraftIdentity前12位>-<模板配方SHA前12位>.md
   .work/<run-id>/agent-tasks/<task-id>/
     attempt-001/
       task.json
@@ -66,7 +66,7 @@ topic/text 的权威顺序是：
       result.json
 ```
 
-review 文件名必须使用完整 identity 的前 12 位；正文至少展示完整 identity、输入模式、rewritePolicy、target、voiceoverMode、原始 topic/body、完整旁白、实质改动说明、cue→scene、每幕核心表达/画面主体/`imagePrompt`、provisional SRT 与权威时钟说明，以及 `pending` 审阅状态。相同 canonical candidate 必须产生相同 Markdown 字节；能力相关选项由 renderer 的短结构化摘要动态返回，避免把宿主能力写进 content identity。Markdown 的 `pending` 不是项目批准字段。
+review 文件名必须使用完整 content identity 和模板配方 SHA 各自的前 12 位，避免只改模板时与旧审阅文件冲突；正文至少展示完整 content identity、当前模板名称/ID、输入模式、rewritePolicy、target、voiceoverMode、原始 topic/body、完整旁白、实质改动说明、cue→scene、每幕核心表达/画面主体/`imagePrompt`、provisional SRT 与权威时钟说明，以及 `pending` 审阅状态。相同 canonical candidate 必须产生相同 Markdown 字节；能力相关选项由 renderer 的短结构化摘要动态返回，避免把宿主能力写进 content identity。Markdown 的 `pending` 不是项目批准字段。
 
 主窗口交付 review 时不得用整文件读取把内容回灌到主上下文；只消费渲染器的短结构化摘要并发送可点击文件链接。用户可用稳定的 `cueId`、`sceneId` 或全局说明提出修改；只有无法定位时才按需读取 review 的局部片段。
 
@@ -99,6 +99,8 @@ revision request 固定 `schemaVersion: 1`，只保存用户本轮真实要求�
 阶段 0 的生产准备命令为：
 
 ```powershell
+<ENV_PY> scripts/coordinator_cli.py visual-style-catalog
+<ENV_PY> scripts/coordinator_cli.py recommend-visual-style --content-input <whiteboard-content-input-v1.json>
 <ENV_PY> scripts/prepare_draft_agent_task.py contentDrafting `
   --draft-root <D:\SRTWhiteboard\drafts\草案ID> `
   --content-input <whiteboard-content-input-v1.json>
@@ -112,6 +114,8 @@ revision request 固定 `schemaVersion: 1`，只保存用户本轮真实要求�
   --revision-request <whiteboard-content-revision-request-v1.json> `
   --base-content-draft <上一版-candidate.content-draft.json>
 ```
+
+若用户变更模板，上述修订命令必须增加 `--visual-style-preset <具体模板ID>` 并创建新 attempt；传统 SRT 的 `storyboardPlanning` 也通过同名参数在 attempt 前冻结具体模板。不得原地修改已存在的 task、candidate 或 review。
 
 成功 stdout 是 `whiteboard-draft-agent-prepare-v2`，包含 `configuredAgentConcurrency`、宿主中立 `preparedTask`、`formalPublished:false` 与 `approvalWritten:false`。descriptor 只列冻结 task/role 的绝对路径和 SHA、唯一 attempt 根、result 路径、allowed outputs 与 required capabilities，不包含 `spawnAgentCall`、child slots、fallback 或 agentId。coordinator 收到后直接使用宿主协作工具；prepare 既不代表真实派发，也不代表 candidate 完成或用户批准。
 
@@ -166,6 +170,7 @@ coordinator 只消费 renderer 的结构化短摘要和 review 路径，不再�
   "rewritePolicy": "generate",
   "targetDurationSeconds": 60,
   "voiceoverMode": "edge-tts",
+  "visualStylePreset": "warm-paper-minimal-v1",
   "narrationCues": [
     {
       "cueId": "cue-001",

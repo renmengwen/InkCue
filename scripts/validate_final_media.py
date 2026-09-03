@@ -16,6 +16,7 @@ from cover_review import CoverReviewError, load_cover_review
 from generate_voiceover import ApprovalGateError, VoiceoverStateError, validate_current_voiceover
 from media_validation import MediaValidationError, validate_video
 from mux_voiceover import (
+    DOUBAO_PROVIDER_EMBEDDED_BGM_MUX_CONTRACT_VERSION,
     EDGE_MUX_CONTRACT_VERSION,
     FINAL_AUDIO_MIX_CONTRACT_VERSION,
     validate_edge_mux_media,
@@ -23,6 +24,8 @@ from mux_voiceover import (
 from background_music import (
     BGM_MIX_CONTRACT_VERSION,
     BGM_ASSET_FILE,
+    FIXED_ASSET_RENDER_MODE,
+    PROVIDER_EMBEDDED_RENDER_MODE,
     BackgroundMusicError,
     load_background_music_plan,
 )
@@ -137,8 +140,16 @@ def _expected_timing_record(project: Project) -> dict[str, Any]:
 def _background_music_reuse_binding(plan: Mapping[str, Any]) -> dict[str, Any]:
     if not plan["enabled"]:
         return {"enabled": False}
+    if plan.get("renderMode") == PROVIDER_EMBEDDED_RENDER_MODE:
+        return {
+            "enabled": True,
+            "renderMode": PROVIDER_EMBEDDED_RENDER_MODE,
+            "provider": plan["provider"],
+            "providerContractVersion": plan["providerContractVersion"],
+        }
     return {
         "enabled": True,
+        "renderMode": plan["renderMode"],
         "assetFile": plan["asset"],
         "assetSha256": plan["assetSha256"],
         "title": plan["title"],
@@ -410,8 +421,33 @@ def _assert_background_music(
             raise FinalMediaStaleError("BGM 已关闭，但 final 仍绑定 backgroundMusic")
         return
     record = _require_mapping(final_record.get("backgroundMusic"), "final.backgroundMusic")
+    if background_music.get("renderMode") == PROVIDER_EMBEDDED_RENDER_MODE:
+        current_voice = validate_current_voiceover(project, require_full=True)
+        voice_manifest = json.loads(
+            project.path("manifests/voice-manifest.json").read_text(encoding="utf-8")
+        )
+        expected = {
+            "projectField": "project.json#backgroundMusic.enabled",
+            "renderMode": PROVIDER_EMBEDDED_RENDER_MODE,
+            "provider": "doubao",
+            "providerContractVersion": background_music[
+                "providerContractVersion"
+            ],
+            "textPromptSha256": current_voice["providerTextPromptSha256"],
+            "voiceSynthesisIdentityHash": voice_manifest["segments"][0][
+                "voiceSynthesisIdentityHash"
+            ],
+            "fullAudioIdentityHash": current_voice["fullAudioIdentityHash"],
+            "audioSha256": current_voice["audioSha256"],
+        }
+        if dict(record) != expected:
+            raise FinalMediaStaleError(
+                "豆包 final.backgroundMusic 未绑定 current provider-embedded prompt/audio identity，或包含重复固定 BGM receipt"
+            )
+        return
     expected = {
         "projectField": "project.json#backgroundMusic.enabled",
+        "renderMode": FIXED_ASSET_RENDER_MODE,
         "assetFile": BGM_ASSET_FILE,
         "assetSha256": background_music["assetSha256"],
         "title": background_music["title"],
@@ -436,11 +472,12 @@ def inspect_project_final_media(
     """只读检查 current final 及全部身份；不写技术验证或人工批准。"""
     project = load_project(project_root)
     background_music = load_background_music_plan(project)
-    mux_version = (
-        FINAL_AUDIO_MIX_CONTRACT_VERSION
-        if background_music["enabled"]
-        else EDGE_MUX_CONTRACT_VERSION
-    )
+    if background_music.get("renderMode") == PROVIDER_EMBEDDED_RENDER_MODE:
+        mux_version = DOUBAO_PROVIDER_EMBEDDED_BGM_MUX_CONTRACT_VERSION
+    elif background_music.get("renderMode") == FIXED_ASSET_RENDER_MODE:
+        mux_version = FINAL_AUDIO_MIX_CONTRACT_VERSION
+    else:
+        mux_version = EDGE_MUX_CONTRACT_VERSION
     manifest_path, manifest = _load_manifest(project)
     _assert_current_timing(project, manifest.get("timingPlan"))
     _assert_cover(project, manifest.get("cover"))

@@ -37,7 +37,7 @@
     },
     "doubao": {
       "protocol": "Doubao",
-      "contractVersion": "doubao-seed-audio-http-v1",
+      "contractVersion": "doubao-seed-audio-expressive-native-word-v2",
       "voice": "YOUR_DOUBAO_SPEAKER_ID",
       "language": "zh-CN",
       "rate": "+0%",

@@ -53,6 +53,13 @@ def _parser() -> argparse.ArgumentParser:
         help="阶段 0 已确认的生图方式；新建时省略按 provider 兼容旧调用",
     )
     parser.add_argument(
+        "--visual-style-preset",
+        help=(
+            "已在 contentDrafting/storyboardPlanning attempt 前解析的具体视觉模板 ID；"
+            "不能传 auto，省略时从已确认 plan 读取，旧 plan 使用默认模板"
+        ),
+    )
+    parser.add_argument(
         "--pending-initial-approval",
         action="store_true",
         help="创建仅允许阶段 0 草案/样音操作的待初始联合批准预项目",
@@ -114,6 +121,10 @@ def main(argv: list[str] | None = None) -> int:
                 raise ProjectValidationError(
                     "--image-generation-mode 仅用于创建新项目，续接时读取已冻结选择"
                 )
+            if args.visual_style_preset is not None:
+                raise ProjectValidationError(
+                    "--visual-style-preset 仅用于创建新项目，续接时读取已冻结选择"
+                )
             if args.pending_initial_approval:
                 raise ProjectValidationError(
                     "--pending-initial-approval 只用于新建预项目，不能用于 --resume"
@@ -162,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
                     if args.pending_initial_approval
                     else args.image_generation_mode or "provider"
                 ),
+                visual_style_preset=args.visual_style_preset,
                 pending_initial_approval=args.pending_initial_approval,
                 source_input=args.source_input,
                 source_manifest=args.source_manifest,
@@ -178,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"BACKGROUND_MUSIC={'enabled' if project.background_music_enabled else 'disabled'}")
     print(f"AGENT_APPROVAL={'enabled' if project.agent_approval_enabled else 'disabled'}")
     print(f"IMAGE_GENERATION_MODE={project.image_generation_mode}")
+    print(f"VISUAL_STYLE_PRESET={project.visual_style_preset}")
     print(
         "INITIAL_APPROVAL="
         + ("pending_initial_approval" if project.pending_initial_approval else "approved")

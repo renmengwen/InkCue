@@ -92,11 +92,22 @@ def validate_draft_result(task_path: Path) -> dict[str, Any]:
     def validate_output(_relative: str, path: Path) -> None:
         if path.name == "candidate.content-draft.json":
             draft = validate_content_draft(_read_json(path))
+            if draft["visualStylePreset"] != task.data["visualStylePreset"]:
+                raise ValueError(
+                    "candidate visualStylePreset 与冻结 draft task 不匹配"
+                )
             candidate_summary.update(
                 {
                     "contentDraftIdentitySha256": content_draft_identity(draft),
                     "cueCount": len(draft["narrationCues"]),
                     "sceneCount": len(draft["scenes"]),
+                    "visualStylePreset": draft["visualStylePreset"],
+                    "visualStyleDisplayName": task.data[
+                        "visualStyleDisplayName"
+                    ],
+                    "visualStylePromptRecipeSha256": task.data[
+                        "visualStylePromptRecipeSha256"
+                    ],
                 }
             )
 
@@ -229,6 +240,134 @@ def project_status(project_path: Path) -> dict[str, Any]:
     }
 
 
+def _recommendation_content(args: argparse.Namespace) -> tuple[str, str]:
+    """只读提取推荐器输入；推荐发生在 attempt 和具体模板落盘之前。"""
+    if args.content_input is not None:
+        value = _read_json(args.content_input)
+        mode = value.get("inputMode")
+        if mode == "topic":
+            content = value.get("topic")
+        elif mode == "text":
+            content = value.get("body")
+        else:
+            raise ValueError("--content-input 的 inputMode 只允许 topic 或 text")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("--content-input 缺少可用于模板推荐的非空内容")
+        return "content-input", content.strip()
+
+    try:
+        from .srt_timeline import parse_srt
+    except ImportError:  # pragma: no cover - direct script execution
+        from srt_timeline import parse_srt  # type: ignore
+
+    try:
+        source_text = args.source_srt.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError) as exc:
+        raise ValueError("--source-srt 必须是可读的 UTF-8 SRT") from exc
+    cues = parse_srt(source_text)
+    content = "\n".join(str(cue["text"]).strip() for cue in cues).strip()
+    if not content:
+        raise ValueError("--source-srt 没有可用于模板推荐的字幕内容")
+    return "source-srt", content
+
+
+def recommend_visual_style(args: argparse.Namespace) -> dict[str, Any]:
+    """返回最多三个确定性候选；不创建 attempt、项目或其他持久化状态。"""
+    input_kind, content = _recommendation_content(args)
+    try:
+        from .visual_style_presets import get_visual_style_preset
+        from .visual_style_recommendation import recommend_visual_style_presets
+    except ImportError:  # pragma: no cover - direct script execution
+        from visual_style_presets import get_visual_style_preset  # type: ignore
+        from visual_style_recommendation import (  # type: ignore
+            recommend_visual_style_presets,
+        )
+
+    if args.visual_style_preset is not None:
+        selected = get_visual_style_preset(args.visual_style_preset)
+        recommendations: list[dict[str, Any]] = [
+            {
+                "presetId": selected.id,
+                "displayName": selected.display_name,
+                "rationale": "用户已明确指定具体模板，优先于 AI 推荐。",
+                "score": None,
+                "evidence": ["user_explicit_selection"],
+            }
+        ]
+        selection_basis = "user_explicit"
+    else:
+        ranked = recommend_visual_style_presets(content, limit=3)
+        if not ranked:
+            raise ValueError("模板推荐器没有返回候选")
+        recommendations = [item.to_dict() for item in ranked]
+        selection_basis = "deterministic_recommendation"
+
+    recommended = recommendations[0]
+    return {
+        "contractVersion": CONTRACT,
+        "operation": "recommend-visual-style",
+        "status": "PASS",
+        "inputKind": input_kind,
+        "selectionBasis": selection_basis,
+        "recommendedVisualStylePreset": recommended["presetId"],
+        "recommendedDisplayName": recommended["displayName"],
+        "rationale": recommended["rationale"],
+        "recommendations": recommendations,
+        "attemptCreated": False,
+        "projectModified": False,
+        "readOnly": True,
+        "approvalWritten": False,
+    }
+
+
+def visual_style_catalog(args: argparse.Namespace) -> dict[str, Any]:
+    """列出模板；仅显式 --output 时生成确定性 Markdown 目录。"""
+    try:
+        from .render_visual_style_catalog import create_catalog
+        from .visual_style_presets import (
+            DEFAULT_VISUAL_STYLE_PRESET_ID,
+            list_visual_style_presets,
+        )
+    except ImportError:  # pragma: no cover - direct script execution
+        from render_visual_style_catalog import create_catalog  # type: ignore
+        from visual_style_presets import (  # type: ignore
+            DEFAULT_VISUAL_STYLE_PRESET_ID,
+            list_visual_style_presets,
+        )
+
+    presets = list_visual_style_presets()
+    if args.output is not None:
+        resolved_output = args.output.resolve(strict=False)
+        if any((parent / "project.json").is_file() for parent in resolved_output.parents):
+            raise ValueError("模板目录不得写入项目目录；它只用于建项前选型")
+        catalog_result = create_catalog(resolved_output)
+    else:
+        catalog_result = None
+    return {
+        "contractVersion": CONTRACT,
+        "operation": "visual-style-catalog",
+        "status": "PASS",
+        "defaultVisualStylePreset": DEFAULT_VISUAL_STYLE_PRESET_ID,
+        "templateCount": len(presets),
+        "templates": [
+            {
+                "presetId": preset.id,
+                "displayName": preset.display_name,
+                "recommendedFor": list(preset.recommended_for),
+                "previewAsset": preset.preview_asset,
+                "rendererCompatibility": preset.renderer_compatibility,
+            }
+            for preset in presets
+        ],
+        "catalogGenerated": catalog_result is not None,
+        "catalogFile": catalog_result["output"] if catalog_result else None,
+        "catalogSha256": catalog_result["catalogSha"] if catalog_result else None,
+        "attemptCreated": False,
+        "projectModified": False,
+        "approvalWritten": False,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="白板流程 coordinator 的精简公开 CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -243,6 +382,26 @@ def build_parser() -> argparse.ArgumentParser:
     draft.add_argument("--task", required=True, type=Path)
     status = sub.add_parser("project-status")
     status.add_argument("--project", required=True, type=Path)
+    recommend = sub.add_parser(
+        "recommend-visual-style",
+        help="从 topic/text 输入或传统 SRT 只读推荐最多三个具体模板",
+    )
+    recommend_input = recommend.add_mutually_exclusive_group(required=True)
+    recommend_input.add_argument("--content-input", type=Path)
+    recommend_input.add_argument("--source-srt", type=Path)
+    recommend.add_argument(
+        "--visual-style-preset",
+        help="可选的用户明确选择；必须是具体模板 ID，优先于推荐结果且不能是 auto",
+    )
+    catalog = sub.add_parser(
+        "visual-style-catalog",
+        help="列出视觉模板；可选生成确定性 Markdown 目录",
+    )
+    catalog.add_argument(
+        "--output",
+        type=Path,
+        help="可选的 Markdown 输出路径；省略时仅输出模板列表且不写文件",
+    )
     return parser
 
 
@@ -254,6 +413,10 @@ def main(argv: list[str] | None = None) -> int:
             summary = parse_initial(args)
         elif args.command == "validate-draft-result":
             summary = validate_draft_result(args.task)
+        elif args.command == "recommend-visual-style":
+            summary = recommend_visual_style(args)
+        elif args.command == "visual-style-catalog":
+            summary = visual_style_catalog(args)
         else:
             summary = project_status(args.project)
         code = 0
@@ -274,4 +437,11 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["CONTRACT", "main", "project_status", "validate_draft_result"]
+__all__ = [
+    "CONTRACT",
+    "main",
+    "project_status",
+    "recommend_visual_style",
+    "validate_draft_result",
+    "visual_style_catalog",
+]

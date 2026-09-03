@@ -86,6 +86,14 @@ CURRENT_BINDING_ALLOWLIST = frozenset(
 )
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_VISUAL_STYLE_TASK_FIELDS = frozenset(
+    {
+        "visualStylePreset",
+        "visualStyleDisplayName",
+        "visualStylePromptRecipe",
+        "visualStylePromptRecipeSha256",
+    }
+)
 
 
 class AgentContractError(ValueError):
@@ -129,6 +137,45 @@ def _require_safe_id(value: Any, field: str) -> str:
     ):
         raise AgentContractError("schema", f"{field} 不是安全标识符")
     return value
+
+
+def _validate_visual_style_snapshot(data: Mapping[str, Any], task_kind: str) -> None:
+    """验证 draft role 在派发前冻结的具体模板快照。"""
+
+    present = _VISUAL_STYLE_TASK_FIELDS & set(data)
+    if task_kind not in {"contentDrafting", "storyboardPlanning"}:
+        if present:
+            raise AgentContractError(
+                "schema", "只有 contentDrafting/storyboardPlanning 可以包含视觉模板快照"
+            )
+        return
+    if present != _VISUAL_STYLE_TASK_FIELDS:
+        missing = sorted(_VISUAL_STYLE_TASK_FIELDS - present)
+        raise AgentContractError(
+            "schema", f"draft task 缺少完整视觉模板快照: {missing}"
+        )
+    preset_id = _require_safe_id(data["visualStylePreset"], "visualStylePreset")
+    if preset_id == "auto":
+        raise AgentContractError("schema", "visualStylePreset 必须是具体模板 ID")
+    display_name = data["visualStyleDisplayName"]
+    recipe = data["visualStylePromptRecipe"]
+    if (
+        not isinstance(display_name, str)
+        or not display_name.strip()
+        or "\x00" in display_name
+    ):
+        raise AgentContractError("schema", "visualStyleDisplayName 必须是非空安全文本")
+    if not isinstance(recipe, str) or not recipe.strip() or "\x00" in recipe:
+        raise AgentContractError("schema", "visualStylePromptRecipe 必须是非空安全文本")
+    expected_sha = _require_sha(
+        data["visualStylePromptRecipeSha256"],
+        "visualStylePromptRecipeSha256",
+    )
+    actual_sha = hashlib.sha256(recipe.encode("utf-8")).hexdigest()
+    if actual_sha != expected_sha:
+        raise AgentContractError(
+            "schema", "visualStylePromptRecipeSha256 与冻结配方字节不匹配"
+        )
 
 
 def _require_exact_keys(
@@ -403,7 +450,7 @@ def validate_agent_task(
             "formalWritesAllowed",
             "approvalWritesAllowed",
         },
-        optional={"sceneId"},
+        optional={"sceneId", *_VISUAL_STYLE_TASK_FIELDS},
         field="task",
     )
     if data["contractVersion"] != TASK_CONTRACT_VERSION:
@@ -413,6 +460,7 @@ def validate_agent_task(
     task_kind = data["taskKind"]
     if task_kind not in TASK_KINDS:
         raise AgentContractError("task_kind", "taskKind 不在 allowlist")
+    _validate_visual_style_snapshot(data, task_kind)
     if data["scopeKind"] != context.scope_kind:
         raise AgentContractError("scope", "scopeKind 与可信上下文不匹配")
     if ROLE_SCOPE[task_kind] != context.scope_kind:

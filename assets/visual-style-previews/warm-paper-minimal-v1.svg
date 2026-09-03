@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360" role="img" aria-labelledby="title desc">
+  <title id="title">暖米黄极简粗线模板预览</title>
+  <desc id="desc">暖米黄纸上用粗黑线、橙色和钴蓝色画出的三个简洁视觉簇</desc>
+  <rect width="640" height="360" rx="24" fill="#F5EBD7"/>
+  <g fill="none" stroke="#252525" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="145" cy="127" r="43"/><path d="M87 245c8-52 35-78 58-78s50 26 58 78"/>
+    <path d="M279 237V141h73v96M294 175h43M294 205h43"/>
+    <circle cx="493" cy="180" r="65"/><path d="M460 182l23 24 47-56"/>
+  </g>
+  <circle cx="145" cy="127" r="26" fill="#E98B43" opacity=".72"/>
+  <rect x="295" y="158" width="42" height="63" rx="7" fill="#3D67B1" opacity=".68"/>
+  <path d="M460 182l23 24 47-56" fill="none" stroke="#E98B43" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
+

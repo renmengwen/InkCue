@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360" role="img" aria-labelledby="title desc">
+  <title id="title">暖米黄铅笔素描模板预览</title>
+  <desc id="desc">石墨铅笔轮廓、赭石和灰蓝色点缀的手工速写</desc>
+  <rect width="640" height="360" rx="24" fill="#F5EBD7"/>
+  <g fill="none" stroke="#45413D" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M73 254c12-74 44-116 93-116 51 0 76 42 91 116M125 139c-4-45 19-73 52-73 36 0 58 33 46 76"/>
+    <path d="M320 249l45-129 77 129zM347 202h72M358 171h43"/>
+    <path d="M483 252c12-79 39-128 77-147 25 51 24 101-6 147M506 205l51-42M500 231l60-31"/>
+  </g>
+  <g stroke="#6B6259" stroke-width="2" opacity=".55">
+    <path d="M91 223l130-40M86 240l146-45M333 232l91-67M340 244l91-67"/>
+  </g>
+  <path d="M365 120l77 129h-42z" fill="#8799A6" opacity=".34"/>
+  <path d="M125 139c-4-45 19-73 52-73 36 0 58 33 46 76" fill="#B88459" opacity=".3"/>
+</svg>
+

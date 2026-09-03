@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -47,6 +48,7 @@ try:
     from .cover_frame import attach_cover_manifest, attach_cover_review_manifest, cover_record
     from .background_music import (
         BGM_MIX_CONTRACT_VERSION,
+        PROVIDER_EMBEDDED_RENDER_MODE,
         BackgroundMusicError,
         load_background_music_plan,
     )
@@ -83,6 +85,7 @@ except ImportError:  # pragma: no cover - direct script execution
     from cover_frame import attach_cover_manifest, attach_cover_review_manifest, cover_record
     from background_music import (
         BGM_MIX_CONTRACT_VERSION,
+        PROVIDER_EMBEDDED_RENDER_MODE,
         BackgroundMusicError,
         load_background_music_plan,
     )
@@ -318,8 +321,16 @@ def _background_music_reuse_binding(project: Project) -> dict[str, Any]:
     plan = load_background_music_plan(project)
     if not plan["enabled"]:
         return {"enabled": False}
+    if plan.get("renderMode") == PROVIDER_EMBEDDED_RENDER_MODE:
+        return {
+            "enabled": True,
+            "renderMode": PROVIDER_EMBEDDED_RENDER_MODE,
+            "provider": plan["provider"],
+            "providerContractVersion": plan["providerContractVersion"],
+        }
     return {
         "enabled": True,
+        "renderMode": plan["renderMode"],
         "assetFile": plan["asset"],
         "assetSha256": plan["assetSha256"],
         "title": plan["title"],
@@ -382,6 +393,19 @@ def _assert_reuse_audio_and_bgm_unchanged(
     if bgm["enabled"]:
         expected_previous = {key: value for key, value in bgm.items() if key != "enabled"}
         expected_previous["projectField"] = "project.json#backgroundMusic.enabled"
+        if bgm.get("renderMode") == PROVIDER_EMBEDDED_RENDER_MODE:
+            for field in (
+                "textPromptSha256",
+                "voiceSynthesisIdentityHash",
+                "fullAudioIdentityHash",
+                "audioSha256",
+            ):
+                value = previous_bgm.get(field) if isinstance(previous_bgm, Mapping) else None
+                if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+                    raise SubtitleStaleError(
+                        "豆包 provider-embedded BGM 缺少 prompt/audio identity，不能只重烧字幕"
+                    )
+                expected_previous[field] = value
         if previous_bgm != expected_previous:
             raise SubtitleStaleError("current BGM 资产或混音参数已变化，不能只重烧字幕")
     elif previous_bgm is not None:

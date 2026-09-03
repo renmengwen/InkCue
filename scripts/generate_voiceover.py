@@ -63,7 +63,20 @@ try:
     # edge_tts_adapter intentionally imports the protocol through the
     # top-level alias installed by scripts.voiceover.
     from .edge_tts_adapter import EdgeTtsAdapter
-    from .doubao_adapter import DoubaoAdapter, DOUBAO_ENDPOINT, DOUBAO_PROVIDER_CONTRACT_VERSION
+    from .doubao_adapter import (
+        DoubaoAdapter,
+        DOUBAO_ENDPOINT,
+        DOUBAO_PROVIDER_CONTRACT_VERSION,
+        DOUBAO_SUBTITLE_TYPE,
+    )
+    from .doubao_prompt import (
+        DOUBAO_MAX_AUDIO_DURATION_SECONDS,
+        DOUBAO_SAMPLE_MAX_AUDIO_DURATION_SECONDS,
+        DoubaoPromptError,
+        build_doubao_prompt_spec,
+        render_doubao_text_prompt,
+        text_prompt_sha256,
+    )
     from .minimax_adapter import (
         MiniMaxAdapter,
         MINIMAX_PROVIDER_CONTRACT_VERSION,
@@ -82,7 +95,20 @@ except ImportError:  # pragma: no cover - direct script execution
         validate_canonical_wav,
     )
     from edge_tts_adapter import EdgeTtsAdapter
-    from doubao_adapter import DoubaoAdapter, DOUBAO_ENDPOINT, DOUBAO_PROVIDER_CONTRACT_VERSION
+    from doubao_adapter import (
+        DoubaoAdapter,
+        DOUBAO_ENDPOINT,
+        DOUBAO_PROVIDER_CONTRACT_VERSION,
+        DOUBAO_SUBTITLE_TYPE,
+    )
+    from doubao_prompt import (
+        DOUBAO_MAX_AUDIO_DURATION_SECONDS,
+        DOUBAO_SAMPLE_MAX_AUDIO_DURATION_SECONDS,
+        DoubaoPromptError,
+        build_doubao_prompt_spec,
+        render_doubao_text_prompt,
+        text_prompt_sha256,
+    )
     from minimax_adapter import (
         MiniMaxAdapter,
         MINIMAX_PROVIDER_CONTRACT_VERSION,
@@ -166,6 +192,7 @@ LEGACY_CANONICAL_WAV_VALIDATOR_RECEIPT_VERSION = "canonical-wav-validator-receip
 CANONICAL_WAV_VALIDATOR_RECEIPT_VERSION = validation_receipts.CANDIDATE_RECEIPT_CONTRACT_VERSION
 CANONICAL_WAV_VALIDATOR_CONTRACT_VERSION = "canonical-wav-validator-v2"
 MINIMAX_SUBTITLE_EVIDENCE_CONTRACT_VERSION = "minimax-native-word-subtitle-evidence-v1"
+DOUBAO_SUBTITLE_EVIDENCE_CONTRACT_VERSION = "doubao-native-word-subtitle-evidence-v1"
 
 
 class ApprovalGateError(RuntimeError):
@@ -203,6 +230,7 @@ def _voice_paths(project: Project) -> dict[str, Path]:
         "timeline": project.path("audio/timeline.json"),
         "srt": project.path("audio/narration.srt"),
         "minimax_subtitles": project.path("audio/minimax-subtitles.json"),
+        "doubao_subtitles": project.path("audio/doubao-subtitles.json"),
     }
 
 
@@ -244,6 +272,23 @@ def _build_plan_and_units(
         "doubao": DOUBAO_PROVIDER_CONTRACT_VERSION,
     }.get(provider_id, "")
     contract = config.get("contractVersion") or default_contract
+    provider_options = {
+        key: config[key]
+        for key in (
+            "model",
+            "emotion",
+            "textNormalization",
+            "stream",
+            "endpoint",
+            "requestTimeoutSeconds",
+        )
+        if key in config
+    }
+    if provider_id == "doubao":
+        provider_options["promptSpec"] = build_doubao_prompt_spec(cues, scenes)
+        provider_options["maxTextPromptCharacters"] = 3000
+        provider_options["maxAudioDurationSeconds"] = DOUBAO_MAX_AUDIO_DURATION_SECONDS
+        provider_options["nativeWordSubtitlesRequired"] = True
     plan = build_voice_plan(
         project_id=project.project_id,
         source_srt_sha256=project.metadata["source"]["sha256"],
@@ -258,22 +303,13 @@ def _build_plan_and_units(
         provider_id=provider_id,
         protocol=protocol,
         provider_contract_version=contract,
-        provider_options={
-            key: config[key]
-            for key in (
-                "model",
-                "emotion",
-                "textNormalization",
-                "stream",
-                "endpoint",
-                "requestTimeoutSeconds",
-            )
-            if key in config
-        },
+        provider_options=provider_options,
         segmentation=FULL_TRACK_SEGMENTATION,
     )
-    units = bind_synthesis_identities(
-        plan_full_track_unit(cues, scenes, segmentation=plan["segmentation"]), plan
+    units = _bind_current_synthesis_units(
+        project,
+        plan,
+        plan_full_track_unit(cues, scenes, segmentation=plan["segmentation"]),
     )
     return plan, units
 
@@ -312,8 +348,68 @@ def _load_current_plan_units(project: Project) -> tuple[dict[str, Any], list[dic
         == FULL_TRACK_SEGMENTATION_CONTRACT_VERSION
         else plan_speech_units
     )
-    units = bind_synthesis_identities(planner(cues, scenes, segmentation=plan["segmentation"]), plan)
+    units = _bind_current_synthesis_units(
+        project, plan, planner(cues, scenes, segmentation=plan["segmentation"])
+    )
     return plan, units
+
+
+def _doubao_text_prompt(
+    plan: Mapping[str, Any],
+    speech_text: str,
+    *,
+    background_music_enabled: bool,
+    sample: bool,
+    target_duration_seconds: float,
+) -> str:
+    options = plan["provider"].get("options", {})
+    prompt_spec = options.get("promptSpec") if isinstance(options, Mapping) else None
+    if not isinstance(prompt_spec, Mapping):
+        raise VoiceoverStateError("豆包 current voice plan 缺少导演式 promptSpec")
+    try:
+        return render_doubao_text_prompt(
+            prompt_spec,
+            speech_text,
+            background_music_enabled=background_music_enabled,
+            sample=sample,
+            target_duration_seconds=target_duration_seconds,
+        )
+    except DoubaoPromptError as exc:
+        raise VoiceoverStateError(str(exc)) from exc
+
+
+def _bind_current_synthesis_units(
+    project: Project,
+    plan: Mapping[str, Any],
+    units: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    prepared = [copy.deepcopy(dict(unit)) for unit in units]
+    if plan["provider"]["id"] == "doubao":
+        source_cues = parse_srt(
+            project.path("source/source.srt").read_text(encoding="utf-8-sig")
+        )
+        current_prompt_spec = build_doubao_prompt_spec(
+            source_cues, project.timing_plan["scenes"]
+        )
+        if plan["provider"].get("options", {}).get("promptSpec") != current_prompt_spec:
+            raise ApprovalGateError("豆包导演式 promptSpec 与 current source/scenes 不一致")
+        duration_seconds = source_cues[-1]["endMs"] / 1000.0
+        if duration_seconds > DOUBAO_MAX_AUDIO_DURATION_SECONDS:
+            raise VoiceoverStateError(
+                "豆包完整旁白目标时长超过 120 秒；禁止请求、拆句或自动切换 provider"
+            )
+        for unit in prepared:
+            prompt = _doubao_text_prompt(
+                plan,
+                str(unit["speechText"]),
+                background_music_enabled=project.background_music_enabled,
+                sample=False,
+                target_duration_seconds=duration_seconds,
+            )
+            unit["providerTextPromptSha256"] = text_prompt_sha256(prompt)
+            unit["providerTextPromptCharacterCount"] = len(prompt)
+            unit["_providerTextPrompt"] = prompt
+    return bind_synthesis_identities(prepared, plan)
 
 
 def _sample_text(units: Sequence[Mapping[str, Any]]) -> str:
@@ -340,7 +436,9 @@ def _sample_text(units: Sequence[Mapping[str, Any]]) -> str:
     return min(enumerate(candidates), key=lambda item: (abs(len(item[1]) - 24), item[0]))[1]
 
 
-def _request(plan: Mapping[str, Any], text: str) -> SynthesisRequest:
+def _request(
+    plan: Mapping[str, Any], text: str, *, provider_text_prompt: str | None = None
+) -> SynthesisRequest:
     settings = synthesis_settings_from_plan(plan)
     timeout_seconds = plan["provider"].get("options", {}).get(
         "requestTimeoutSeconds", DEFAULT_REQUEST_TIMEOUT_SECONDS
@@ -352,7 +450,7 @@ def _request(plan: Mapping[str, Any], text: str) -> SynthesisRequest:
     ):
         raise VoiceoverStateError("provider requestTimeoutSeconds 必须为正数")
     return SynthesisRequest(
-        text=text,
+        text=provider_text_prompt if provider_text_prompt is not None else text,
         voice=settings["voice"],
         normalizedRate=settings["normalizedRate"],
         normalizedPitch=settings["normalizedPitch"],
@@ -417,7 +515,13 @@ def _media_dict(result: CanonicalAudioResult) -> dict[str, Any]:
     }
 
 
-def _sample_identity(plan: Mapping[str, Any], text: str, media: Mapping[str, Any]) -> str:
+def _sample_identity(
+    plan: Mapping[str, Any],
+    text: str,
+    media: Mapping[str, Any],
+    *,
+    provider_text_prompt_sha256: str | None = None,
+) -> str:
     return sha256_json(
         {
             "contractVersion": VOICE_CLI_CONTRACT_VERSION,
@@ -425,6 +529,7 @@ def _sample_identity(plan: Mapping[str, Any], text: str, media: Mapping[str, Any
             "text": text,
             "mediaSha256": media["sha256"],
             "mediaContractVersion": media["contractVersion"],
+            "providerTextPromptSha256": provider_text_prompt_sha256,
         }
     )
 
@@ -446,6 +551,9 @@ def _publish_sample_review_artifacts(
     media: Mapping[str, Any],
     identity: str,
     provider_request_id: str | None,
+    *,
+    provider_text_prompt_sha256: str | None = None,
+    provider_metadata: Mapping[str, Any] | None = None,
 ) -> tuple[Path, Path]:
     """发布不可变样音试听副本，避免播放器按 canonical 路径缓存旧音频。"""
 
@@ -484,11 +592,16 @@ def _publish_sample_review_artifacts(
             "rate": selection["rate"],
             "volume": selection["volume"],
             "pitch": selection["pitch"],
+            "textPromptSha256": provider_text_prompt_sha256,
         },
         "providerResponse": {
             "voiceIdEchoAvailable": False,
             "voiceIdEcho": None,
-            **_provider_receipt(provider_request_id),
+            **_provider_receipt(
+                provider_request_id,
+                provider_metadata=provider_metadata,
+                text_prompt_sha256=provider_text_prompt_sha256,
+            ),
         },
         "sample": {
             "identitySha256": identity,
@@ -590,7 +703,20 @@ def _sample(
     manifest = _fresh_manifest_with_reuse(project, plan, units, old)
     text = _sample_text(units)
     run_dir = project.create_run_dir(f"voice-sample-{uuid.uuid4().hex}")
-    raw = adapter.synthesize(_request(plan, text))
+    provider_text_prompt = None
+    provider_prompt_sha = None
+    if provider_id == "doubao":
+        provider_text_prompt = _doubao_text_prompt(
+            plan,
+            text,
+            background_music_enabled=False,
+            sample=True,
+            target_duration_seconds=DOUBAO_SAMPLE_MAX_AUDIO_DURATION_SECONDS,
+        )
+        provider_prompt_sha = text_prompt_sha256(provider_text_prompt)
+    raw = adapter.synthesize(
+        _request(plan, text, provider_text_prompt=provider_text_prompt)
+    )
     result = normalizer(
         raw.bytes,
         paths["sample"],
@@ -599,7 +725,12 @@ def _sample(
     )
     media = _media_dict(result)
     media["file"] = "previews/voice-sample.wav"
-    identity = _sample_identity(plan, text, media)
+    identity = _sample_identity(
+        plan,
+        text,
+        media,
+        provider_text_prompt_sha256=provider_prompt_sha,
+    )
     full_text = "\n\n".join(str(unit["speechText"]) for unit in units)
     sample_weight = spoken_text_weight(text)
     full_weight = spoken_text_weight(full_text)
@@ -621,14 +752,25 @@ def _sample(
         "authoritative": False,
     }
     review_audio, audit_path = _publish_sample_review_artifacts(
-        paths, plan, media, identity, raw.providerRequestId
+        paths,
+        plan,
+        media,
+        identity,
+        raw.providerRequestId,
+        provider_text_prompt_sha256=provider_prompt_sha,
+        provider_metadata=raw.providerMetadata,
     )
     manifest["sample"] = {
         "status": "validated",
         "text": text,
         "identityHash": identity,
         "media": media,
-        "providerReceipt": _provider_receipt(raw.providerRequestId),
+        "providerReceipt": _provider_receipt(
+            raw.providerRequestId,
+            provider_metadata=raw.providerMetadata,
+            text_prompt_sha256=provider_prompt_sha,
+        ),
+        "providerTextPromptSha256": provider_prompt_sha,
         "durationEstimate": duration_estimate,
         "approval": {
             "approved": False,
@@ -761,7 +903,26 @@ def _validate_current_sample(project: Project, plan: Mapping[str, Any], manifest
     if not isinstance(media, Mapping):
         raise ApprovalGateError("current 样音缺少媒体身份")
     _validate_media_ref(project, media, expected_file="previews/voice-sample.wav")
-    identity = _sample_identity(plan, str(sample.get("text", "")), media)
+    provider_prompt_sha = sample.get("providerTextPromptSha256")
+    if plan["provider"]["id"] == "doubao":
+        sample_prompt = _doubao_text_prompt(
+            plan,
+            str(sample.get("text", "")),
+            background_music_enabled=False,
+            sample=True,
+            target_duration_seconds=DOUBAO_SAMPLE_MAX_AUDIO_DURATION_SECONDS,
+        )
+        expected_prompt_sha = text_prompt_sha256(sample_prompt)
+        if provider_prompt_sha != expected_prompt_sha:
+            raise ApprovalGateError("豆包样音 text_prompt identity 已 stale")
+    elif provider_prompt_sha is not None:
+        raise ApprovalGateError("非豆包样音不得绑定 provider text_prompt")
+    identity = _sample_identity(
+        plan,
+        str(sample.get("text", "")),
+        media,
+        provider_text_prompt_sha256=provider_prompt_sha,
+    )
     if sample.get("identityHash") != identity:
         raise ApprovalGateError("样音 identity 已 stale")
     return identity
@@ -811,17 +972,48 @@ def _candidate_validator_receipt(result: CanonicalAudioResult) -> dict[str, Any]
     return _canonical_validator_receipt(result)
 
 
-def _provider_receipt(request_id: str | None) -> dict[str, Any]:
-    if not request_id:
-        return {"providerRequestIdHash": None}
-    digest = hashlib.sha256(request_id.encode("utf-8")).hexdigest()
-    return {"providerRequestIdHash": f"sha256:{digest[:16]}"}
+def _provider_receipt(
+    request_id: str | None,
+    *,
+    provider_metadata: Mapping[str, Any] | None = None,
+    text_prompt_sha256: str | None = None,
+) -> dict[str, Any]:
+    if request_id:
+        digest = hashlib.sha256(request_id.encode("utf-8")).hexdigest()
+        request_hash: str | None = f"sha256:{digest[:16]}"
+    else:
+        request_hash = None
+    receipt: dict[str, Any] = {"providerRequestIdHash": request_hash}
+    if text_prompt_sha256 is not None:
+        if not re.fullmatch(r"[0-9a-f]{64}", text_prompt_sha256):
+            raise VoiceoverStateError("provider text_prompt SHA-256 无效")
+        receipt["textPromptSha256"] = text_prompt_sha256
+    if isinstance(provider_metadata, Mapping):
+        for field in (
+            "durationMs",
+            "originalDurationMs",
+            "sentenceCount",
+            "wordCount",
+        ):
+            value = provider_metadata.get(field)
+            if value is not None:
+                receipt[field] = value
+        metadata_prompt_sha = provider_metadata.get("textPromptSha256")
+        if metadata_prompt_sha is not None and metadata_prompt_sha != text_prompt_sha256:
+            raise VoiceoverStateError("provider response text_prompt SHA-256 与请求不一致")
+    return receipt
 
 
 def _attempt_minimax_subtitle_candidate(
     project: Project, segment: Mapping[str, Any]
 ) -> Path:
     return _attempt_candidate(project, segment).with_name("minimax-subtitles.json")
+
+
+def _attempt_doubao_subtitle_candidate(
+    project: Project, segment: Mapping[str, Any]
+) -> Path:
+    return _attempt_candidate(project, segment).with_name("doubao-subtitles.json")
 
 
 def _minimax_subtitle_receipt(path: Path) -> dict[str, Any]:
@@ -857,13 +1049,171 @@ def _write_minimax_subtitle_candidate(path: Path, payload: bytes) -> dict[str, A
     return receipt
 
 
+def _doubao_subtitle_receipt(path: Path) -> dict[str, Any]:
+    try:
+        payload = path.read_bytes()
+        value = json.loads(payload.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise VoiceoverStateError(f"豆包原生字幕 sidecar 无效: {exc}") from exc
+    if not isinstance(value, Mapping):
+        raise VoiceoverStateError("豆包原生字幕 sidecar 顶层必须是对象")
+    subtitle = value.get("subtitle")
+    sentences = subtitle.get("sentences") if isinstance(subtitle, Mapping) else None
+    if (
+        value.get("contractVersion") != DOUBAO_SUBTITLE_TYPE
+        or value.get("providerContractVersion") != DOUBAO_PROVIDER_CONTRACT_VERSION
+        or not isinstance(value.get("textPromptSha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", value["textPromptSha256"])
+        or isinstance(value.get("durationMs"), bool)
+        or not isinstance(value.get("durationMs"), int)
+        or not 0 < value["durationMs"] <= DOUBAO_MAX_AUDIO_DURATION_SECONDS * 1000
+        or isinstance(value.get("originalDurationMs"), bool)
+        or not isinstance(value.get("originalDurationMs"), int)
+        or not 0 < value["originalDurationMs"] <= DOUBAO_MAX_AUDIO_DURATION_SECONDS * 1000
+        or not isinstance(subtitle, Mapping)
+        or not isinstance(subtitle.get("text"), str)
+        or not subtitle["text"].strip()
+        or not isinstance(sentences, list)
+        or not sentences
+    ):
+        raise VoiceoverStateError("豆包原生字幕 sidecar 合同字段无效")
+    word_count = 0
+    previous_sentence_end = -1
+    previous_word_end = -1
+    sentence_texts: list[str] = []
+    for sentence_index, sentence in enumerate(sentences, start=1):
+        if not isinstance(sentence, Mapping):
+            raise VoiceoverStateError("豆包原生字幕 sentence 必须是对象")
+        start_ms = sentence.get("start_time")
+        end_ms = sentence.get("end_time")
+        sentence_text = sentence.get("text")
+        words = sentence.get("words")
+        if (
+            isinstance(start_ms, bool)
+            or not isinstance(start_ms, int)
+            or isinstance(end_ms, bool)
+            or not isinstance(end_ms, int)
+            or start_ms < 0
+            or end_ms <= start_ms
+            or end_ms > value["durationMs"]
+            or start_ms < previous_sentence_end
+            or not isinstance(sentence_text, str)
+            or not sentence_text.strip()
+            or not isinstance(words, list)
+            or not words
+        ):
+            raise VoiceoverStateError(
+                f"豆包原生字幕 sentence[{sentence_index}] 时间或文本无效"
+            )
+        word_texts: list[str] = []
+        for word_index, word in enumerate(words, start=1):
+            if not isinstance(word, Mapping):
+                raise VoiceoverStateError("豆包原生字幕 word 必须是对象")
+            word_start = word.get("start_time")
+            word_end = word.get("end_time")
+            word_text = word.get("text")
+            if (
+                isinstance(word_start, bool)
+                or not isinstance(word_start, int)
+                or isinstance(word_end, bool)
+                or not isinstance(word_end, int)
+                or word_start < start_ms
+                or word_end <= word_start
+                or word_end > end_ms
+                or word_start < previous_word_end
+                or not isinstance(word_text, str)
+                or not word_text.strip()
+            ):
+                raise VoiceoverStateError(
+                    f"豆包原生字幕 word[{sentence_index}:{word_index}] 时间或文本无效"
+                )
+            word_texts.append(word_text)
+            previous_word_end = word_end
+            word_count += 1
+        if re.sub(r"\s+", "", "".join(word_texts)) != re.sub(
+            r"\s+", "", sentence_text
+        ):
+            raise VoiceoverStateError("豆包原生字幕 sentence.text 与 words 不一致")
+        sentence_texts.append(sentence_text)
+        previous_sentence_end = end_ms
+    if re.sub(r"\s+", "", "".join(sentence_texts)) != re.sub(
+        r"\s+", "", subtitle["text"]
+    ):
+        raise VoiceoverStateError("豆包原生字幕 subtitle.text 与 sentences 不一致")
+    return {
+        "contractVersion": DOUBAO_SUBTITLE_EVIDENCE_CONTRACT_VERSION,
+        "providerContractVersion": DOUBAO_PROVIDER_CONTRACT_VERSION,
+        "subtitleType": DOUBAO_SUBTITLE_TYPE,
+        "textPromptSha256": value["textPromptSha256"],
+        "durationMs": value["durationMs"],
+        "originalDurationMs": value["originalDurationMs"],
+        "sentenceCount": len(sentences),
+        "wordCount": word_count,
+        "bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+
+
+def _write_doubao_subtitle_candidate(
+    path: Path,
+    payload: bytes,
+    *,
+    expected_prompt_sha256: str,
+    voice_synthesis_identity_hash: str,
+) -> dict[str, Any]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        receipt = _doubao_subtitle_receipt(temporary)
+        if receipt["textPromptSha256"] != expected_prompt_sha256:
+            raise VoiceoverStateError("豆包原生字幕未绑定 current 完整 text_prompt")
+        receipt["voiceSynthesisIdentityHash"] = voice_synthesis_identity_hash
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    published = _doubao_subtitle_receipt(path)
+    if any(published.get(key) != receipt.get(key) for key in published):
+        raise VoiceoverStateError("豆包原生字幕 candidate 发布后发生变化")
+    return receipt
+
+
+def _provider_subtitle_candidate(
+    project: Project, segment: Mapping[str, Any]
+) -> Path:
+    attempt = segment.get("currentAttempt")
+    kind = attempt.get("providerSubtitleKind") if isinstance(attempt, Mapping) else None
+    if kind == "minimax":
+        return _attempt_minimax_subtitle_candidate(project, segment)
+    if kind == "doubao":
+        return _attempt_doubao_subtitle_candidate(project, segment)
+    raise VoiceoverStateError("provider 原生字幕 attempt kind 无效")
+
+
+def _provider_subtitle_receipt(
+    project: Project, segment: Mapping[str, Any], path: Path
+) -> dict[str, Any]:
+    attempt = segment.get("currentAttempt")
+    kind = attempt.get("providerSubtitleKind") if isinstance(attempt, Mapping) else None
+    if kind == "minimax":
+        return _minimax_subtitle_receipt(path)
+    if kind == "doubao":
+        receipt = _doubao_subtitle_receipt(path)
+        receipt["voiceSynthesisIdentityHash"] = segment["voiceSynthesisIdentityHash"]
+        return receipt
+    raise VoiceoverStateError("provider 原生字幕 attempt kind 无效")
+
+
 def _new_segment_attempt(
     project: Project,
     segment: dict[str, Any],
     unit: Mapping[str, Any],
     run_dir: Path,
     *,
-    provider_subtitles_required: bool = False,
+    provider_subtitle_kind: str | None = None,
 ) -> dict[str, Any]:
     attempt_number = int(segment.get("attempts") or 0) + 1
     attempt_id = f"unit-{unit['index']:04d}-attempt-{attempt_number:04d}"
@@ -878,6 +1228,7 @@ def _new_segment_attempt(
         "attemptId": attempt_id,
         "status": "prepared",
         "inputIdentitySha256": unit["voiceSynthesisIdentityHash"],
+        "providerTextPromptSha256": unit.get("providerTextPromptSha256"),
         "candidateFile": candidate_relative,
         "candidateSha256": None,
         "candidateBytes": None,
@@ -886,7 +1237,8 @@ def _new_segment_attempt(
         "externalOutcome": "not_started",
         "providerReceipt": None,
         "providerSubtitles": None,
-        "providerSubtitlesRequired": provider_subtitles_required,
+        "providerSubtitlesRequired": provider_subtitle_kind is not None,
+        "providerSubtitleKind": provider_subtitle_kind,
     }
     segment["attempts"] = attempt_number
     segment["currentAttempt"] = attempt
@@ -960,11 +1312,13 @@ def _validate_attempt_candidate(
     attempt["candidateBytes"] = result.bytes
     attempt["validatorReceipt"] = receipt
     if attempt.get("providerSubtitlesRequired") is True:
-        subtitle_candidate = _attempt_minimax_subtitle_candidate(project, segment)
-        subtitle_receipt = _minimax_subtitle_receipt(subtitle_candidate)
+        subtitle_candidate = _provider_subtitle_candidate(project, segment)
+        subtitle_receipt = _provider_subtitle_receipt(
+            project, segment, subtitle_candidate
+        )
         previous_subtitle_receipt = attempt.get("providerSubtitles")
         if previous_subtitle_receipt not in (None, subtitle_receipt):
-            raise ApprovalGateError("MiniMax 原生字幕 candidate receipt 已 stale")
+            raise ApprovalGateError("provider 原生字幕 candidate receipt 已 stale")
         attempt["providerSubtitles"] = subtitle_receipt
     return result
 
@@ -992,11 +1346,14 @@ def _publish_segment_candidate(project: Project, segment: dict[str, Any]) -> Non
     if destination.stat().st_size != expected_bytes or sha256_file(destination) != expected_sha:
         raise VoiceoverStateError("正式 segment 发布后 SHA/bytes 核对失败")
     if attempt.get("providerSubtitlesRequired") is True:
-        subtitle_candidate = _attempt_minimax_subtitle_candidate(project, segment)
+        subtitle_candidate = _provider_subtitle_candidate(project, segment)
         subtitle_receipt = attempt.get("providerSubtitles")
         if not isinstance(subtitle_receipt, Mapping):
-            raise VoiceoverStateError("MiniMax validated attempt 缺少原生字幕 receipt")
-        destination = _voice_paths(project)["minimax_subtitles"]
+            raise VoiceoverStateError("validated attempt 缺少 provider 原生字幕 receipt")
+        kind = attempt.get("providerSubtitleKind")
+        destination = _voice_paths(project)[
+            "minimax_subtitles" if kind == "minimax" else "doubao_subtitles"
+        ]
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
         try:
@@ -1004,16 +1361,20 @@ def _publish_segment_candidate(project: Project, segment: dict[str, Any]) -> Non
                 shutil.copyfileobj(source, handle)
                 handle.flush()
                 os.fsync(handle.fileno())
-            if _minimax_subtitle_receipt(temporary) != dict(subtitle_receipt):
-                raise VoiceoverStateError("MiniMax 原生字幕正式副本与 receipt 不一致")
+            if _provider_subtitle_receipt(project, segment, temporary) != dict(
+                subtitle_receipt
+            ):
+                raise VoiceoverStateError("provider 原生字幕正式副本与 receipt 不一致")
             os.replace(temporary, destination)
         finally:
             temporary.unlink(missing_ok=True)
-        if _minimax_subtitle_receipt(destination) != dict(subtitle_receipt):
-            raise VoiceoverStateError("MiniMax 原生字幕正式发布后发生变化")
+        if _provider_subtitle_receipt(project, segment, destination) != dict(
+            subtitle_receipt
+        ):
+            raise VoiceoverStateError("provider 原生字幕正式发布后发生变化")
 
 
-def _apply_candidate_media(segment: dict[str, Any]) -> None:
+def _apply_candidate_media(project: Project, segment: dict[str, Any]) -> None:
     receipt = segment["currentAttempt"]["validatorReceipt"]
     evidence = _canonical_receipt_evidence(receipt)
     segment.update(
@@ -1031,9 +1392,14 @@ def _apply_candidate_media(segment: dict[str, Any]) -> None:
     )
     provider_subtitles = segment["currentAttempt"].get("providerSubtitles")
     if provider_subtitles is not None:
+        kind = segment["currentAttempt"].get("providerSubtitleKind")
         segment["providerSubtitles"] = {
             **copy.deepcopy(provider_subtitles),
-            "relativePath": "audio/minimax-subtitles.json",
+            "relativePath": (
+                "audio/minimax-subtitles.json"
+                if kind == "minimax"
+                else "audio/doubao-subtitles.json"
+            ),
         }
 
 
@@ -1045,24 +1411,50 @@ def _synthesize_candidate_worker(
     work_dir: Path,
     adapter: ProviderAdapter,
     normalizer: Callable[..., CanonicalAudioResult],
-    provider_subtitles_required: bool,
+    provider_subtitle_kind: str | None,
 ) -> dict[str, Any]:
     provider_returned = False
     try:
-        raw = adapter.synthesize(_request(plan, unit["speechText"]))
+        provider_prompt = unit.get("_providerTextPrompt")
+        if plan["provider"]["id"] == "doubao":
+            if (
+                not isinstance(provider_prompt, str)
+                or text_prompt_sha256(provider_prompt)
+                != unit.get("providerTextPromptSha256")
+            ):
+                raise PermanentProviderError("豆包 current 完整 text_prompt identity 无效")
+        raw = adapter.synthesize(
+            _request(plan, unit["speechText"], provider_text_prompt=provider_prompt)
+        )
         provider_returned = True
         subtitle_receipt = None
-        if provider_subtitles_required:
-            if (
-                raw.providerSubtitleType != MINIMAX_SUBTITLE_TYPE
-                or not isinstance(raw.providerSubtitleBytes, bytes)
-                or not raw.providerSubtitleBytes
-            ):
-                raise PermanentProviderError("MiniMax 整轨响应缺少 word 原生字幕")
-            subtitle_receipt = _write_minimax_subtitle_candidate(
-                candidate.with_name("minimax-subtitles.json"),
-                raw.providerSubtitleBytes,
+        if provider_subtitle_kind is not None:
+            expected_type = (
+                MINIMAX_SUBTITLE_TYPE
+                if provider_subtitle_kind == "minimax"
+                else DOUBAO_SUBTITLE_TYPE
             )
+            if raw.providerSubtitleType != expected_type or not isinstance(
+                raw.providerSubtitleBytes, bytes
+            ) or not raw.providerSubtitleBytes:
+                error = PermanentProviderError("同请求响应缺少 provider 原生 word 字幕")
+                error.provider_response_received = True  # type: ignore[attr-defined]
+                error.external_result_incomplete = True  # type: ignore[attr-defined]
+                raise error
+            if provider_subtitle_kind == "minimax":
+                subtitle_receipt = _write_minimax_subtitle_candidate(
+                    candidate.with_name("minimax-subtitles.json"),
+                    raw.providerSubtitleBytes,
+                )
+            else:
+                subtitle_receipt = _write_doubao_subtitle_candidate(
+                    candidate.with_name("doubao-subtitles.json"),
+                    raw.providerSubtitleBytes,
+                    expected_prompt_sha256=str(unit["providerTextPromptSha256"]),
+                    voice_synthesis_identity_hash=str(
+                        unit["voiceSynthesisIdentityHash"]
+                    ),
+                )
         result = normalizer(
             raw.bytes,
             candidate,
@@ -1071,7 +1463,11 @@ def _synthesize_candidate_worker(
         )
         return {
             "result": result,
-            "providerReceipt": _provider_receipt(raw.providerRequestId),
+            "providerReceipt": _provider_receipt(
+                raw.providerRequestId,
+                provider_metadata=raw.providerMetadata,
+                text_prompt_sha256=unit.get("providerTextPromptSha256"),
+            ),
             "providerSubtitles": subtitle_receipt,
         }
     except Exception as exc:  # classified by the single-writer coordinator
@@ -1129,16 +1525,34 @@ def _segment_is_reusable(
     if provider_subtitles_required:
         provider_subtitles = segment.get("providerSubtitles")
         if not isinstance(provider_subtitles, Mapping):
-            raise ApprovalGateError("MiniMax validated segment 缺少原生字幕 binding")
-        subtitle_path = _voice_paths(project)["minimax_subtitles"]
-        if provider_subtitles.get("relativePath") != "audio/minimax-subtitles.json":
-            raise ApprovalGateError("MiniMax 原生字幕正式路径已 stale")
-        receipt = {
-            key: provider_subtitles.get(key)
-            for key in ("contractVersion", "subtitleType", "bytes", "sha256")
-        }
-        if _minimax_subtitle_receipt(subtitle_path) != receipt:
-            raise ApprovalGateError("MiniMax 原生字幕 bytes/SHA 已 stale")
+            raise ApprovalGateError("validated segment 缺少 provider 原生字幕 binding")
+        kind = attempt.get("providerSubtitleKind") if isinstance(attempt, Mapping) else None
+        if kind not in {"minimax", "doubao"}:
+            raise ApprovalGateError("provider 原生字幕 kind 已 stale")
+        relative_path = f"audio/{kind}-subtitles.json"
+        subtitle_path = _voice_paths(project)[f"{kind}_subtitles"]
+        if provider_subtitles.get("relativePath") != relative_path:
+            raise ApprovalGateError("provider 原生字幕正式路径已 stale")
+        receipt_keys = (
+            ("contractVersion", "subtitleType", "bytes", "sha256")
+            if kind == "minimax"
+            else (
+                "contractVersion",
+                "providerContractVersion",
+                "subtitleType",
+                "textPromptSha256",
+                "durationMs",
+                "originalDurationMs",
+                "sentenceCount",
+                "wordCount",
+                "bytes",
+                "sha256",
+                "voiceSynthesisIdentityHash",
+            )
+        )
+        receipt = {key: provider_subtitles.get(key) for key in receipt_keys}
+        if _provider_subtitle_receipt(project, segment, subtitle_path) != receipt:
+            raise ApprovalGateError("provider 原生字幕 bytes/SHA/binding 已 stale")
     return True
 
 
@@ -1206,8 +1620,8 @@ def _recover_segment_attempt(
             raise ApprovalGateError("provider 结果不确定；禁止自动重复请求")
         if attempt.get("providerSubtitlesRequired") is True:
             try:
-                _minimax_subtitle_receipt(
-                    _attempt_minimax_subtitle_candidate(project, segment)
+                _provider_subtitle_receipt(
+                    project, segment, _provider_subtitle_candidate(project, segment)
                 )
             except VoiceoverStateError:
                 attempt["externalOutcome"] = "unknown"
@@ -1220,12 +1634,12 @@ def _recover_segment_attempt(
                     status="unknown_external_outcome",
                     error_stage="provider-subtitles",
                     error_summary=(
-                        "requesting 后音频 candidate 已存在，但 MiniMax 原生字幕 "
+                        "requesting 后音频 candidate 已存在，但 provider 原生字幕 "
                         "candidate 缺失或无效"
                     ),
                 )
                 raise ApprovalGateError(
-                    "MiniMax 音频 candidate 已存在但原生字幕结果不完整；"
+                    "音频 candidate 已存在但同请求原生字幕结果不完整；"
                     "禁止自动重复请求，需人工决定"
                 )
         attempt["externalOutcome"] = "succeeded"
@@ -1244,14 +1658,14 @@ def _recover_segment_attempt(
         if destination.exists():
             if destination.stat().st_size != expected_bytes or sha256_file(destination) != expected_sha:
                 raise ApprovalGateError("publishing 恢复发现正式 segment 与 candidate 冲突")
-            if (
-                project.voiceover_mode == "minimax"
-                and not _voice_paths(project)["minimax_subtitles"].is_file()
-            ):
+            subtitle_key = f"{project.voiceover_mode}_subtitles"
+            if attempt.get("providerSubtitlesRequired") is True and not _voice_paths(
+                project
+            )[subtitle_key].is_file():
                 _publish_segment_candidate(project, segment)
         else:
             _publish_segment_candidate(project, segment)
-        _apply_candidate_media(segment)
+        _apply_candidate_media(project, segment)
         _checkpoint_segment(manifest_path, manifest, plan, units, segment, status="validated")
         return True
     raise VoiceoverStateError(f"无法恢复 segment 状态: {status}")
@@ -1454,7 +1868,7 @@ def _full(
     normalizer: Callable[..., CanonicalAudioResult],
     configured_concurrency: int,
     asr_preflight: Callable[[], None],
-    require_native_minimax_subtitles: bool = False,
+    native_subtitle_provider: str | None = None,
 ) -> str:
     plan, units = _load_current_plan_units(project)
     if (
@@ -1470,7 +1884,7 @@ def _full(
     approval = old.get("sample", {}).get("approval", {})
     if not approval.get("approved") or approval.get("identityHash") != current_sample:
         raise ApprovalGateError("未获得 current 样音 voice/rate 人工批准")
-    if project.voiceover_mode != "minimax":
+    if project.voiceover_mode == "edge-tts":
         asr_preflight()
     # Preserve only the current sample approval; full/timeline approvals are reset.
     manifest["sample"] = copy.deepcopy(old["sample"])
@@ -1534,7 +1948,7 @@ def _full(
                 segment,
                 unit,
                 run_dir,
-                provider_subtitles_required=require_native_minimax_subtitles,
+                provider_subtitle_kind=native_subtitle_provider,
             )
             _checkpoint_segment(paths["manifest"], manifest, plan, units, segment, status="prepared")
         attempt["externalOutcome"] = "requesting"
@@ -1548,7 +1962,7 @@ def _full(
             work_dir=candidate.parent,
             adapter=adapter,
             normalizer=normalizer,
-            provider_subtitles_required=require_native_minimax_subtitles,
+            provider_subtitle_kind=native_subtitle_provider,
         )
         futures[future] = (unit, segment)
 
@@ -1595,7 +2009,7 @@ def _full(
                                     status="publishing",
                                 )
                                 _publish_segment_candidate(project, segment)
-                                _apply_candidate_media(segment)
+                                _apply_candidate_media(project, segment)
                                 _checkpoint_segment(
                                     paths["manifest"], manifest, plan, units, segment,
                                     status="validated",
@@ -1620,7 +2034,7 @@ def _full(
                                     status="publishing",
                                 )
                                 _publish_segment_candidate(project, segment)
-                                _apply_candidate_media(segment)
+                                _apply_candidate_media(project, segment)
                                 _checkpoint_segment(
                                     paths["manifest"], manifest, plan, units, segment,
                                     status="validated",
@@ -1641,11 +2055,11 @@ def _full(
                                 status="unknown_external_outcome",
                                 error_stage="provider-subtitles",
                                 error_summary=(
-                                    "MiniMax 已返回音频响应但原生字幕不完整；禁止自动重发"
+                                    "provider 已返回音频但同请求原生字幕不完整；禁止自动重发"
                                 ),
                             )
                             worker_error = ApprovalGateError(
-                                "MiniMax 音频响应后的原生字幕结果不完整；需人工决定是否重新请求"
+                                "音频响应后的同请求原生字幕结果不完整；需人工决定是否重新请求"
                             )
                         elif isinstance(worker_error, (RetryableProviderError, PermanentProviderError)):
                             attempt["externalOutcome"] = "failed"
@@ -1719,8 +2133,8 @@ def _full(
     manifest["alignment"] = {
         "status": "waiting_alignment",
         "source": (
-            "minimax-provider-native-word"
-            if require_native_minimax_subtitles
+            f"{native_subtitle_provider}-provider-native-word"
+            if native_subtitle_provider is not None
             else "external-asr-srt"
         ),
     }
@@ -2079,12 +2493,13 @@ def _minimax_word_srt(path: Path, audio_duration_ms: int) -> tuple[str, dict[str
     items = _minimax_subtitle_items(value)
     cues: list[dict[str, Any]] = []
     previous_end = -1
+    ignored_whitespace_entries = 0
     for index, item in enumerate(items, start=1):
         text_value = next(
             (item[key] for key in ("text", "word", "content") if key in item),
             None,
         )
-        if not isinstance(text_value, str) or not text_value.strip():
+        if not isinstance(text_value, str):
             raise VoiceoverStateError(f"MiniMax 原生字幕 word[{index}] 文本为空")
         start_ms = _minimax_time_ms(item, start=True)
         end_ms = _minimax_time_ms(item, start=False)
@@ -2099,6 +2514,12 @@ def _minimax_word_srt(path: Path, audio_duration_ms: int) -> tuple[str, dict[str
             raise VoiceoverStateError(
                 f"MiniMax 原生字幕 word[{index}] 时间必须递增且位于整轨范围内"
             )
+        if not text_value.strip():
+            if not text_value or not text_value.isspace():
+                raise VoiceoverStateError(f"MiniMax 原生字幕 word[{index}] 文本为空")
+            ignored_whitespace_entries += 1
+            previous_end = end_ms
+            continue
         cues.append(
             {
                 "originalIndex": index,
@@ -2112,6 +2533,8 @@ def _minimax_word_srt(path: Path, audio_duration_ms: int) -> tuple[str, dict[str
         **receipt,
         "validated": True,
         "evidenceKind": "provider_native_word_timestamp",
+        "providerWordEntryCount": len(items),
+        "ignoredWhitespaceEntryCount": ignored_whitespace_entries,
         "wordEntryCount": len(cues),
         "audioDurationMs": audio_duration_ms,
     }
@@ -2260,6 +2683,8 @@ def _publish_alignment(
     *,
     alignment_source: str = "external-asr-srt",
 ) -> str:
+    if project.voiceover_mode != "edge-tts":
+        raise VoiceoverStateError("publish-alignment 只允许 Edge FunASR 项目")
     if align_reference_audio is None:
         raise VoiceoverStateError("reference audio alignment 模块尚未安装")
     plan, units = _load_current_plan_units(project)
@@ -2401,6 +2826,146 @@ def _publish_minimax_alignment(project: Project) -> str:
         evidence_sha256=native_evidence["sha256"],
         alignment_source="minimax-provider-native-word",
         run_kind="publish-minimax-native-alignment",
+    )
+
+
+def _doubao_word_srt(
+    path: Path, audio_duration_ms: int
+) -> tuple[str, dict[str, Any]]:
+    """严格读取 Seed Audio 固定 subtitle.sentences[].words[] 结构。"""
+
+    receipt = _doubao_subtitle_receipt(path)
+    if abs(receipt["durationMs"] - audio_duration_ms) > 250:
+        raise VoiceoverStateError("豆包响应 duration 与 canonical narration.wav 不一致")
+    value = _read_json(path, "豆包原生字幕 sidecar")
+    subtitle = value["subtitle"]
+    cues: list[dict[str, Any]] = []
+    previous_end = -1
+    for sentence in subtitle["sentences"]:
+        for word in sentence["words"]:
+            start_ms = int(word["start_time"])
+            end_ms = int(word["end_time"])
+            if end_ms > audio_duration_ms and end_ms - audio_duration_ms <= 100:
+                end_ms = audio_duration_ms
+            if (
+                start_ms < 0
+                or end_ms <= start_ms
+                or end_ms > audio_duration_ms
+                or (previous_end >= 0 and start_ms < previous_end)
+            ):
+                raise VoiceoverStateError(
+                    "豆包原生字幕 word 时间必须递增且位于 canonical 整轨范围内"
+                )
+            cues.append(
+                {
+                    "originalIndex": len(cues) + 1,
+                    "startMs": start_ms,
+                    "endMs": end_ms,
+                    "text": word["text"],
+                }
+            )
+            previous_end = end_ms
+    if not cues:
+        raise VoiceoverStateError("豆包原生字幕没有可用 word token")
+    evidence = {
+        **receipt,
+        "validated": True,
+        "evidenceKind": "provider_native_word_timestamp",
+        "wordEntryCount": len(cues),
+        "audioDurationMs": audio_duration_ms,
+    }
+    return serialize_srt(cues), evidence
+
+
+def _publish_doubao_alignment(project: Project) -> str:
+    """发布同一次 Seed Audio 响应的严格字级时间证据，不运行 FunASR。"""
+
+    if project.voiceover_mode != "doubao":
+        raise VoiceoverStateError("豆包原生字幕入口只允许 doubao 项目")
+    if align_reference_audio is None:
+        raise VoiceoverStateError("reference audio alignment 模块尚未安装")
+    plan, units = _load_current_plan_units(project)
+    if (
+        plan["provider"]["id"] != "doubao"
+        or plan["provider"]["contractVersion"]
+        != DOUBAO_PROVIDER_CONTRACT_VERSION
+        or plan["segmentation"]["contractVersion"]
+        != FULL_TRACK_SEGMENTATION_CONTRACT_VERSION
+        or len(units) != 1
+    ):
+        raise ApprovalGateError("豆包 voice plan 不符合 current v2 原生 word 字幕合同")
+    paths = _voice_paths(project)
+    manifest = validate_voice_manifest(
+        _read_json(paths["manifest"], "voice manifest"),
+        voice_plan=plan,
+        speech_units=units,
+    )
+    current_sample = _validate_current_sample(project, plan, manifest)
+    approval = manifest["sample"]["approval"]
+    if not approval.get("approved") or approval.get("identityHash") != current_sample:
+        raise ApprovalGateError("未获得 current 样音 voice/rate 人工批准")
+    segment = manifest["segments"][0] if len(manifest["segments"]) == 1 else None
+    attempt = segment.get("currentAttempt") if isinstance(segment, Mapping) else None
+    if (
+        not isinstance(segment, Mapping)
+        or not isinstance(attempt, Mapping)
+        or attempt.get("providerSubtitlesRequired") is not True
+        or attempt.get("providerSubtitleKind") != "doubao"
+        or attempt.get("providerTextPromptSha256")
+        != units[0].get("providerTextPromptSha256")
+        or not isinstance(attempt.get("providerSubtitles"), Mapping)
+        or not isinstance(segment.get("providerSubtitles"), Mapping)
+        or not _segment_is_reusable(project, segment, units[0])
+    ):
+        raise VoiceoverStateError("豆包整轨 synthesis segment 尚未按 v2 validated")
+    composite_ref = manifest.get("composite")
+    if not isinstance(composite_ref, Mapping) or composite_ref.get("status") != "validated":
+        raise VoiceoverStateError("audio/narration.wav 尚未 validated")
+    composite = _validate_media_ref(
+        project, composite_ref, expected_file="audio/narration.wav"
+    )
+    if manifest.get("fullAudioIdentityHash") != _full_audio_identity(plan, composite_ref):
+        raise ApprovalGateError("整轨音频技术 identity 已 stale")
+    provider_srt, native_evidence = _doubao_word_srt(
+        paths["doubao_subtitles"], composite.durationMs
+    )
+    prompt_sha = units[0]["providerTextPromptSha256"]
+    if native_evidence.get("textPromptSha256") != prompt_sha:
+        raise ApprovalGateError("豆包字幕 sidecar 未绑定 current 完整 text_prompt")
+    source_srt = project.path("source/source.srt").read_text(encoding="utf-8-sig")
+    alignment = align_reference_audio(
+        source_srt,
+        provider_srt,
+        project.timing_plan["scenes"],
+        composite.durationMs,
+        min_match_ratio=0.98,
+        max_normalized_edit_ratio=0.02,
+        timing_validation_profile="doubao-provider-native-word",
+    )
+    if not isinstance(alignment, Mapping):
+        raise VoiceoverStateError("豆包 provider-native alignment 返回值无效")
+    diagnostics = alignment.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        raise VoiceoverStateError("豆包 provider-native alignment 缺少 diagnostics")
+    native_evidence.update(
+        {
+            "audioSha256": composite.sha256,
+            "fullAudioIdentityHash": manifest["fullAudioIdentityHash"],
+            "voiceSynthesisIdentityHash": units[0]["voiceSynthesisIdentityHash"],
+            "textPromptSha256": prompt_sha,
+        }
+    )
+    diagnostics["providerNativeEvidence"] = native_evidence
+    return _commit_alignment(
+        project,
+        plan,
+        units,
+        manifest,
+        composite,
+        alignment,
+        evidence_sha256=native_evidence["sha256"],
+        alignment_source="doubao-provider-native-word",
+        run_kind="publish-doubao-native-alignment",
     )
 
 
@@ -2600,6 +3165,41 @@ def validate_current_voiceover(
             raise VoiceoverStateError(
                 "MiniMax audio timeline 缺少 current provider-native word 字幕证据"
             )
+    elif project.voiceover_mode == "doubao":
+        native_evidence = (
+            alignment_diagnostics.get("providerNativeEvidence")
+            if isinstance(alignment_diagnostics, Mapping)
+            else None
+        )
+        subtitle_receipt = _doubao_subtitle_receipt(paths["doubao_subtitles"])
+        expected_prompt_sha = units[0].get("providerTextPromptSha256")
+        if (
+            common_alignment_invalid
+            or timeline.get("alignment", {}).get("source")
+            != "doubao-provider-native-word"
+            or alignment_diagnostics.get("timingValidationProfile")
+            != "doubao-provider-native-word"
+            or not isinstance(native_evidence, Mapping)
+            or native_evidence.get("validated") is not True
+            or native_evidence.get("contractVersion")
+            != DOUBAO_SUBTITLE_EVIDENCE_CONTRACT_VERSION
+            or native_evidence.get("providerContractVersion")
+            != DOUBAO_PROVIDER_CONTRACT_VERSION
+            or native_evidence.get("evidenceKind")
+            != "provider_native_word_timestamp"
+            or native_evidence.get("subtitleType") != DOUBAO_SUBTITLE_TYPE
+            or native_evidence.get("sha256") != subtitle_receipt["sha256"]
+            or native_evidence.get("bytes") != subtitle_receipt["bytes"]
+            or native_evidence.get("textPromptSha256") != expected_prompt_sha
+            or native_evidence.get("audioSha256") != composite.sha256
+            or native_evidence.get("fullAudioIdentityHash")
+            != manifest.get("fullAudioIdentityHash")
+            or native_evidence.get("voiceSynthesisIdentityHash")
+            != units[0]["voiceSynthesisIdentityHash"]
+        ):
+            raise VoiceoverStateError(
+                "豆包 audio timeline 缺少 current 同请求原生 word 字幕/prompt/audio 证据"
+            )
     elif (
         common_alignment_invalid
         or not isinstance(acoustic_evidence, Mapping)
@@ -2718,8 +3318,17 @@ def validate_current_voiceover(
             "timelineSha256": manifest["timeline"]["sha256"],
             "audioSha256": composite.sha256,
             "narrationSrtSha256": narration["sha256"],
+            "providerContractVersion": plan["provider"]["contractVersion"],
+            "fullAudioIdentityHash": manifest.get("fullAudioIdentityHash"),
         }
     )
+    if project.voiceover_mode == "doubao":
+        result["providerTextPromptSha256"] = units[0].get(
+            "providerTextPromptSha256"
+        )
+        result["providerSubtitle"] = copy.deepcopy(
+            manifest["segments"][0].get("providerSubtitles")
+        )
     if persist_deep and receipts_changed:
         _write_manifest(paths["manifest"], manifest, plan, units)
     return result
@@ -2935,7 +3544,8 @@ def _parser() -> argparse.ArgumentParser:
     full.add_argument("--project", required=True, type=Path)
     full.add_argument("--retry-failed", action="store_true")
     publish_alignment = sub.add_parser(
-        "publish-alignment", help="用外部 ASR SRT 对齐整轨音频并发布 timeline/FULL_IDENTITY"
+        "publish-alignment",
+        help="仅为 Edge 导入 FunASR token SRT 并发布 timeline/FULL_IDENTITY",
     )
     publish_alignment.add_argument("--project", required=True, type=Path)
     publish_alignment.add_argument("--asr-srt", required=True, type=Path)
@@ -3025,8 +3635,10 @@ def main(
             print(f"SAMPLE_APPROVED_IDENTITY={identity}")
         elif args.command == "full":
             current_plan, _ = _load_current_plan_units(project)
-            require_native_minimax_subtitles = (
-                project.voiceover_mode == "minimax" and adapter is None
+            native_subtitle_provider = (
+                project.voiceover_mode
+                if project.voiceover_mode in {"minimax", "doubao"}
+                else None
             )
             audio_identity = _full(
                 project, retry_failed=args.retry_failed,
@@ -3036,14 +3648,22 @@ def main(
                 normalizer=normalizer or normalize_to_candidate,
                 configured_concurrency=concurrency.for_stage("voiceGeneration"),
                 asr_preflight=asr_preflight or _preflight_narration_asr,
-                require_native_minimax_subtitles=require_native_minimax_subtitles,
+                native_subtitle_provider=native_subtitle_provider,
             )
             print(f"FULL_AUDIO={project.path('audio/narration.wav')}")
             print(f"FULL_AUDIO_IDENTITY={audio_identity}")
-            if require_native_minimax_subtitles:
+            if native_subtitle_provider == "minimax":
                 identity = _publish_minimax_alignment(project)
                 print(
                     f"MINIMAX_SUBTITLES={project.path('audio/minimax-subtitles.json')}"
+                )
+                print(f"NARRATION_SRT={project.path('audio/narration.srt')}")
+                print(f"AUDIO_TIMELINE={project.path('audio/timeline.json')}")
+                print(f"FULL_IDENTITY={identity}")
+            elif native_subtitle_provider == "doubao":
+                identity = _publish_doubao_alignment(project)
+                print(
+                    f"DOUBAO_SUBTITLES={project.path('audio/doubao-subtitles.json')}"
                 )
                 print(f"NARRATION_SRT={project.path('audio/narration.srt')}")
                 print(f"AUDIO_TIMELINE={project.path('audio/timeline.json')}")

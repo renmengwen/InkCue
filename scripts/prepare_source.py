@@ -136,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"GENERATION_PLAN={package.directory / 'generation-plan.json'}")
     print(f"SOURCE_MANIFEST={package.directory / 'manifest.json'}")
     print(f"INPUT_MODE={package.draft['inputMode']}")
+    print(f"VISUAL_STYLE_PRESET={package.draft['visualStylePreset']}")
     print(f"TARGET_DURATION_SECONDS={package.draft['targetDurationSeconds']}")
     print(f"CUE_COUNT={len(package.draft['narrationCues'])}")
     print(f"SCENE_COUNT={len(package.draft['scenes'])}")

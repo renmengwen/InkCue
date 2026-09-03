@@ -21,12 +21,17 @@ from project_workspace import (
     validate_generation_plan_data,
 )
 from srt_timeline import SrtValidationError, parse_srt, serialize_srt
+from visual_style_presets import (
+    VisualStylePresetError,
+    resolve_visual_style_preset,
+)
 
 
 CONTENT_DRAFT_CONTRACT_VERSION = "whiteboard-content-draft-v1"
 SOURCE_PACKAGE_CONTRACT_VERSION = "whiteboard-source-package-v1"
 PROVISIONAL_TIMING_VERSION = "provisional-cumulative-ms-v1"
-PREPARE_SOURCE_TOOL_VERSION = "prepare-source-v2"
+PREPARE_SOURCE_TOOL_VERSION = "prepare-source-v3"
+LEGACY_PREPARE_SOURCE_TOOL_VERSION_V2 = "prepare-source-v2"
 LEGACY_PREPARE_SOURCE_TOOL_VERSION = "prepare-source-v1"
 LEGACY_DEFAULT_GLOBAL_PROMPT = (
     "暖米黄纸张背景上的简洁白板手绘线稿，统一黑色墨线、少量柔和强调色、"
@@ -47,9 +52,11 @@ _TOP_LEVEL_FIELDS = {
     "rewritePolicy",
     "targetDurationSeconds",
     "voiceoverMode",
+    "visualStylePreset",
     "narrationCues",
     "scenes",
 }
+_OPTIONAL_LEGACY_TOP_LEVEL_FIELDS = {"visualStylePreset"}
 _CUE_FIELDS = {"cueId", "sceneId", "text"}
 _SCENE_FIELDS = {"sceneId", "name", "coreIdea", "visualSubject", "imagePrompt"}
 _DRIVE_PATH_RE = re.compile(r"(?i)(?:^|\s)[a-z]:[\\/]")
@@ -121,9 +128,15 @@ def _normalise_image_prompt(value: Any, *, label: str) -> str:
     return text
 
 
-def _require_fields(value: Mapping[str, Any], allowed: set[str], *, label: str) -> None:
+def _require_fields(
+    value: Mapping[str, Any],
+    allowed: set[str],
+    *,
+    label: str,
+    optional: set[str] | frozenset[str] = frozenset(),
+) -> None:
     unknown = set(value) - allowed
-    missing = allowed - set(value)
+    missing = (allowed - set(value)) - set(optional)
     if unknown:
         raise ContentSourceError(f"{label} 含未知字段: {', '.join(sorted(unknown))}")
     if missing:
@@ -149,7 +162,12 @@ def validate_content_draft(value: Any) -> dict[str, Any]:
     """返回规范化且完全脱离输入对象的 content-draft-v1。"""
     if not isinstance(value, Mapping):
         raise ContentSourceError("content draft 顶层必须是 JSON 对象")
-    _require_fields(value, _TOP_LEVEL_FIELDS, label="content draft")
+    _require_fields(
+        value,
+        _TOP_LEVEL_FIELDS,
+        label="content draft",
+        optional=_OPTIONAL_LEGACY_TOP_LEVEL_FIELDS,
+    )
     if value.get("schemaVersion") != 1:
         raise ContentSourceError("content draft schemaVersion 必须为 1")
     if value.get("contractVersion") != CONTENT_DRAFT_CONTRACT_VERSION:
@@ -168,6 +186,10 @@ def validate_content_draft(value: Any) -> dict[str, Any]:
         raise ContentSourceError("text 只允许 rewritePolicy=preserve 或 polish")
     if value.get("voiceoverMode") not in {"edge-tts", "minimax", "doubao"}:
         raise ContentSourceError("非 SRT 输入只允许 voiceoverMode=edge-tts、minimax 或 doubao")
+    try:
+        visual_style_preset = resolve_visual_style_preset(value.get("visualStylePreset"))
+    except VisualStylePresetError as exc:
+        raise ContentSourceError(str(exc)) from exc
 
     topic = _normalise_text(value.get("topic"), label="topic", allow_null=input_mode == "text")
     body = _normalise_text(value.get("body"), label="body", allow_null=input_mode == "topic")
@@ -249,13 +271,17 @@ def validate_content_draft(value: Any) -> dict[str, Any]:
         "rewritePolicy": rewrite_policy,
         "targetDurationSeconds": _normalise_target_seconds(value.get("targetDurationSeconds")),
         "voiceoverMode": value["voiceoverMode"],
+        "visualStylePreset": visual_style_preset.id,
         "narrationCues": cues,
         "scenes": scenes,
     }
 
 
 def content_draft_identity(draft: Mapping[str, Any]) -> str:
-    return sha256_json(validate_content_draft(draft))
+    normalised = validate_content_draft(draft)
+    return sha256_json(
+        {key: value for key, value in normalised.items() if key != "visualStylePreset"}
+    )
 
 
 def spoken_text_weight(text: str) -> int:
@@ -333,9 +359,18 @@ def build_generation_plan(
     draft: Mapping[str, Any],
     *,
     forbid_text: bool = False,
-    global_prompt: str = DEFAULT_GLOBAL_PROMPT,
+    global_prompt: str | None = None,
+    include_visual_style_snapshot: bool = True,
 ) -> dict[str, Any]:
     normalised = validate_content_draft(draft)
+    try:
+        visual_style_preset = resolve_visual_style_preset(normalised["visualStylePreset"])
+    except VisualStylePresetError as exc:
+        raise ContentSourceError(str(exc)) from exc
+    if global_prompt is None:
+        global_prompt = visual_style_preset.prompt_recipe
+    if include_visual_style_snapshot and global_prompt != visual_style_preset.prompt_recipe:
+        raise ContentSourceError("新 generation plan 的 globalPrompt 必须冻结所选模板 promptRecipe")
     cues = build_provisional_cues(normalised)
     scenes: list[dict[str, Any]] = []
     for scene in normalised["scenes"]:
@@ -370,6 +405,14 @@ def build_generation_plan(
         "manifestFile": "manifests/generation-manifest.json",
         "scenes": scenes,
     }
+    if include_visual_style_snapshot:
+        plan.update(
+            {
+                "visualStylePreset": visual_style_preset.id,
+                "visualStyleDisplayName": visual_style_preset.display_name,
+                "visualStylePromptRecipeSha256": visual_style_preset.recipe_sha256,
+            }
+        )
     validate_generation_plan_data(plan, project_id="")
     return plan
 
@@ -386,17 +429,28 @@ def build_source_package(
     draft: Mapping[str, Any],
     *,
     forbid_text: bool = False,
-    global_prompt: str = DEFAULT_GLOBAL_PROMPT,
+    global_prompt: str | None = None,
     tool_version: str = PREPARE_SOURCE_TOOL_VERSION,
 ) -> tuple[dict[str, Any], str, dict[str, Any], dict[str, Any]]:
     normalised = validate_content_draft(draft)
+    include_visual_style_snapshot = tool_version == PREPARE_SOURCE_TOOL_VERSION
+    if tool_version not in {
+        PREPARE_SOURCE_TOOL_VERSION,
+        LEGACY_PREPARE_SOURCE_TOOL_VERSION_V2,
+        LEGACY_PREPARE_SOURCE_TOOL_VERSION,
+    }:
+        raise ContentSourceError("source 准备包 toolVersion 无效")
+    persisted_draft = dict(normalised)
+    if not include_visual_style_snapshot:
+        persisted_draft.pop("visualStylePreset", None)
     source_srt = build_provisional_srt(normalised)
     generation_plan = build_generation_plan(
         normalised,
         forbid_text=forbid_text,
         global_prompt=global_prompt,
+        include_visual_style_snapshot=include_visual_style_snapshot,
     )
-    input_bytes = _json_file_bytes(normalised)
+    input_bytes = _json_file_bytes(persisted_draft)
     srt_bytes = source_srt.encode("utf-8")
     plan_bytes = _json_file_bytes(generation_plan)
     cue_binding = [
@@ -407,7 +461,11 @@ def build_source_package(
         "schemaVersion": 1,
         "contractVersion": SOURCE_PACKAGE_CONTRACT_VERSION,
         "contentDraftContractVersion": CONTENT_DRAFT_CONTRACT_VERSION,
-        "contentDraftIdentitySha256": sha256_json(normalised),
+        # 视觉模板只影响 generation plan 与图片链；content identity 继续绑定
+        # 文案/cue/scene 边界，避免纯模板切换误伤音频与真实时间轴。
+        "contentDraftIdentitySha256": sha256_json(
+            {key: value for key, value in persisted_draft.items() if key != "visualStylePreset"}
+        ),
         "narrationCueIdentitySha256": sha256_json(cue_binding),
         "inputMode": normalised["inputMode"],
         "rewritePolicy": normalised["rewritePolicy"],
@@ -421,8 +479,17 @@ def build_source_package(
             "generation-plan.json": {"sha256": _sha256_bytes(plan_bytes)},
         },
     }
+    if include_visual_style_snapshot:
+        manifest_core.update(
+            {
+                "visualStylePreset": normalised["visualStylePreset"],
+                "visualStylePromptRecipeSha256": generation_plan[
+                    "visualStylePromptRecipeSha256"
+                ],
+            }
+        )
     manifest_core["sourcePackageIdentitySha256"] = sha256_json(manifest_core)
-    return normalised, source_srt, generation_plan, manifest_core
+    return persisted_draft, source_srt, generation_plan, manifest_core
 
 
 def validate_source_package(
@@ -458,6 +525,7 @@ def validate_source_package(
     raw_tool_version = raw_manifest.get("toolVersion")
     if raw_tool_version not in {
         PREPARE_SOURCE_TOOL_VERSION,
+        LEGACY_PREPARE_SOURCE_TOOL_VERSION_V2,
         LEGACY_PREPARE_SOURCE_TOOL_VERSION,
     }:
         raise ContentSourceError("source 准备包 toolVersion 无效")
@@ -468,6 +536,8 @@ def validate_source_package(
             LEGACY_DEFAULT_GLOBAL_PROMPT
             if raw_tool_version == LEGACY_PREPARE_SOURCE_TOOL_VERSION
             else DEFAULT_GLOBAL_PROMPT
+            if raw_tool_version == LEGACY_PREPARE_SOURCE_TOOL_VERSION_V2
+            else None
         ),
         tool_version=raw_tool_version,
     )
@@ -487,7 +557,13 @@ def validate_source_package(
         raise ContentSourceError("generation-plan.json 与 content draft 的确定性派生结果不一致")
     if raw_manifest != expected_manifest:
         raise ContentSourceError("manifest.json 的 hash 或绑定关系无效")
-    return SourcePackage(paths[0].parent, expected_draft, expected_srt, expected_plan, expected_manifest)
+    return SourcePackage(
+        paths[0].parent,
+        validate_content_draft(raw_draft),
+        expected_srt,
+        expected_plan,
+        expected_manifest,
+    )
 
 
 def validate_project_source_binding(
@@ -522,6 +598,7 @@ def validate_project_source_binding(
     raw_tool_version = raw_manifest.get("toolVersion")
     if raw_tool_version not in {
         PREPARE_SOURCE_TOOL_VERSION,
+        LEGACY_PREPARE_SOURCE_TOOL_VERSION_V2,
         LEGACY_PREPARE_SOURCE_TOOL_VERSION,
     }:
         raise ContentSourceError("正式项目 source manifest toolVersion 无效")
@@ -532,6 +609,8 @@ def validate_project_source_binding(
             LEGACY_DEFAULT_GLOBAL_PROMPT
             if raw_tool_version == LEGACY_PREPARE_SOURCE_TOOL_VERSION
             else DEFAULT_GLOBAL_PROMPT
+            if raw_tool_version == LEGACY_PREPARE_SOURCE_TOOL_VERSION_V2
+            else None
         ),
         tool_version=raw_tool_version,
     )

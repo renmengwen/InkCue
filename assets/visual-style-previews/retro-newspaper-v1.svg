@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360" role="img" aria-labelledby="title desc">
+  <title id="title">复古报纸拼贴模板预览</title>
+  <desc id="desc">黑色油墨、暗红强调、半色调和撕纸边缘的编辑拼贴</desc>
+  <defs>
+    <pattern id="dots" width="10" height="10" patternUnits="userSpaceOnUse"><circle cx="3" cy="3" r="2" fill="#292725" opacity=".48"/></pattern>
+  </defs>
+  <rect width="640" height="360" rx="24" fill="#F5EBD7"/>
+  <path d="M58 74l229-10 9 220-23-8-18 12-22-9-20 11-22-9-20 10-25-9-23 10-22-12-24 7z" fill="#E7D8BE" stroke="#292725" stroke-width="7"/>
+  <rect x="90" y="97" width="172" height="31" fill="#A84A42"/>
+  <g stroke="#292725" stroke-width="6" stroke-linecap="round"><path d="M91 157h172M91 183h136M91 209h155M91 235h115"/></g>
+  <circle cx="451" cy="176" r="100" fill="url(#dots)" stroke="#292725" stroke-width="8"/>
+  <path d="M397 249c10-62 29-94 56-94 29 0 50 32 59 94M418 132c0-26 15-45 37-45 23 0 39 19 39 45" fill="#F5EBD7" stroke="#292725" stroke-width="8" stroke-linecap="round"/>
+  <path d="M356 279l203-23" stroke="#A84A42" stroke-width="18"/>
+</svg>
+

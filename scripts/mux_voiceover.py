@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -40,6 +41,8 @@ try:
         BGM_MIX_CONTRACT_VERSION,
         BGM_ASSET_FILE,
         BGM_ASSET_PATH,
+        FIXED_ASSET_RENDER_MODE,
+        PROVIDER_EMBEDDED_RENDER_MODE,
         BackgroundMusicError,
         load_background_music_plan,
     )
@@ -71,6 +74,8 @@ except ImportError:  # pragma: no cover - direct script execution
         BGM_MIX_CONTRACT_VERSION,
         BGM_ASSET_FILE,
         BGM_ASSET_PATH,
+        FIXED_ASSET_RENDER_MODE,
+        PROVIDER_EMBEDDED_RENDER_MODE,
         BackgroundMusicError,
         load_background_music_plan,
     )
@@ -78,6 +83,9 @@ except ImportError:  # pragma: no cover - direct script execution
 
 EDGE_MUX_CONTRACT_VERSION = "edge-aac-mux-v1"
 FINAL_AUDIO_MIX_CONTRACT_VERSION = "final-audio-mix-v1"
+DOUBAO_PROVIDER_EMBEDDED_BGM_MUX_CONTRACT_VERSION = (
+    "doubao-provider-embedded-bgm-aac-mux-v1"
+)
 AAC_CODEC = "aac"
 AAC_BITRATE = "192k"
 AAC_SAMPLE_RATE = 24000
@@ -160,8 +168,16 @@ def _assert_current_timing(project: Project, manifest: Mapping[str, Any]) -> tup
 def _background_music_reuse_binding(plan: Mapping[str, Any]) -> dict[str, Any]:
     if not plan["enabled"]:
         return {"enabled": False}
+    if plan.get("renderMode") == PROVIDER_EMBEDDED_RENDER_MODE:
+        return {
+            "enabled": True,
+            "renderMode": PROVIDER_EMBEDDED_RENDER_MODE,
+            "provider": plan["provider"],
+            "providerContractVersion": plan["providerContractVersion"],
+        }
     return {
         "enabled": True,
+        "renderMode": plan["renderMode"],
         "assetFile": plan["asset"],
         "assetSha256": plan["assetSha256"],
         "title": plan["title"],
@@ -440,11 +456,12 @@ def mux_project(
     ):
         raise MuxStaleError("audio timeline 未绑定 current canonical WAV")
 
-    mux_contract_version = (
-        FINAL_AUDIO_MIX_CONTRACT_VERSION
-        if background_music["enabled"]
-        else EDGE_MUX_CONTRACT_VERSION
-    )
+    if background_music.get("renderMode") == PROVIDER_EMBEDDED_RENDER_MODE:
+        mux_contract_version = DOUBAO_PROVIDER_EMBEDDED_BGM_MUX_CONTRACT_VERSION
+    elif background_music.get("renderMode") == FIXED_ASSET_RENDER_MODE:
+        mux_contract_version = FINAL_AUDIO_MIX_CONTRACT_VERSION
+    else:
+        mux_contract_version = EDGE_MUX_CONTRACT_VERSION
 
     run_dir = project.path(f".work/mux-{run_id or uuid.uuid4().hex}")
     if run_dir.exists():
@@ -456,7 +473,7 @@ def mux_project(
         raise MediaValidationError("缺少必需的可执行文件: ffmpeg")
     argv = [ffmpeg, "-y", "-loglevel", "error", "-i", str(captioned_path.resolve())]
     argv.extend(["-i", str(project.path("audio/narration.wav").resolve())])
-    if background_music["enabled"]:
+    if background_music.get("renderMode") == FIXED_ASSET_RENDER_MODE:
         argv.extend(["-stream_loop", "-1", "-i", str(BGM_ASSET_PATH)])
         duration_seconds = canonical.durationMs / 1000
         fade_in_seconds = background_music["fadeInMs"] / 1000
@@ -564,9 +581,10 @@ def mux_project(
                 "muxContractVersion": mux_contract_version,
             },
         }
-        if background_music["enabled"]:
+        if background_music.get("renderMode") == FIXED_ASSET_RENDER_MODE:
             final_record["backgroundMusic"] = {
                 "projectField": "project.json#backgroundMusic.enabled",
+                "renderMode": FIXED_ASSET_RENDER_MODE,
                 "assetFile": BGM_ASSET_FILE,
                 "assetSha256": background_music["assetSha256"],
                 "title": background_music["title"],
@@ -577,6 +595,31 @@ def mux_project(
                 "fadeOutMs": background_music["fadeOutMs"],
                 "loop": background_music["loop"],
                 "mixContractVersion": BGM_MIX_CONTRACT_VERSION,
+            }
+        elif background_music.get("renderMode") == PROVIDER_EMBEDDED_RENDER_MODE:
+            prompt_sha = current_voice.get("providerTextPromptSha256")
+            synthesis_identity = voice_manifest["segments"][0].get(
+                "voiceSynthesisIdentityHash"
+            )
+            full_audio_identity = current_voice.get("fullAudioIdentityHash")
+            if not all(
+                isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+                for value in (prompt_sha, synthesis_identity, full_audio_identity)
+            ):
+                raise MuxStaleError(
+                    "豆包 provider-embedded BGM 缺少 current prompt/audio identity"
+                )
+            final_record["backgroundMusic"] = {
+                "projectField": "project.json#backgroundMusic.enabled",
+                "renderMode": PROVIDER_EMBEDDED_RENDER_MODE,
+                "provider": "doubao",
+                "providerContractVersion": background_music[
+                    "providerContractVersion"
+                ],
+                "textPromptSha256": prompt_sha,
+                "voiceSynthesisIdentityHash": synthesis_identity,
+                "fullAudioIdentityHash": full_audio_identity,
+                "audioSha256": canonical.sha256,
             }
         manifest["final"] = final_record
         # A new technical final invalidates any old human approval.  Mux never approves.

@@ -1,6 +1,6 @@
 # 正式烧录字幕合同
 
-本文说明首版正式字幕的权威输入、固定样式、ASS 安全边界、Windows FFmpeg 调用方式、产物身份和验收要求。字幕阶段不改写旁白文案，也不需要浏览器、预览台或文件选择框。Edge `full` 只生成 current narration SRT，不编码无画面的字幕预审视频；字幕视觉审查从本合同的正式烧录与 contact sheet 开始。
+本文说明首版正式字幕的权威输入、固定样式、ASS 安全边界、Windows FFmpeg 调用方式、产物身份和验收要求。字幕阶段不改写旁白文案，也不需要浏览器、预览台或文件选择框。旁白模式的 `full` 只生成 current narration SRT，不编码无画面的字幕预审视频；字幕视觉审查从本合同的正式烧录与 contact sheet 开始。
 
 ## 目录
 
@@ -26,17 +26,17 @@
 
 Edge、MiniMax 与豆包的新 delivery evidence 统一写 `sourceKind=voiceover-narration-srt`；历史 `edge-tts-narration-srt` 仅作为旧 manifest 的只读兼容别名，新项目和重建产物不得继续写 provider 错配的旧值。
 
-Edge 模式的外层 timing plan 保存 timeline 文件 SHA；timeline 内不保存等于自身文件 SHA 的自引用字段。任一文件缺失、hash 不匹配或 binding stale 时立即失败，禁止回退到 `source/source.srt`。Disabled 模式即使残留 narration SRT，也只能使用 source SRT。annotation 的 `subtitle` 字段不是正式烧录时间轴。
+旁白模式的外层 timing plan 保存 timeline 文件 SHA；timeline 内不保存等于自身文件 SHA 的自引用字段。任一文件缺失、hash 不匹配或 binding stale 时立即失败，禁止回退到 `source/source.srt`。Disabled 模式即使残留 narration SRT，也只能使用 source SRT。annotation 的 `subtitle` 字段不是正式烧录时间轴。
 
 所有 SRT 都由 `scripts/srt_timeline.py` 严格解析：UTF-8 BOM、CRLF 和多行 cue 可读取；空文本、零时长、倒序或重叠 cue 拒绝。`sourceOrdinal` 是稳定 cue 身份，原文件中的合法编号只记录为 `originalIndex`。
 
-Disabled 的画面与字幕从全局 0 开始，以 source SRT 最后一条 cue 的 `endMs` 收口；第一条 cue 前的空白和跨幕 cue 空档不能因分幕而消失。旁白 narration SRT 从 canonical audio timeline 的词级真实区间派生：Edge TTS/豆包使用 FunASR token，MiniMax 使用 provider-native word 时间戳。允许首字前、句间和末字后的真实无字幕空档，不要求 cue 从 0 连续铺满整轨。两种模式的 scene 仍使用 timing plan 中连续覆盖整轨的全局 `startMs/endMs`；annotation 元素仍使用从本幕 0 开始的局部时间。
+Disabled 的画面与字幕从全局 0 开始，以 source SRT 最后一条 cue 的 `endMs` 收口；第一条 cue 前的空白和跨幕 cue 空档不能因分幕而消失。旁白 narration SRT 从 canonical audio timeline 的词级真实区间派生：Edge TTS 使用本地 FunASR token；MiniMax 使用同次 T2A 响应的 provider-native word 时间戳；豆包使用同次 Seed Audio 响应的 `subtitle.sentences[].words[]` 毫秒时间戳。允许首字前、句间和末字后的真实无字幕空档，不要求 cue 从 0 连续铺满整轨。两种模式的 scene 仍使用 timing plan 中连续覆盖整轨的全局 `startMs/endMs`；annotation 元素仍使用从本幕 0 开始的局部时间。
 
 ## 旁白阶段与正式字幕的边界
 
 Edge/MiniMax/豆包 `full` 生成 current `audio/narration.srt`，但此时尚未生图。人工模式只有用户完整试听后才绑定 `FULL_IDENTITY`；自主模式以阶段 0 用户批准的 current 样音为声音主观依据，在 canonical WAV 完整解码、对应 provider 的 current 词级时间证据、原稿对齐、timeline/narration SRT/current identity 与时长偏差等严格技术证据通过后写“用户样音授权后的技术推进” basis，不声称 AI 完整试听。
 
-Edge TTS/豆包字幕文本/时序必须先通过 15 秒 VAD 分段 token/timestamp 重建、顶层逐项一致性和局部语速 QA；MiniMax 必须通过 provider-native word 字幕文件 SHA、合成 identity 与 audio SHA binding，不运行 FunASR 重校验。全部路径仍须通过权威原稿覆盖、语义切句、断词、caption 阅读上限、scene 尾音边界和真实 gap QA，再由 current binding 保证；视觉判断统一留给下列有真实画面的步骤：
+Edge TTS 字幕文本/时序必须先通过 15 秒 VAD 分段 token/timestamp 重建、顶层逐项一致性和局部语速 QA。MiniMax 必须通过同次响应的 provider-native word 字幕文件 SHA、provider contract、合成 identity 与 canonical audio SHA binding；豆包必须通过独立 `audio/doubao-subtitles.json` 的 SHA/bytes、`doubao-seed-audio-expressive-native-word-v2`、完整导演式 prompt SHA、合成/full audio identity、canonical audio SHA、响应 duration/original duration 与 timeline binding。MiniMax 与豆包都不运行 FunASR 二次识别，也不应用本地 ASR 的局部语速经验阈值。全部路径仍须通过权威原稿覆盖、语义切句、断词、caption 阅读上限、scene 尾音边界和真实 gap QA，再由 current binding 保证；视觉判断统一留给下列有真实画面的步骤：
 
 - `final-video-only.mp4` 技术验证通过后重新从 current 权威 SRT 编译正式 `subtitles/final.ass`；
 - `burn_subtitles.py` 把正式 ASS 烧录到 current clean master；
@@ -89,7 +89,7 @@ captioned/final 产物包含哪些阶段专属 binding。
 
 同一对象还可配置 scene 软件编码：`scenePreset=medium|fast|veryfast` 与 `sceneEncoderThreads=0..16`（0 表示 x264 自动）。默认仍为 `medium/0` 以兼容旧配置；性能示例针对 6 核/12 线程基线使用 `sceneRender=3`、每 encoder 2 threads，避免多个 libx264 进程各自争抢全部 CPU。它不启用 GPU 编码，也不改变 FFmpeg/libx264、CRF18、yuv420p 与发布/验证边界。
 
-preset 进入 `subtitle-burn-v2` encoding contract，并随 contract 写入 delivery manifest 与 media technical receipt。它还进入 subtitle identity、captioned binding 以及 Disabled/Edge final identity，因此是正式视频字节、文件大小和 identity 的输入；这与只改变本机调度、排除在作品 identity 之外的 worker concurrency 不同。
+preset 进入 `subtitle-burn-v2` encoding contract，并随 contract 写入 delivery manifest 与 media technical receipt。它还进入 subtitle identity、captioned binding 以及 Disabled/旁白 final identity，因此是正式视频字节、文件大小和 identity 的输入；这与只改变本机调度、排除在作品 identity 之外的 worker concurrency 不同。
 
 相同 preset、current SHA/bytes 与 current receipt 全部匹配时，恢复路径只做 binding，复用 current burn，不重新编码、不重新截取 contact sheet，也不重复 deep decode。preset 或 encoding contract 变化时必须重建 ASS、字幕烧录和 downstream final，使旧 subtitle/captioned/final stale，并清空 `finalApproval`。新 candidate 仍只 deep validation 一次，发布后复用 receipt 做 binding；失败 candidate 不覆盖旧正式输出，原子发布或 manifest 更新失败时保留诊断工作目录并报错。
 
@@ -132,7 +132,7 @@ output/final-subtitled-video-only.mp4
 output/final.mp4
 ```
 
-字幕 CLI 只读取技术验证通过的 clean `final-video-only.mp4`，发布 captioned 静音诊断母版。全部单幕按 `sceneRender` 有界并行生成和逐幕检查、由 coordinator 按 generation plan 顺序发布，并通过 current scene review bundle 联合批准后，clean 合并、字幕烧录和按需音频封装属于同一条连续成片链路，中间不等待 clean master 人工确认。Disabled 模式再将同一已验证字节原子发布为 `final.mp4`，不重复编码；Edge 模式由后续 mux CLI 使用 `-c:v copy` 封装批准后的 canonical WAV。
+字幕 CLI 只读取技术验证通过的 clean `final-video-only.mp4`，发布 captioned 静音诊断母版。全部单幕按 `sceneRender` 有界并行生成和逐幕检查、由 coordinator 按 generation plan 顺序发布，并通过 current scene review bundle 联合批准后，clean 合并、字幕烧录和按需音频封装属于同一条连续成片链路，中间不等待 clean master 人工确认。Disabled 模式再将同一已验证字节原子发布为 `final.mp4`，不重复编码；Edge、MiniMax、豆包模式由后续 mux CLI 使用 `-c:v copy` 封装批准后的 canonical WAV。
 
 `manifests/delivery-manifest.json` 顶层固定为：
 
@@ -141,7 +141,7 @@ schemaVersion / projectId / voiceoverMode / timingPlan / cleanVideo /
 subtitles / captionedVideo / final / finalApproval
 ```
 
-字幕阶段更新 `subtitles`、`captionedVideo`，以及 Disabled 的 `final`。`subtitles.encoding` 必须记录 `subtitle-burn-v2`、`subtitlePreset`、libx264、CRF18、yuv420p 与 encoding contract SHA；captioned/final 的 media technical receipt 也必须记录同一 subtitle encoding evidence。字幕身份覆盖 mode、权威 SRT、权威 timeline、样式合同、字体、compiled ASS 和 preset/encoding contract；captioned identity 另绑定 clean video，Disabled/Edge final identity 均绑定 preset，Disabled final 还绑定 render profile、timing plan、burn/copy 合同和最终媒体 SHA。
+字幕阶段更新 `subtitles`、`captionedVideo`，以及 Disabled 的 `final`。`subtitles.encoding` 必须记录 `subtitle-burn-v2`、`subtitlePreset`、libx264、CRF18、yuv420p 与 encoding contract SHA；captioned/final 的 media technical receipt 也必须记录同一 subtitle encoding evidence。字幕身份覆盖 mode、权威 SRT、权威 timeline、样式合同、字体、compiled ASS 和 preset/encoding contract；captioned identity 另绑定 clean video，Disabled/旁白 final identity 均绑定 preset，Disabled final 还绑定 render profile、timing plan、burn/copy 合同和最终媒体 SHA。
 
 普通重跑只有在相同 preset、current SHA/bytes 和 current receipt 完全匹配时才复用 current burn，并以 binding 模式验证，不重复 deep decode、编码或 contact sheet。preset 变化时旧 subtitle/captioned/final 与最终批准全部 stale；重建成功前保留旧正式文件，成功发布后 `finalApproval` 必须为 `null`。技术验证、receipt binding 与 fixture PASS 都不得写成人工批准。
 
@@ -171,13 +171,13 @@ contact sheet 和正式字幕流程都不需要浏览器、预览台、文件选
 
 烧录命令没有 `--preset`：它只读取 workspace JSON 中的 `execution.videoEncoding.subtitlePreset`，缺失时为 `medium`。正式多幕候选当前已经支持 `execution.concurrency.sceneRender` 控制的有界并发；`sceneRender=1` 只是可用的安全基线和运行时降级值，不是能力限制。并行 worker 只生成并深验彼此独立的单幕 candidate，coordinator 仍按 generation plan 顺序发布；部分幕失败时不得形成可批准的完整 bundle。`agentApprovalEnabled` 缺失或为 `false` 时，用户必须对全部 current scene 的有序 review bundle 一次确认；为 `true` 时，coordinator AI 必须真实审阅同一 current bundle、决定通过或返工，并在通过时调用现有 scene review 批准动作。current scene review approval 通过后才能进入合并与字幕烧录，字幕 preset 不改变这一边界。
 
-Disabled 验收要求 clean/captioned/final 都恰好 1 路视频、0 音频；captioned/final 为 H.264、1920×1080、yuv420p、项目 fps，烧录前后帧数和时长保持。Edge 的字幕仍先独立烧录为 0 音频的 captioned video，最终 AAC 封装由 `mux_voiceover.py` 完成。
+Disabled 验收要求 clean/captioned/final 都恰好 1 路视频、0 音频；captioned/final 为 H.264、1920×1080、yuv420p、项目 fps，烧录前后帧数和时长保持。所有旁白模式的字幕都先独立烧录为 0 音频的 captioned video，最终 AAC 封装由 `mux_voiceover.py` 完成。
 
-最终技术验证和完整旁白批准通过后，人工模式仍只有用户完整看片听音并明确确认才允许执行 `approve_final_media.py`。自主模式重验 current full audio、字幕/ASS、AAC、流结构、完整解码、帧数/时长/尾部、BGM 固定混音与 `FINAL_IDENTITY` 后调用同一脚本，并写区分技术推进的 `reviewBasis`；不得因 AI 无法听音而阻塞，也不得写成完整听审通过。任何输入变化仍使旧批准 stale。
+最终技术验证和完整旁白批准通过后，人工模式仍只有用户完整看片听音并明确确认才允许执行 `approve_final_media.py`。自主模式重验 current full audio、字幕/ASS、AAC、流结构、完整解码、帧数/时长/尾部、实际 BGM 模式与 `FINAL_IDENTITY` 后调用同一脚本，并写区分技术推进的 `reviewBasis`；不得因 AI 无法听音而阻塞，也不得写成完整听审通过。Edge/MiniMax 启用 BGM 时必须验证内置 CC0 固定混音 receipt；豆包 v2 启用 BGM 时必须验证 `provider_embedded`、provider contract、完整 prompt SHA、voice synthesis/full audio identity 与 canonical audio SHA，且不得出现固定曲目/mix receipt。任何输入变化仍使旧批准 stale。
 
-`burn_subtitles.py` 成功输出 captioned `OUTPUT` 和 `VOICEOVER_MODE`。Disabled 会同时原子发布相同已验证字节的 `final.mp4`；Edge 只发布 captioned master，之后必须由 `mux_voiceover.py` 封装 current、approved WAV。`validate_final_media.py` 会独立重验三层输出并把 `technicalValidation` 证据写入 delivery manifest，但不会写人工批准；`approve_final_media.py` 成功输出 `FINAL_APPROVED=<identity>`。
+`burn_subtitles.py` 成功输出 captioned `OUTPUT` 和 `VOICEOVER_MODE`。Disabled 会同时原子发布相同已验证字节的 `final.mp4`；旁白模式只发布 captioned master，之后必须由 `mux_voiceover.py` 封装 current、approved WAV。`validate_final_media.py` 会独立重验三层输出并把 `technicalValidation` 证据写入 delivery manifest，但不会写人工批准；`approve_final_media.py` 成功输出 `FINAL_APPROVED=<identity>`。
 
-Disabled 没有 mux 阶段，因此用于最终批准的 identity 从 `validate_final_media.py` JSON 的 `finalIdentitySha256` 取得；Edge 既可使用 mux 输出的 `FINAL_IDENTITY`，也必须由该独立验证结果复核 current。不得从旧日志或旧 delivery manifest 复制 identity。
+Disabled 没有 mux 阶段，因此用于最终批准的 identity 从 `validate_final_media.py` JSON 的 `finalIdentitySha256` 取得；旁白模式既可使用 mux 输出的 `FINAL_IDENTITY`，也必须由该独立验证结果复核 current。不得从旧日志或旧 delivery manifest 复制 identity。
 
 ## 退出码与失败处理
 

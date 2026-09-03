@@ -39,6 +39,10 @@ try:  # direct CLI execution
         validate_content_draft,
     )
     from voice_provider_config import VoiceProviderConfigError, active_provider_id
+    from visual_style_presets import (
+        VisualStylePresetError,
+        resolve_visual_style_preset,
+    )
     from srt_timeline import SrtValidationError, group_scenes, parse_srt
 except ImportError:  # imported as scripts.prepare_draft_agent_task
     from scripts.agent_task_contract import (
@@ -60,6 +64,10 @@ except ImportError:  # imported as scripts.prepare_draft_agent_task
         validate_content_draft,
     )
     from scripts.voice_provider_config import VoiceProviderConfigError, active_provider_id
+    from scripts.visual_style_presets import (
+        VisualStylePresetError,
+        resolve_visual_style_preset,
+    )
     from scripts.srt_timeline import SrtValidationError, group_scenes, parse_srt
 
 
@@ -98,10 +106,12 @@ CONTENT_ROLE_CONTRACT = """# contentDrafting frozen role contract
 
 - 只读取 task.json 的 inputs；正文不从 prompt 或主对话补取。
 - 根据 content-input.json 生成完整 whiteboard-content-draft-v1：自然中文旁白、连续 cue/scene、自包含的单幕 imagePrompt。
+- task.json 已冻结具体 visualStylePreset、显示名、完整 promptRecipe 与配方 SHA；必须实际消费该模板，并在 candidate 顶层原样写入同一个 visualStylePreset。不得输出 auto，也不得自行改选模板。
 - topic 只允许 generate；text 只允许 preserve/polish；voiceoverMode 必须由 skill 根目录
   config/voice-providers.local.json 的 activeProvider 派生，不能由用户或调用方选择。
 - text+preserve 不改写语义；polish 不改变事实、数字、人物、结论、因果强度或责任主体。
 - 每个 imagePrompt 必须自含暖米黄纸张、线稿、配色、主体、构图、留白和禁水印要求，不引用前图；语义需要的画内文字可以出现，但须写明准确内容并避免乱码或意外文字。
+- 每个 imagePrompt 都必须体现 task 中冻结的 promptRecipe，同时继续保持暖米黄纸面和既有 stream renderer 可消费性；global 配方不能替代单幕自包含要求。
 - cue 到 scene 按视觉状态变化拆分，不按具体名词类别机械拆分；允许通过增加 scene 降低单图叙事负担，但不得预设固定场景数量。
 - 每幕只表达一个核心视觉命题；当语义包含多个可依次呈现的状态或主体时，imagePrompt 应组织 2–3 个可独立揭示的视觉区域。只有不可分割的连续主体才合并，不设固定 scene 数量。
 - imagePrompt 应明确左到右或上到下的视觉阅读方向（只作为静态构图顺序，不是绘制元数据），为每个区域指定完整主体和真实、连续的暖米黄纸面留白；不以漫画格强行分区，语义需要的编号、短标签或标题可以保留。
@@ -116,10 +126,12 @@ CONTENT_REVISION_ROLE_CONTRACT = """# contentDrafting frozen revision role contr
 
 - 只读取 task.json 的 inputs；不得从 prompt 或主对话补取正文、上一版草案或修改要求。
 - base.content-draft.json 是上一版只读候选；revision-request.json 是本 attempt 唯一修改要求。两者都不得改写。
+- task.json 已冻结本 attempt 的具体 visualStylePreset、显示名、完整 promptRecipe 与配方 SHA；candidate 顶层必须原样写入该 visualStylePreset。模板若与 base 不同，应把全部 imagePrompt 调整为本 attempt 的冻结配方；不得静默沿用旧模板或输出 auto。
 - 输出完整的 whiteboard-content-draft-v1，不输出 patch；未被修改要求触及的事实、数字、人物、结论、因果强度、责任主体、cue/scene 内容与图片约束应保持不变。
 - globalInstructions、cueChanges、sceneChanges 是要执行的修改；mustPreserve 是修改时必须继续满足的保护条件。
 - cue/scene 可因修改需要重新编号或调整映射，但最终仍须满足连续 cue、连续 scene 和每幕至少一个 cue 的完整合同。
 - 每个 imagePrompt 必须自含暖米黄纸张、线稿、配色、主体、构图、留白和禁水印要求，不引用前图；语义需要的画内文字可以出现，但须写明准确内容并避免乱码或意外文字。
+- 每个 imagePrompt 都必须体现 task 中冻结的 promptRecipe，同时继续保持暖米黄纸面和既有 stream renderer 可消费性；global 配方不能替代单幕自包含要求。
 - cue 到 scene 按视觉状态变化拆分，不按具体名词类别机械拆分；允许通过增加 scene 降低单图叙事负担，但不得预设固定场景数量。
 - 每幕只表达一个核心视觉命题；当语义包含多个可依次呈现的状态或主体时，imagePrompt 应组织 2–3 个可独立揭示的视觉区域。只有不可分割的连续主体才合并，不设固定 scene 数量。
 - imagePrompt 应明确左到右或上到下的视觉阅读方向（只作为静态构图顺序，不是绘制元数据），为每个区域指定完整主体和真实、连续的暖米黄纸面留白；不以漫画格强行分区，语义需要的编号、短标签或标题可以保留。
@@ -134,8 +146,11 @@ STORYBOARD_ROLE_CONTRACT = """# storyboardPlanning frozen role contract
 
 - 只读取 task.json 列出的 source.srt、parsed-srt.json 和 role contract；不得从 prompt 补取字幕正文。
 - 仅为传统 SRT 生成 pre-project candidate.generation-plan.json，不携带正式 projectId，不创建项目。
+- task.json 已冻结具体 visualStylePreset、显示名、完整 promptRecipe 与配方 SHA；不得输出 auto，也不得自行改选模板。
+- candidate 顶层必须写入相同的 visualStylePreset、visualStyleDisplayName、visualStylePromptRecipeSha256，并把冻结的 promptRecipe 原样写入 globalPrompt。
 - scenes 必须按 parsed-srt 顺序覆盖全部 cue；每幕包含 sceneId、name、cueRange、sceneDurationMs、outputFile、prompt、coreIdea、visualSubject。
 - prompt 必须是可独立生图的暖米黄纸张白板线稿提示词并禁止供应商水印；语义需要的画内文字可以出现，但须写明准确内容并避免乱码或意外文字；不得使用 imagePrompt 或 sourceCueRange 字段。
+- 每个 prompt 都必须体现 task 中冻结的模板配方，同时继续保持暖米黄纸面、每幕自包含和既有 stream renderer 可消费性；globalPrompt 不能替代单幕自包含要求。
 - cue 到 scene 按视觉状态变化拆分，不按具体名词类别机械拆分；允许通过增加 scene 降低单图叙事负担，但不得预设固定场景数量。
 - 每幕只表达一个核心视觉命题；当语义包含多个可依次呈现的状态或主体时，prompt 应组织 2–3 个可独立揭示的视觉区域。只有不可分割的连续主体才合并，不设固定 scene 数量。
 - prompt 应明确左到右或上到下的视觉阅读方向（只作为静态构图顺序，不是绘制元数据），为每个区域指定完整主体和真实、连续的暖米黄纸面留白；不以漫画格强行分区，语义需要的编号、短标签或标题可以保留。
@@ -201,6 +216,18 @@ def _normalise_text(value: Any, *, label: str, allow_null: bool = False) -> str 
     return text
 
 
+def _visual_style_snapshot(preset_id: str | None) -> dict[str, str]:
+    """把注册表中的具体模板冻结为 task 可消费的最小快照。"""
+
+    preset = resolve_visual_style_preset(preset_id)
+    return {
+        "visualStylePreset": preset.id,
+        "visualStyleDisplayName": preset.display_name,
+        "visualStylePromptRecipe": preset.prompt_recipe,
+        "visualStylePromptRecipeSha256": preset.recipe_sha256,
+    }
+
+
 def validate_content_input(value: Any) -> dict[str, Any]:
     """校验 child 生成草案前的最小冻结输入。"""
 
@@ -208,7 +235,7 @@ def validate_content_input(value: Any) -> dict[str, Any]:
         raise PrepareError("content input 顶层必须是对象")
     required = {
         "schemaVersion", "contractVersion", "inputMode", "topic", "body",
-        "rewritePolicy", "targetDurationSeconds",
+        "rewritePolicy", "targetDurationSeconds", "visualStylePreset",
     }
     allowed = required | {"voiceoverMode"}
     if set(value) - allowed or not required.issubset(value):
@@ -256,6 +283,10 @@ def validate_content_input(value: Any) -> dict[str, Any]:
         raise PrepareError("topic 超过 200 个字符")
     if body is not None and len(body.encode("utf-8")) > 128 * 1024:
         raise PrepareError("body 超过 128 KiB UTF-8")
+    try:
+        visual_style = resolve_visual_style_preset(value.get("visualStylePreset"))
+    except VisualStylePresetError as exc:
+        raise PrepareError("visualStylePreset 必须是注册表中的具体模板 ID") from exc
     return {
         "schemaVersion": 1,
         "contractVersion": CONTENT_INPUT_CONTRACT_VERSION,
@@ -265,6 +296,7 @@ def validate_content_input(value: Any) -> dict[str, Any]:
         "rewritePolicy": policy,
         "targetDurationSeconds": target_ms // 1000 if target_ms % 1000 == 0 else target_ms / 1000,
         "voiceoverMode": active_mode,
+        "visualStylePreset": visual_style.id,
     }
 
 
@@ -505,7 +537,10 @@ def _load_revision_sources(
     return base_draft, revision_request
 
 
-def _prepare_input(args: argparse.Namespace, draft_root: Path) -> tuple[str, Path, dict[str, str | None], str]:
+def _prepare_input(
+    args: argparse.Namespace,
+    draft_root: Path,
+) -> tuple[str, Path, dict[str, str | None], str, dict[str, str]]:
     if args.role == "contentDrafting":
         target = draft_root / "content-input.json"
         try:
@@ -529,7 +564,13 @@ def _prepare_input(args: argparse.Namespace, draft_root: Path) -> tuple[str, Pat
             ) from exc
         _write_once_json(target, normalised)
         sha = sha256_file(target)
-        return "content-draft", target, {"contentInputSha256": sha}, CONTENT_ROLE_CONTRACT
+        return (
+            "content-draft",
+            target,
+            {"contentInputSha256": sha},
+            CONTENT_ROLE_CONTRACT,
+            _visual_style_snapshot(normalised["visualStylePreset"]),
+        )
 
     source_target = draft_root / "source.srt"
     try:
@@ -577,6 +618,7 @@ def _prepare_input(args: argparse.Namespace, draft_root: Path) -> tuple[str, Pat
             "parsedSrtSha256": sha256_file(parsed_target),
         },
         STORYBOARD_ROLE_CONTRACT,
+        _visual_style_snapshot(getattr(args, "visual_style_preset", None)),
     )
 
 
@@ -604,6 +646,11 @@ def prepare_draft_task(args: argparse.Namespace) -> dict[str, Any]:
                 "contentDrafting 必须在初次输入与修订输入中二选一",
                 reason_code="invalid_arguments",
             )
+        if args.content_input and getattr(args, "visual_style_preset", None) is not None:
+            raise PrepareError(
+                "初次 contentDrafting 的模板必须来自 content input",
+                reason_code="invalid_arguments",
+            )
     elif revision_request_arg or base_content_draft_arg:
         raise PrepareError(
             "storyboardPlanning 不接受 content revision 参数",
@@ -625,9 +672,20 @@ def prepare_draft_task(args: argparse.Namespace) -> dict[str, Any]:
             "revisionRequestSha256": None,
         }
         role_contract_text = CONTENT_REVISION_ROLE_CONTRACT
+        visual_style = _visual_style_snapshot(
+            getattr(args, "visual_style_preset", None)
+            if getattr(args, "visual_style_preset", None) is not None
+            else base_draft["visualStylePreset"]
+        )
         primary_input = None
     else:
-        task_id_default, primary_input, bindings, role_contract_text = _prepare_input(args, draft_root)
+        (
+            task_id_default,
+            primary_input,
+            bindings,
+            role_contract_text,
+            visual_style,
+        ) = _prepare_input(args, draft_root)
     task_id = args.task_id or task_id_default
     run_id = args.run_id or ("cd-" if args.role == "contentDrafting" else "sb-") + uuid.uuid4().hex[:12]
     context = TrustedTaskContext(workspace.root, draft_root, "draft", run_id, task_id, args.attempt)
@@ -681,6 +739,7 @@ def prepare_draft_task(args: argparse.Namespace) -> dict[str, Any]:
         ],
         "formalWritesAllowed": False,
         "approvalWritesAllowed": False,
+        **visual_style,
     }
     write_json_atomic(context.task_json, task_data)
     task = validate_agent_task(context.task_json, context, expected_current_bindings=bindings)
@@ -697,6 +756,11 @@ def prepare_draft_task(args: argparse.Namespace) -> dict[str, Any]:
         "runId": run_id,
         "attempt": args.attempt,
         "configuredAgentConcurrency": workspace.for_role(args.role),
+        "visualStylePreset": visual_style["visualStylePreset"],
+        "visualStyleDisplayName": visual_style["visualStyleDisplayName"],
+        "visualStylePromptRecipeSha256": visual_style[
+            "visualStylePromptRecipeSha256"
+        ],
         "prepareStartedAt": prepare_started_at,
         "prepareDurationMs": round((time.perf_counter() - prepare_started) * 1000),
         "preparedTask": prepared_task,
@@ -721,6 +785,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="同一 draft-root 中上一 attempt 的 candidate.content-draft.json",
     )
     parser.add_argument("--source-srt", help="storyboardPlanning 的传统严格 SRT")
+    parser.add_argument(
+        "--visual-style-preset",
+        help=(
+            "storyboardPlanning 或 content revision 的具体模板 ID；"
+            "传统 SRT 省略时使用兼容默认模板"
+        ),
+    )
     parser.add_argument("--target-sec", type=float, default=30.0)
     parser.add_argument("--min-sec", type=float, default=25.0)
     parser.add_argument("--max-sec", type=float, default=35.0)

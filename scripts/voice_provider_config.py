@@ -101,17 +101,17 @@ def load_voice_provider_config(*, provider_id: str | None = None, root: Path | N
                 raise VoiceProviderConfigError(f"豆包 {field} 必须是非空字符串")
         if config["model"] != "seed-audio-1.0":
             raise VoiceProviderConfigError("豆包 model 当前只允许 seed-audio-1.0")
-        if config.get("contractVersion") != "doubao-seed-audio-http-v1":
+        if config.get("contractVersion") != "doubao-seed-audio-expressive-native-word-v2":
             raise VoiceProviderConfigError(
-                "豆包 contractVersion 必须为 doubao-seed-audio-http-v1"
+                "豆包 contractVersion 与当前 Seed Audio v2 合同不匹配"
             )
         if config.get("outputFormat") != "audio-24khz-mono-wav":
             raise VoiceProviderConfigError(
                 "豆包 outputFormat 必须为 audio-24khz-mono-wav"
             )
         endpoint = config.get("endpoint", "https://openspeech.bytedance.com/api/v3/tts/create")
-        if not isinstance(endpoint, str) or not endpoint.startswith("https://"):
-            raise VoiceProviderConfigError("豆包 endpoint 必须是 HTTPS 地址")
+        if endpoint != "https://openspeech.bytedance.com/api/v3/tts/create":
+            raise VoiceProviderConfigError("豆包 endpoint 必须为 Seed Audio 非流式 create 接口")
         try:
             config["rate"] = normalize_rate(config.get("rate", 0))
             config["pitch"] = normalize_pitch(config.get("pitch", 0))

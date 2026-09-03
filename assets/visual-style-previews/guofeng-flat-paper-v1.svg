@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360" role="img" aria-labelledby="title desc">
+  <title id="title">粗线扁平国风模板预览</title>
+  <desc id="desc">深棕粗线配朱红、玉绿和靛青的现代国风构图</desc>
+  <rect width="640" height="360" rx="24" fill="#F5EBD7"/>
+  <circle cx="508" cy="94" r="45" fill="#B94B40" opacity=".88"/>
+  <g fill="none" stroke="#40352E" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M53 271l105-132 73 89 53-63 82 106"/>
+    <path d="M340 267h244M381 267v-87h158v87M364 180h192l-26-31H390zM426 216h68v51"/>
+    <path d="M92 91c19-20 48-20 68 0 17-17 45-15 59 4-7 19-29 28-58 24-29 7-57-3-69-28z"/>
+  </g>
+  <path d="M53 271l105-132 73 89 53-63 82 106z" fill="#57776B" opacity=".72"/>
+  <path d="M364 180h192l-26-31H390z" fill="#425D78" opacity=".84"/>
+  <rect x="381" y="180" width="158" height="87" fill="#B94B40" opacity=".27"/>
+</svg>
+
