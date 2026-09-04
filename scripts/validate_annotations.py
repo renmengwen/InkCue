@@ -26,6 +26,7 @@ try:
         TrustedTaskContext,
         ValidatedAgentResult,
         ValidatedAgentTask,
+        build_agent_bundle_prompt,
         build_prepared_task_descriptor,
         sha256_file as agent_sha256_file,
         validate_agent_result,
@@ -73,6 +74,7 @@ except ImportError:  # pragma: no cover - direct script execution
         TrustedTaskContext,
         ValidatedAgentResult,
         ValidatedAgentTask,
+        build_agent_bundle_prompt,
         build_prepared_task_descriptor,
         sha256_file as agent_sha256_file,
         validate_agent_result,
@@ -115,6 +117,7 @@ except ImportError:  # pragma: no cover - direct script execution
 ANNOTATION_BATCH_CONTRACT = "whiteboard-annotation-batch-v1"
 ANNOTATION_PREPARE_CONTRACT = "whiteboard-annotation-prepare-v3"
 ANNOTATION_LINT_CONTRACT = "whiteboard-annotation-candidate-lint-v1"
+ANNOTATION_UNIT_MATERIALIZE_CONTRACT = "whiteboard-annotation-unit-materialize-v1"
 ANNOTATION_DISPATCH_BUNDLE_CONTRACT = "whiteboard-agent-task-unit-v1"
 ANNOTATION_MAX_TASKS_PER_DISPATCH_UNIT = 3
 _ATTEMPT_RE = re.compile(r"^attempt-([0-9]{4})$")
@@ -789,6 +792,8 @@ def load_annotation_tasks_from_candidate_root(
 def build_annotation_prepare_summary(
     tasks: Sequence[AnnotationDraftingTask],
     audit: Mapping[str, Any],
+    *,
+    workspace_config_path: Path | None = None,
 ) -> dict[str, Any]:
     """把冻结 tasks 转成宿主中立的有序 unit；不判断或编码派发方式。"""
 
@@ -797,6 +802,13 @@ def build_annotation_prepare_summary(
     candidate_root = tasks[0].task.context.task_dir.parents[1].resolve(strict=True)
     run_id = tasks[0].task.context.run_id
     dispatch_manifest_path = candidate_root / "dispatch-manifest.json"
+    script_path = str(Path(__file__).resolve())
+    project_root = str(tasks[0].task.context.scope_root.resolve(strict=True))
+    config_argv = (
+        ["--config", str(workspace_config_path.resolve(strict=True))]
+        if workspace_config_path is not None
+        else []
+    )
     ordered_tasks: list[dict[str, Any]] = []
     for drafting in tasks:
         task = drafting.task
@@ -824,7 +836,7 @@ def build_annotation_prepare_summary(
                 "candidateLint": {
                     "command": [
                         sys.executable,
-                        str(Path(__file__).resolve()),
+                        script_path,
                         "lint",
                         "--candidate",
                         str(drafting.candidate_path.resolve(strict=False)),
@@ -832,6 +844,13 @@ def build_annotation_prepare_summary(
                     "writesPerformed": False,
                     "requiredBeforeNextTask": True,
                 },
+                "candidateLintArgv": [
+                    sys.executable,
+                    script_path,
+                    "lint",
+                    "--candidate",
+                    str(drafting.candidate_path.resolve(strict=False)),
+                ],
             }
         )
 
@@ -855,10 +874,11 @@ def build_annotation_prepare_summary(
             str(drafting.task.context.result_json.resolve(strict=False))
             for drafting in unit_tasks
         ]
+        dispatch_unit_id = f"annotation-unit-{unit_number:02d}"
         dispatch_units.append(
             {
                 "contractVersion": ANNOTATION_DISPATCH_BUNDLE_CONTRACT,
-                "dispatchUnitId": f"annotation-unit-{unit_number:02d}",
+                "dispatchUnitId": dispatch_unit_id,
                 "taskCount": len(unit_tasks),
                 "taskIds": [drafting.task.data["taskId"] for drafting in unit_tasks],
                 "sceneIds": [drafting.scene_id for drafting in unit_tasks],
@@ -872,7 +892,7 @@ def build_annotation_prepare_summary(
                 "candidateLintCommands": [
                     [
                         sys.executable,
-                        str(Path(__file__).resolve()),
+                        script_path,
                         "lint",
                         "--candidate",
                         str(drafting.candidate_path.resolve(strict=False)),
@@ -880,6 +900,26 @@ def build_annotation_prepare_summary(
                     for drafting in unit_tasks
                 ],
                 "lintBeforeNextTask": True,
+                "returnAfterUnitComplete": True,
+                "stopAfterCandidateReady": False,
+                "completionProtocol": "return_after_unit_complete_v1",
+                "normalMaterializeRequiresChildFinished": True,
+                "agentPrompt": build_agent_bundle_prompt(
+                    [drafting.task for drafting in unit_tasks],
+                    max_tasks=ANNOTATION_MAX_TASKS_PER_DISPATCH_UNIT,
+                ),
+                "batchMaterializeArgv": [
+                    sys.executable,
+                    script_path,
+                    "materialize-unit",
+                    "--project",
+                    project_root,
+                    "--candidate-root",
+                    str(candidate_root),
+                    "--dispatch-unit-id",
+                    dispatch_unit_id,
+                    *config_argv,
+                ],
                 "payloadTooLargeRecovery": "new-short-context-json-only",
                 "preparedTasks": [
                     build_prepared_task_descriptor(
@@ -937,6 +977,8 @@ def build_annotation_prepare_summary(
         "dispatchPlan": {
             "coordinatorDispatchRequired": True,
             "granularity": "contiguous-bundle-v1",
+            "completionProtocol": "return_after_unit_complete_v1",
+            "childReturnGranularity": "dispatch_unit",
             "maxTasksPerDispatchUnit": unit_size,
             "configuredMaxParallel": int(audit["configuredAgentConcurrency"]),
             "orderedDispatchUnitIds": [
@@ -947,6 +989,215 @@ def build_annotation_prepare_summary(
         "orderedTasks": ordered_tasks,
         "formalWritesAllowed": False,
         "approvalWritesAllowed": False,
+    }
+
+
+def _load_current_dispatch_manifest(
+    candidate_root: Path,
+) -> tuple[Path, dict[str, Any]]:
+    """Load the coordinator-owned manifest for one current annotation run."""
+
+    if candidate_root.is_symlink():
+        raise AnnotationBatchError("candidate root 不能是符号链接")
+    root = candidate_root.resolve(strict=True)
+    manifest_path = root / "dispatch-manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise AnnotationBatchError("current dispatch manifest 缺失或为符号链接")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise AnnotationBatchError("current dispatch manifest 不是可读 UTF-8 JSON") from exc
+    manifest_root = manifest.get("candidateRoot") if isinstance(manifest, dict) else None
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("contractVersion") != DISPATCH_MANIFEST_CONTRACT
+        or not isinstance(manifest_root, str)
+        or Path(manifest_root).resolve(strict=True) != root
+    ):
+        raise AnnotationBatchError("current dispatch manifest 合同或 candidateRoot 无效")
+    if not isinstance(manifest.get("tasks"), list) or not isinstance(
+        manifest.get("dispatchUnits"), list
+    ):
+        raise AnnotationBatchError("current dispatch manifest tasks/dispatchUnits 无效")
+    return manifest_path, manifest
+
+
+def _resolve_dispatch_unit_tasks(
+    manifest: Mapping[str, Any],
+    tasks: Sequence[AnnotationDraftingTask],
+    dispatch_unit_id: str,
+) -> tuple[Mapping[str, Any], tuple[AnnotationDraftingTask, ...]]:
+    """Resolve one frozen unit and reject any task/path/order drift."""
+
+    units = manifest.get("dispatchUnits")
+    assert isinstance(units, list)
+    matches = [
+        item
+        for item in units
+        if isinstance(item, Mapping) and item.get("dispatchUnitId") == dispatch_unit_id
+    ]
+    if len(matches) != 1:
+        raise AnnotationBatchError("dispatchUnitId 不在 current dispatch manifest 或不唯一")
+    unit = matches[0]
+    task_ids = unit.get("taskIds")
+    if (
+        unit.get("contractVersion") != ANNOTATION_DISPATCH_BUNDLE_CONTRACT
+        or not isinstance(task_ids, list)
+        or not task_ids
+        or len(task_ids) > ANNOTATION_MAX_TASKS_PER_DISPATCH_UNIT
+        or any(not isinstance(task_id, str) or not task_id for task_id in task_ids)
+        or len(set(task_ids)) != len(task_ids)
+        or unit.get("taskCount") != len(task_ids)
+    ):
+        raise AnnotationBatchError("dispatch unit 合同、taskCount 或 taskIds 无效")
+    if (
+        unit.get("returnAfterUnitComplete") is not True
+        or unit.get("stopAfterCandidateReady") is not False
+        or unit.get("lintBeforeNextTask") is not True
+    ):
+        raise AnnotationBatchError("dispatch unit 不是 current unit-complete 协议")
+
+    loaded_by_id = {item.task.data["taskId"]: item for item in tasks}
+    if len(loaded_by_id) != len(tasks):
+        raise AnnotationBatchError("current candidate root 包含重复 taskId")
+    try:
+        ordered = tuple(loaded_by_id[task_id] for task_id in task_ids)
+    except KeyError as exc:
+        raise AnnotationBatchError("dispatch unit 引用了非 current task") from exc
+    if [item.sequence for item in ordered] != sorted(item.sequence for item in ordered):
+        raise AnnotationBatchError("dispatch unit task 顺序与 current plan 不一致")
+
+    manifest_tasks = manifest.get("tasks")
+    assert isinstance(manifest_tasks, list)
+    descriptor_by_id: dict[str, Mapping[str, Any]] = {}
+    for descriptor in manifest_tasks:
+        if not isinstance(descriptor, Mapping):
+            raise AnnotationBatchError("dispatch manifest task descriptor 无效")
+        task_id = descriptor.get("taskId")
+        if not isinstance(task_id, str) or task_id in descriptor_by_id:
+            raise AnnotationBatchError("dispatch manifest taskId 无效或重复")
+        descriptor_by_id[task_id] = descriptor
+    expected_candidates: list[str] = []
+    expected_results: list[str] = []
+    for drafting in ordered:
+        task_id = drafting.task.data["taskId"]
+        descriptor = descriptor_by_id.get(task_id)
+        if descriptor is None:
+            raise AnnotationBatchError("dispatch unit task 缺少冻结 descriptor")
+        attempt_dir = drafting.task.context.task_dir.resolve(strict=True)
+        candidate = drafting.candidate_path.resolve(strict=False)
+        result = drafting.task.context.result_json.resolve(strict=False)
+        if (
+            descriptor.get("sceneId") != drafting.scene_id
+            or descriptor.get("sequence") != drafting.sequence
+            or descriptor.get("attempt") != drafting.task.data["attempt"]
+            or not isinstance(descriptor.get("allowedAttemptDir"), str)
+            or Path(str(descriptor["allowedAttemptDir"])).resolve(strict=True) != attempt_dir
+            or not isinstance(descriptor.get("candidateAnnotationPath"), str)
+            or Path(str(descriptor["candidateAnnotationPath"])).resolve(strict=False)
+            != candidate
+            or not isinstance(descriptor.get("resultJsonPath"), str)
+            or Path(str(descriptor["resultJsonPath"])).resolve(strict=False) != result
+        ):
+            raise AnnotationBatchError("dispatch unit task descriptor 已漂移")
+        expected_candidates.append(str(candidate))
+        expected_results.append(str(result))
+    if unit.get("candidateJsonPaths") != expected_candidates or unit.get(
+        "resultJsonPaths"
+    ) != expected_results:
+        raise AnnotationBatchError("dispatch unit candidate/result 路径已漂移")
+    return unit, ordered
+
+
+def _preflight_unit_candidates(
+    manifest: Mapping[str, Any],
+    tasks: Sequence[AnnotationDraftingTask],
+) -> dict[str, str]:
+    """Validate every unit candidate before writing any result/materialized file."""
+
+    audit = manifest.get("audit")
+    observations = audit.get("taskObservations", {}) if isinstance(audit, Mapping) else {}
+    if not isinstance(observations, Mapping):
+        raise AnnotationBatchError("dispatch manifest taskObservations 无效")
+    frozen: dict[str, str] = {}
+    for drafting in tasks:
+        task_id = drafting.task.data["taskId"]
+        candidate = drafting.candidate_path
+        if candidate.is_symlink() or not candidate.is_file():
+            raise AnnotationBatchError(f"{task_id}: candidate 缺失或为符号链接")
+        if candidate.resolve(strict=True) != (
+            drafting.task.context.task_dir / "candidate.annotation.json"
+        ).resolve(strict=True):
+            raise AnnotationBatchError(f"{task_id}: candidate 不在冻结 attempt 标准路径")
+        _load_visual_elements_candidate(candidate)
+        candidate_sha256 = agent_sha256_file(candidate)
+        observation = observations.get(task_id)
+        if observation is not None:
+            if not isinstance(observation, Mapping):
+                raise AnnotationBatchError(f"{task_id}: candidate observation 无效")
+            status = observation.get("status")
+            observed_sha256 = observation.get("frozenCandidateSha256")
+            if status in {"invalid", "stale", "forbidden"}:
+                raise AnnotationBatchError(f"{task_id}: candidate observation 为 {status}")
+            if status not in {None, "missing", "ready"}:
+                raise AnnotationBatchError(f"{task_id}: candidate observation 状态无效")
+            if observed_sha256 is not None:
+                if not isinstance(observed_sha256, str):
+                    raise AnnotationBatchError(f"{task_id}: candidate 冻结 SHA 无效")
+                if candidate_sha256 != observed_sha256:
+                    raise AnnotationBatchError(f"{task_id}: current candidate 与冻结 SHA 不一致")
+            elif status == "ready":
+                raise AnnotationBatchError(f"{task_id}: ready candidate 缺少冻结 SHA")
+        frozen[task_id] = candidate_sha256
+    return frozen
+
+
+def _materialize_one_current_candidate(
+    drafting: AnnotationDraftingTask,
+    *,
+    project: Project,
+    context: FormalValidationContext,
+    frozen_candidate_sha256: str,
+    allow_v1_disabled_compat: bool,
+) -> dict[str, Any]:
+    """Reuse the existing single-task deterministic materialization logic."""
+
+    if agent_sha256_file(drafting.candidate_path) != frozen_candidate_sha256:
+        raise AnnotationBatchError(
+            f"{drafting.task.data['taskId']}: candidate 在 unit materialize 前已变化"
+        )
+    _materialize_coordinator_result(drafting, project=project, context=context)
+    validated = validate_agent_result(
+        drafting.task.context.result_json,
+        drafting.task,
+        dispatched_task_sha256=drafting.task.task_sha256,
+        expected_current_bindings=context_bindings(project, context),
+        output_validator=lambda kind, path: _load_visual_elements_candidate(path)
+        if kind == "annotationDrafting" and path.name == "candidate.annotation.json"
+        else None,
+    )
+    _materialize_annotation_candidate(drafting, project=project, context=context)
+    _candidate_business_validator(
+        project,
+        context,
+        drafting.scene_id,
+        drafting.materialized_path,
+        allow_v1_disabled_compat=allow_v1_disabled_compat,
+    )
+    if agent_sha256_file(drafting.candidate_path) != frozen_candidate_sha256:
+        raise AnnotationBatchError(
+            f"{drafting.task.data['taskId']}: candidate 在 unit materialize 期间已变化"
+        )
+    return {
+        "taskId": drafting.task.data["taskId"],
+        "sceneId": drafting.scene_id,
+        "sequence": drafting.sequence,
+        "candidateSha256": frozen_candidate_sha256,
+        "resultJsonPath": str(drafting.task.context.result_json.resolve(strict=True)),
+        "resultSha256": agent_sha256_file(drafting.task.context.result_json),
+        "materializedAnnotationPath": str(drafting.materialized_path.resolve(strict=True)),
+        "materializedAnnotationSha256": agent_sha256_file(drafting.materialized_path),
+        "resultStatus": validated.data["status"],
     }
 
 
@@ -996,6 +1247,126 @@ def _materialize_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _materialize_unit_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="在 child 完成后一次确定性生成一个 annotation dispatch unit 的 results"
+    )
+    parser.add_argument("--project", required=True)
+    parser.add_argument("--candidate-root", required=True, type=Path)
+    parser.add_argument("--dispatch-unit-id", required=True)
+    parser.add_argument("--config")
+    parser.add_argument("--allow-v1-disabled-compat", action="store_true")
+    return parser
+
+
+def _materialize_unit_main(argv: Sequence[str]) -> int:
+    started = time.perf_counter()
+    task_summaries: list[dict[str, Any]] = []
+    args = _materialize_unit_parser().parse_args(argv)
+    try:
+        workspace = load_workspace_config(args.config)
+        project = load_project(args.project)
+        context = build_formal_validation_context(project)
+        validate_formal_context_current(project, context)
+        candidate_root = args.candidate_root.resolve(strict=True)
+        tasks = load_annotation_tasks_from_candidate_root(
+            workspace,
+            project,
+            candidate_root,
+            context=context,
+        )
+        dispatch_manifest_path, dispatch_manifest = _load_current_dispatch_manifest(
+            candidate_root
+        )
+        _unit, unit_tasks = _resolve_dispatch_unit_tasks(
+            dispatch_manifest,
+            tasks,
+            args.dispatch_unit_id,
+        )
+        frozen_candidates = _preflight_unit_candidates(dispatch_manifest, unit_tasks)
+
+        # No attempt/result writes occur until every candidate in the unit has
+        # passed the same fail-closed preflight.  Formal scene annotations are
+        # still published only by the existing final batch validator.
+        for drafting in unit_tasks:
+            task_id = drafting.task.data["taskId"]
+            task_summaries.append(
+                _materialize_one_current_candidate(
+                    drafting,
+                    project=project,
+                    context=context,
+                    frozen_candidate_sha256=frozen_candidates[task_id],
+                    allow_v1_disabled_compat=args.allow_v1_disabled_compat,
+                )
+            )
+
+        current_project = load_project(project.root)
+        validate_formal_context_current(current_project, context)
+        if context_bindings(current_project, context) != context_bindings(project, context):
+            raise AnnotationBatchError("unit materialize 期间 current bindings 已变化")
+        for drafting in unit_tasks:
+            task_id = drafting.task.data["taskId"]
+            if agent_sha256_file(drafting.candidate_path) != frozen_candidates[task_id]:
+                raise AnnotationBatchError(f"{task_id}: unit 完成前 candidate 已变化")
+
+        completed_at = utc_now()
+        duration_ms = round((time.perf_counter() - started) * 1000)
+        audit = dispatch_manifest.setdefault("audit", {})
+        if not isinstance(audit, dict):
+            raise AnnotationBatchError("dispatch manifest audit 无效")
+        observations = audit.setdefault("taskObservations", {})
+        if not isinstance(observations, dict):
+            raise AnnotationBatchError("dispatch manifest materialize audit 子结构无效")
+        for item in task_summaries:
+            task_id = item["taskId"]
+            previous = observations.get(task_id)
+            observation = dict(previous) if isinstance(previous, Mapping) else {}
+            observation.update(
+                {
+                    "status": "ready",
+                    "candidateSha256": item["candidateSha256"],
+                    "frozenCandidateSha256": item["candidateSha256"],
+                    "finalizeRecommended": True,
+                    "finalizeBasis": "unit_complete_materialize_preflight",
+                    "resultMaterializedAt": completed_at,
+                    "resultSha256": item["resultSha256"],
+                }
+            )
+            observations[task_id] = observation
+        audit.setdefault("timestamps", {})["resultMaterializedAt"] = completed_at
+        audit.setdefault("durationsMs", {})["resultMaterialize"] = duration_ms
+        write_json_atomic(dispatch_manifest_path, dispatch_manifest)
+        summary = {
+            "contractVersion": ANNOTATION_UNIT_MATERIALIZE_CONTRACT,
+            "operation": "materialize-unit",
+            "status": "PASS",
+            "dispatchUnitId": args.dispatch_unit_id,
+            "taskCount": len(task_summaries),
+            "taskIds": [item["taskId"] for item in task_summaries],
+            "scenes": task_summaries,
+            "resultMaterializeMs": duration_ms,
+            "nextAction": "materialize_remaining_units_or_validate_current_annotation_batch",
+            "formalWritesPerformed": False,
+            "approvalWritten": False,
+        }
+        code = 0
+    except Exception as exc:
+        summary = {
+            "contractVersion": ANNOTATION_UNIT_MATERIALIZE_CONTRACT,
+            "operation": "materialize-unit",
+            "status": "FAIL",
+            "dispatchUnitId": args.dispatch_unit_id,
+            "completedTaskCount": len(task_summaries),
+            "completedTasks": task_summaries,
+            "error": str(exc),
+            "formalWritesPerformed": False,
+            "approvalWritten": False,
+        }
+        code = 2
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    return code
+
+
 def _materialize_main(argv: Sequence[str]) -> int:
     started = time.perf_counter()
     args = _materialize_parser().parse_args(argv)
@@ -1041,22 +1412,11 @@ def _materialize_main(argv: Sequence[str]) -> int:
             or agent_sha256_file(drafting.candidate_path) != frozen_sha256
         ):
             raise AnnotationBatchError("current candidate 与 watchdog 冻结 SHA 不一致")
-        _materialize_coordinator_result(drafting, project=project, context=context)
-        validated = validate_agent_result(
-            drafting.task.context.result_json,
-            drafting.task,
-            dispatched_task_sha256=drafting.task.task_sha256,
-            expected_current_bindings=context_bindings(project, context),
-            output_validator=lambda kind, path: _load_visual_elements_candidate(path)
-            if kind == "annotationDrafting" and path.name == "candidate.annotation.json"
-            else None,
-        )
-        _materialize_annotation_candidate(drafting, project=project, context=context)
-        _candidate_business_validator(
-            project,
-            context,
-            drafting.scene_id,
-            drafting.materialized_path,
+        materialized = _materialize_one_current_candidate(
+            drafting,
+            project=project,
+            context=context,
+            frozen_candidate_sha256=frozen_sha256,
             allow_v1_disabled_compat=args.allow_v1_disabled_compat,
         )
         duration_ms = round((time.perf_counter() - started) * 1000)
@@ -1064,9 +1424,7 @@ def _materialize_main(argv: Sequence[str]) -> int:
         audit.setdefault("timestamps", {})["resultMaterializedAt"] = utc_now()
         audit.setdefault("durationsMs", {})["resultMaterialize"] = duration_ms
         observation["resultMaterializedAt"] = utc_now()
-        observation["resultSha256"] = agent_sha256_file(
-            drafting.task.context.result_json
-        )
+        observation["resultSha256"] = materialized["resultSha256"]
         write_json_atomic(dispatch_manifest_path, dispatch_manifest)
         summary = {
             "contractVersion": "whiteboard-annotation-result-materialize-v1",
@@ -1075,9 +1433,9 @@ def _materialize_main(argv: Sequence[str]) -> int:
             "taskId": args.task_id,
             "sceneId": drafting.scene_id,
             "resultJsonPath": str(drafting.task.context.result_json.resolve(strict=True)),
-            "resultSha256": agent_sha256_file(drafting.task.context.result_json),
+            "resultSha256": materialized["resultSha256"],
             "materializedAnnotationPath": str(drafting.materialized_path.resolve(strict=True)),
-            "resultStatus": validated.data["status"],
+            "resultStatus": materialized["resultStatus"],
             "resultMaterializeMs": duration_ms,
             "formalWritesPerformed": False,
             "approvalWritten": False,
@@ -1165,7 +1523,11 @@ def _prepare_main(argv: Sequence[str]) -> int:
         )
         audit["prepareStartedAt"] = started_at
         audit["prepareDurationMs"] = round((time.perf_counter() - started) * 1000)
-        summary = build_annotation_prepare_summary(tasks, audit)
+        summary = build_annotation_prepare_summary(
+            tasks,
+            audit,
+            workspace_config_path=workspace.config_path,
+        )
     except Exception as exc:
         failure = _prepare_failure(exc)
         summary = {
@@ -1229,6 +1591,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _lint_main(raw[1:])
     if raw and raw[0] == "materialize":
         return _materialize_main(raw[1:])
+    if raw and raw[0] == "materialize-unit":
+        return _materialize_unit_main(raw[1:])
     if raw and raw[0] == "validate":
         raw = raw[1:]
     return _validate_main(raw)
@@ -1242,6 +1606,7 @@ __all__ = [
     "ANNOTATION_BATCH_CONTRACT",
     "ANNOTATION_LINT_CONTRACT",
     "ANNOTATION_PREPARE_CONTRACT",
+    "ANNOTATION_UNIT_MATERIALIZE_CONTRACT",
     "AnnotationBatchError",
     "AnnotationDraftingTask",
     "FormalValidationContext",

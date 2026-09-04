@@ -21,7 +21,7 @@
   .dirty { color: #f5a623; font-weight: 600; font-size: 13px; }
   .body { flex: 1; display: flex; min-height: 0; }
   .stage-wrap { flex: 1; display: flex; align-items: center; justify-content: center; overflow: auto; padding: 20px; }
-  canvas { display: block; max-width: 100%; max-height: calc(100vh - 190px); box-shadow: 0 8px 40px rgba(0,0,0,.5); background: #fdf0d0; border-radius: 6px; touch-action: none; }
+  canvas { display: block; max-width: 100%; max-height: calc(100vh - 190px); box-shadow: 0 8px 40px rgba(0,0,0,.5); background: #F5EBD7; border-radius: 6px; touch-action: none; }
   .hint { padding: 40px; color: #9aa1ab; font-size: 14px; line-height: 1.8; max-width: 680px; }
   .hint b { color: #e6e8ec; }
   .hint code { background: #262a33; padding: 1px 6px; border-radius: 4px; color: #7fb0ff; }
@@ -139,7 +139,7 @@ const mask = document.createElement('canvas'), maskCtx = mask.getContext('2d');
 const hand = new Image(); hand.src = location.protocol.startsWith('http') ? '/assets/drawing-hand.png' : './drawing-hand.png';
 
 const S = { scenes: [], idx: -1, cfg: null, cfgHandle: null, dirHandle: null,
-            source: null, paper: '#fdf0d0', time: 0, sel: 0, playing: false, last: 0,
+            source: null, paper: '#F5EBD7', time: 0, sel: 0, playing: false, last: 0,
             showOverlay: true, dirty: new Set(), drag: null, dragRow: -1,
             remote: false, remoteMode: null, writeToken: null, readOnly: false };
 
@@ -273,7 +273,7 @@ function samplePaper() {
     const w = t.width, h = t.height, pts = [[2,2],[w-3,2],[2,h-3],[w-3,h-3]];
     let r=0,g=0,b=0; pts.forEach(([x,y]) => { const d = tc.getImageData(x,y,1,1).data; r+=d[0]; g+=d[1]; b+=d[2]; });
     S.paper = `rgb(${Math.round(r/4)},${Math.round(g/4)},${Math.round(b/4)})`; canvas.style.background = S.paper;
-  } catch (e) { S.paper = '#fdf0d0'; }
+  } catch (e) { S.paper = '#F5EBD7'; }
 }
 
 // ---------- reveal 代理渲染 ----------

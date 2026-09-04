@@ -2,7 +2,7 @@
 
 - 一个宿主 child 可能收到 1–3 个彼此独立、已冻结的 annotation task；必须按 bundle 中的 task sequence 顺序逐个处理，不能把多幕合并为一个 candidate 或 result。
 - 宿主 prompt 只是冻结定位器：只接受每个 task/role 的绝对路径与 SHA、允许的 attempt 目录和固定返回格式。不得要求或接收完整主对话、完整 SRT/正文、所有 scene 数组、provider 凭据/配置、批准信息、长工具日志或未冻结状态；这些内容即使宿主能够取得也不得作为判断依据或写入 `agent.log`。
-- 每个 task 只读取其 `task.json` 列出的场景图片、`scene-brief.json` 和本 role contract；不得从主对话、其他 scene 或未冻结文件补取业务内容。
+- 同一主任务的 workspace/Python preflight 已由 coordinator 完成；child 不运行 `prepare_env`，不搜索源码、tests、examples、CLI `--help`、result schema、其他 reference 或 provider 配置。每个 task 只读取其 `task.json` 列出的场景图片、`scene-brief.json` 和本 role contract；不得从主对话、其他 scene 或未冻结文件补取业务内容。
 - 每幕都必须实际查看原图并读取该幕 brief，先提炼字幕叙事事件，再把叙事顺序和字幕语义映射到实际可见的视觉簇；禁止按叙事名词、对象清单或坐标机械拆分、排序。
 - `candidate.annotation.json` 的最小合法结构固定如下；`protectedRegions` 只能位于 `elements[i].reveal.protectedRegions`，不得放在 element 顶层。空保护区统一省略 `protectedRegions`；确有保护区时才写该数组：
 
@@ -35,8 +35,8 @@
 - `protectedRegions` 只保护正确分区后，本元素已揭示但仍会被后续区域覆盖的局部主体；它不能替代正确分区，不能用来补救横穿有效墨迹、错误大框或本应合并的连续墨迹。所有 region/protectedRegions 必须位于画布内，reveal 的 `startMs`/`durationMs` 必须为合法整数并与 scene timing 一致。
 - sceneId、canvas、sceneDurationMs、timingPlan/renderProfile SHA、sceneFrameRange 与 timingSource 全部由 coordinator 从 current evidence 确定性注入；child 只负责 `elements` 中的视觉区域、顺序、`protectedRegions` 与局部 reveal 判断。
 - 每个 `result.json` 使用 `whiteboard-agent-result-v1`（由 coordinator 生成），完整回显该 task 的 identity、task SHA、role SHA、sequence 与全部 frozen inputs；`completed` 时只列出本幕 authored candidate 的 attempt 相对路径及 SHA。child 不需要返回 result 路径。
-- child 写完每个 candidate 后必须立即停止该 task；coordinator 必须先执行该 task descriptor 中的 `candidateLint.command`，只有 lint `PASS` 才可让同一 dispatch unit 进入下一 task。lint 失败只补正当前 JSON，不重新附带原图；若错误涉及视觉区域而必须重新看图，只重新加载当前一幕。
+- 正常路径中 child 不在每幕 candidate 后返回宿主。每写完一个 candidate，立即执行该 task descriptor 中给定的纯本地 `candidateLint.command`；只有 lint `PASS` 才进入同一 unit 的下一 task。lint 失败只补正当前 JSON，不重新附带原图；若错误涉及视觉区域而必须重新看图，只重新加载当前一幕。不得把 `STOP_AFTER_CANDIDATE_READY` 用于正常路径。
 - 一个 child 的图片上下文生命周期不得跨 dispatch unit。补正优先 followup 原 child，但 prompt 仍只包含 task/role/candidate 路径、SHA 与精简 validator 错误，不重复嵌入图片或长日志。遇到 `413`/payload too large/context length 后，原 child 视为本次补正不可用；不得原样重试，必须换短上下文 child，并先走 JSON-only 补正。只有 validator 明确指出视觉判断不足时，才给新 child 单独加载当前一幕图片。
-- 某一 task 失败时，child 不写 result；coordinator 为该 task 生成 `status=failed` 与合法 error 审计且不伪造 candidate，然后继续 bundle 中后续 task；不得因单幕失败跳过其他独立幕。
+- 某一 task 经本地 lint 补正后仍失败时，child 不写 result；记录该 task 的精简失败状态后继续 bundle 中后续 task，不得因单幕失败跳过其他独立幕。unit 返回后由 coordinator 为失败 task 确定性生成 `status=failed` 与合法 error 审计且不伪造 candidate；成功 task 仍可 materialize，但任一必需 scene 失败时 batch 总状态保持 `FAIL`。
 - 不得调用图片/文本/语音 provider、FFmpeg、浏览器、正式发布或其他 worker pool；candidate 是否可发布只由 coordinator 的确定性 validator 和 current binding 复核决定。
-- candidate 写入并通过本地 JSON 可读性检查后立即返回 `candidate_ready`；普通返回只报告 bundle status、按 sequence 排列的 candidate JSON 绝对路径和不超过 240 字的摘要。自然语言完成声明不能替代 candidate artifact，result 由 coordinator 生成。
+- 处理完 unit 内全部 task 后只返回一次。普通返回只报告 unit status、按 sequence 排列的 candidate JSON 绝对路径、各 task lint 状态和不超过 240 字的摘要；不得逐幕请求 coordinator followup。coordinator 随后 batch observe/materialize，各 task 的 `result.json` 仍由 coordinator 确定性生成并重验。30 秒 child tail grace 仅供宿主完成事件丢失等异常恢复使用，不进入候选齐全且 child 正常返回的关键路径。自然语言完成声明不能替代 candidate artifact、lint 或 result。

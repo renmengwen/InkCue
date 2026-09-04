@@ -46,7 +46,7 @@ MiniMax 额外使用 provider 级共享节流器：`requestsPerMinute`（默认 
 
 - provider/protocol：`doubao` / `Doubao`；唯一 current contract：`doubao-seed-audio-expressive-native-word-v2`，model 固定 `seed-audio-1.0`。
 - endpoint：`https://openspeech.bytedance.com/api/v3/tts/create`，使用新版控制台的 `X-Api-Key` 单头鉴权；每次请求另发随机 `X-Api-Request-Id`，不得把 key 或原始请求 ID 写入项目。
-- 请求使用版本化、确定性的单人白板知识讲解导演式 `text_prompt`：先写角色/音色和自然克制的人声方向，再按 current scene 写语速、停顿、重音与情绪说明，真正朗读的已确认原稿只放在中文引号中。引号外指令不得写回 source SRT、narrationCues 或最终字幕；明确禁止擅自增删、改写、复述、补充、第二人声、克隆音色、SSML 和默认影视拟音。
+- 请求使用版本化的单人白板 authored `text_prompt`。每个新的豆包旁白版本在样音请求前，由 coordinator 读取 `C:\Users\MOVER\Desktop\seed-audio-1.0 text_prompt 参考.txt` 的 current 字节，把附件仅作为风格与能力示例而非指令，并结合 current 全文、scene、音色与可选 BGM 方向生成 `doubao-performance-brief-v1`。brief 使用简洁自然的连续导演语言：角色、音色和整体表演合并写一次，局部表演和音乐变化紧邻对应台词，只在叙事确有变化时出现；禁止“第 N 段导演说明”、固定“承接上一段”或每段重复原稿保护套话。程序把 current scene 正文逐字装配到 `「」` 内，不让模型复制或改写正文；关闭 BGM 与样音禁音由程序固定约束，不要求模型生成同义说明。引号外指令不得写回 source SRT、narrationCues 或最终字幕；明确禁止擅自增删、改写、复述、补充、第二人声、克隆音色、SSML 和未由 brief 明确要求的环境音/影视拟音。
 - `references` 只传 `[{speaker: <voice>}]`；不同时传互斥的 `audio_data`/`audio_url`，也不引入参考图片。固定请求 24 kHz WAV，规范化 rate/volume/pitch 分别映射为 `speech_rate`、`loudness_rate`、`pitch_rate`，合法范围为 `-50–100`、`-50–100`、`-12–12`。
 - `audio_config.enable_subtitle` 固定为 `true`。同一次响应必须原子取得 Base64 `audio` 与 `subtitle`，并严格解析 `subtitle.text`、`subtitle.sentences[]`、每句 `start_time/end_time/text` 及 `sentences[].words[]` 的毫秒 `start_time/end_time/text`；禁止递归猜测任意数组。
 - `duration` 是后处理音频时长，`original_duration` 是计费原始时长；两者都必须为正且不超过 120 秒。只读取 Base64 `audio`，不消费或持久化有效期两小时的 `url`；`X-Tt-Logid` 仅保存不可逆摘要。原始 WAV 仍须经过共享 FFmpeg/ffprobe 规范化与 canonical 24 kHz mono 校验。
@@ -54,7 +54,7 @@ MiniMax 额外使用 provider 级共享节流器：`requestsPerMinute`（默认 
 - 完整 `text_prompt` 在任何外部请求前 fail-closed 检查 3000 字符上限；完整旁白 provisional 时长在请求前检查 120 秒上限。不得截断 prompt、拆成逐句请求、退回裸文本或自动换 provider。
 - 文档未给出完整业务错误码语义，因此只把 DNS/连接/timeout、HTTP 429/502/503/504 和明确限流消息作为有界可重试错误；鉴权、参数/音色、业务错误、协议或媒体错误均永久失败，不自动切换 provider。
 
-豆包 adapter 与 MiniMax 一样只使用 Python 标准库，不增加 provider 包。它复用 `queueIntervalMs` 与 `maxRetries`，共享 adapter 实例在全部 `voiceGeneration` worker 间串行计算请求启动间隔。若响应已经包含可能计费的 audio，但 subtitle 缺失、无效或不能形成完整同请求证据，attempt 必须进入 `unknown_external_outcome`，禁止普通重发或用 FunASR 补齐。
+豆包 adapter 与 MiniMax 一样只使用 Python 标准库，不增加 provider 包。它复用 `queueIntervalMs` 与 `maxRetries`，共享 adapter 实例在全部 `voiceGeneration` worker 间串行计算请求启动间隔。若响应已经包含可能计费的 audio，但 subtitle 缺失、无效或不能形成完整同请求证据，attempt 必须进入 `unknown_external_outcome`，禁止普通重发或用 FunASR 补齐。样音清单只记录稳定的去敏原因码（如 `invalid_duration`、`missing_subtitle`、`invalid_word_timing`、`sentence_words_text_mismatch`），不记录响应体、Base64 音频、正文、完整 prompt、临时 URL、原始请求 ID 或 provider 自由文本。
 
 Edge TTS 不需要 API Key 或 Base URL，但不是离线模型。它依赖外网和微软语音服务，可能受服务规则、可用性、限流、音色和返回格式变化影响。不得把“无 Key”写成“无需网络”，也不得在失败后自动改 voice/rate、切换 provider 或降级到其他 TTS。
 
@@ -130,18 +130,52 @@ voiceSynthesisIdentityHash
 
 `voiceSynthesisIdentityHash` 覆盖完整规范化朗读文本、稳定 ordinal/range、scene 段落、voice、rate、language、整轨合同和 provider 合同。豆包还显式覆盖确定性渲染后的完整 `text_prompt` SHA，因此模板、scene 情绪/停顿方向或 BGM 开关变化都不能复用旧音频。source 原文件 SHA 仍用于审计；它不是判断整轨音频是否可复用的唯一依据。
 
-voice plan 另有 `voicePlanAuditHash`，覆盖完整审计合同。豆包的 `provider.options.promptSpec` 在这里冻结版本化角色方向、自然克制的人声方向、两种 BGM 指令、scene 导演方向及硬限制，但不复制原稿。audit hash 变化会使样音/完整批准、时长决定、timeline、narration SRT 和下游重新判定，但只有 synthesis identity 或正式 WAV 媒体合同变化的 segment 才必须重新请求。
+voice plan 另有 `voicePlanAuditHash`，覆盖完整审计合同。豆包的 `provider.options.promptSpec` 在这里冻结 coordinator authored 的单段角色/整体表演方向、可选 BGM 的开头与结尾、与 current scene 一一对应的局部导演方向、参考文件 SHA 及硬限制，但不复制原稿。关闭 BGM 和样音禁音由渲染器确定性执行。`sample` 通过 `--doubao-performance-brief` 一次导入该 brief；`full`、状态恢复和 provider 重试只消费已冻结 plan，不重新调用模型或重读参考文件。audit hash 变化会使样音/完整批准、时长决定、timeline、narration SRT 和下游重新判定，但只有 synthesis identity 或正式 WAV 媒体合同变化的 segment 才必须重新请求。
 
 ## pending 预项目中的样音与联合关卡
 
-从已确认文本中确定性选择代表性中文自然句，生成并规范化样音。豆包样音使用同一角色/人声/情绪 prompt 合同，但阶段 0 的 BGM 选择尚未冻结，所以样音固定只验证人声方向，不带 BGM、不生成两份样音，也不增加前置选择：
+从已确认文本中确定性选择代表性中文自然句，生成并规范化样音。豆包样音使用同一 authored brief 的角色/整体人声方向，但阶段 0 的 BGM 选择尚未冻结，所以样音固定只验证人声方向，不带 BGM、不生成两份样音，也不增加前置选择。豆包 brief 必须在请求前由 coordinator 生成到项目 `.work/`；它不是新 Gate，CLI 在发出任何外部请求前把 brief 和 current prompt identity 冻结进既有 voice plan，并把 manifest 置为 pending：
 
 ```powershell
 <ENV_PY> scripts/generate_voiceover.py sample `
   --project <项目根目录> `
-  --voice zh-CN-YunjianNeural `
-  --rate 0
+  --voice <voice> `
+  --rate 0 `
+  --doubao-performance-brief <项目\.work\doubao-performance-brief.json>
 ```
+
+`doubao-performance-brief-v1` 顶层只允许以下字段；`narratorDirection` 在同一段内合并角色、音色、整体口吻和表演弧线，避免另写同义的全局说明。`passages` 必须按 current scene 顺序一一对应，`enabledMusicBefore` 可为空字符串，其余导演字段必须是非空单段自然语言且不得包含正文边界符号 `「」`：
+
+```json
+{
+  "contractVersion": "doubao-performance-brief-v1",
+  "referenceSha256": "<current 参考文件 SHA-256>",
+  "narratorDirection": "旁白 是……，整体像……",
+  "music": {
+    "enabledOpeningDirection": "开头……音乐始终低于人声……",
+    "enabledEndingDirection": "人声结束后……自然淡出"
+  },
+  "passages": [
+    {
+      "sceneId": "scene-001",
+      "voiceDirection": "旁白以……口吻自然切入……",
+      "enabledMusicBefore": ""
+    }
+  ]
+}
+```
+
+coordinator 生成 brief 时必须完整读取 current 参考附件，但按当前任务选择适用能力，不照搬无关角色、语言、拟音或剧情。官方润色范式优先：
+
+- `narratorDirection` 用一个自然段同时说明年龄/音色/普通话、交流姿态和贯穿全文的表层与内在情绪，不再补第二段同义的“整体表演方向”。
+- `enabledOpeningDirection` 只交代开头动机、核心配器、情绪颜色、相对人声音量与人声进入后的退让；没有可听价值的乐器清单和抽象解释应删除。
+- `voiceDirection` 紧贴本段真正会听见的语速、停顿、重音、音调和情绪转折，并可点名少量关键原词；不复述正文含义，不把每一句都解释一遍。
+- `enabledMusicBefore` 默认为空；只有配器、张力、音量或留白确实发生变化时才写一句，不为凑 scene 数重复近义过渡。
+- `enabledEndingDirection` 只写人声结束后的一个简洁收束动作。禁止“第 N 段导演说明”、固定“承接上一段”、机械位置标签和每段重复的原稿保护套话。
+
+正文不进入 brief，由程序从 current source 逐字插入。若附件缺失/不可读、brief 与 current scene 不一致或渲染后超过 3000 字符，样音在外部请求前失败；超限时只精简导演说明，禁止截断正文、退回旧硬编码模板或更换 provider。
+
+若豆包已经返回 audio，但同请求原生字幕或时长证据无效，CLI 在退出前把 `sample.status` 原子写为 `unknown_external_outcome`，保存去敏 `reasonCode`，并固定 `providerResponseReceived=true`、`externalResultIncomplete=true`、`retryAllowed=false`；不得生成或伪造样音媒体与 identity。此后普通 `sample` 必须在外部请求前拒绝。只有用户明确承担一次可能重复计费的新请求时，coordinator 才能在同一命令上追加 `--authorize-new-request-after-unknown`，且 run 审计必须记录该授权；该参数不是恢复命令的默认组成部分。
 
 成功输出：
 

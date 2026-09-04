@@ -16,13 +16,13 @@ from PIL import Image, UnidentifiedImageError
 from cover_review import CoverReviewError, load_cover_review
 
 from agent_task_contract import (
-    RESULT_CONTRACT_VERSION,
     ROLE_CONTRACT_VERSION,
     TASK_CONTRACT_VERSION,
     AgentContractError,
     TrustedTaskContext,
     ValidatedAgentResult,
     ValidatedAgentTask,
+    build_coordinator_result_payload,
     build_prepared_task_descriptor,
     sha256_file as agent_sha256_file,
     validate_agent_result,
@@ -45,8 +45,9 @@ VISUAL_REVIEW_ROLE_CONTRACT = """# visualReview frozen role contract
 
 - 只读 task.json 列出的 generation plan、generation manifest 与 current PNG。
 - 必须真实查看全部图片并保持跨幕人物、配色、纸张和构图的全局视野。
-- 只写 findings.json/result.json；不得修改图片、调用 provider、写 manifest 或批准。
-- findings 必须按 generation plan scene 顺序；技术 validated 不能替代用户逐图确认。
+- 只写 findings.json；不得写 result.json、修改图片、调用 provider、写 manifest 或批准。result 由 coordinator 确定性生成。
+- findings.json 顶层严格使用 whiteboard-visual-review-findings-v1：只含 contractVersion、sceneOrder、findings、approvalWritten=false；每条 finding 必须带冻结 sceneOrder 内的 sceneId 和 message/summary，同一幕最多一条并按 scene 顺序。
+- 写完 findings.json 后立即以 candidate_ready 返回；不得搜索源码、测试、examples、其他 reference 或 CLI help，也不得自行运行 coordinator validator。
 - 按 generation plan 的 constraints.forbidText 核对文字策略：false 时不得因图片含文字而判错，
   只检查语义所需文字是否清晰、正确并避免乱码或意外文字；true 时才检查 scene 源图禁字。
 - 若 task.inputs 包含封面，封面是独立 review 图片，允许文字；封面对应的
@@ -258,7 +259,6 @@ def create_visual_review_task(
         "requiredCapabilities": ["readFiles", "viewImage", "writeCandidateJson"],
         "allowedOutputs": [
             context.relative_posix(findings),
-            context.relative_posix(context.result_json),
         ],
         "formalWritesAllowed": False,
         "approvalWritesAllowed": False,
@@ -307,7 +307,10 @@ def prepare_visual_review_dispatch(
     )
     audit.update(
         {
-            "preparedTask": build_prepared_task_descriptor(task),
+            "preparedTask": build_prepared_task_descriptor(
+                task,
+                result_writer="coordinator",
+            ),
         }
     )
     return task, audit
@@ -342,29 +345,12 @@ def record_visual_review_fallback(
         "approvalWritten": False,
     }
     write_json_atomic(findings_path, finding_document)
-    outputs = [
-        {
-            "file": task.context.relative_posix(findings_path),
-            "sha256": agent_sha256_file(findings_path),
-        }
-    ]
-    result = {
-        "contractVersion": RESULT_CONTRACT_VERSION,
-        "taskId": task.data["taskId"],
-        "taskKind": task.data["taskKind"],
-        "scopeKind": task.data["scopeKind"],
-        "attempt": task.data["attempt"],
-        "taskSha256": task.task_sha256,
-        "roleContractVersion": task.data["roleContractVersion"],
-        "roleContractSha256": task.data["roleContractSha256"],
-        "sequence": task.data["sequence"],
-        "status": "completed",
-        "inspectedInputs": list(task.data["inputs"]),
-        "outputs": outputs,
-        "findings": normalized_findings,
-        "warnings": warnings or [],
-        "error": None,
-    }
+    result = build_coordinator_result_payload(
+        task,
+        output_files=[findings_path],
+        findings=normalized_findings,
+        warnings=warnings or [],
+    )
     write_json_atomic(task.context.result_json, result)
     return validate_agent_result(
         task.context.result_json,

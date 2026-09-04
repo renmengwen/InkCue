@@ -143,6 +143,58 @@ def _require_fields(
         raise ContentSourceError(f"{label} 缺少字段: {', '.join(sorted(missing))}")
 
 
+def _collect_field_structure_errors(
+    value: Any,
+    allowed: set[str],
+    *,
+    label: str,
+    optional: set[str] | frozenset[str] = frozenset(),
+) -> list[str]:
+    """收集单个对象的结构错误，不让 unknown 遮住 missing。"""
+    if not isinstance(value, Mapping):
+        return [f"{label} 必须是对象"]
+    unknown = set(value) - allowed
+    missing = (allowed - set(value)) - set(optional)
+    errors: list[str] = []
+    if unknown:
+        errors.append(f"{label} 含未知字段: {', '.join(sorted(unknown))}")
+    if missing:
+        errors.append(f"{label} 缺少字段: {', '.join(sorted(missing))}")
+    return errors
+
+
+def _collect_content_draft_structure_errors(value: Any) -> list[str]:
+    """在值校验前一次性收集 content draft 的全部对象形状错误。"""
+    errors = _collect_field_structure_errors(
+        value,
+        _TOP_LEVEL_FIELDS,
+        label="content draft",
+        optional=_OPTIONAL_LEGACY_TOP_LEVEL_FIELDS,
+    )
+    if not isinstance(value, Mapping):
+        return errors
+
+    for collection_name, fields in (
+        ("narrationCues", _CUE_FIELDS),
+        ("scenes", _SCENE_FIELDS),
+    ):
+        if collection_name not in value:
+            continue
+        collection = value.get(collection_name)
+        if not isinstance(collection, list):
+            errors.append(f"{collection_name} 必须是数组")
+            continue
+        for index, item in enumerate(collection):
+            errors.extend(
+                _collect_field_structure_errors(
+                    item,
+                    fields,
+                    label=f"{collection_name}[{index}]",
+                )
+            )
+    return errors
+
+
 def _normalise_target_seconds(value: Any) -> int | float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         raise ContentSourceError("targetDurationSeconds 必须是有限数字且不能是布尔值")
@@ -160,14 +212,11 @@ def _semantic_skeleton(text: str) -> str:
 
 def validate_content_draft(value: Any) -> dict[str, Any]:
     """返回规范化且完全脱离输入对象的 content-draft-v1。"""
-    if not isinstance(value, Mapping):
-        raise ContentSourceError("content draft 顶层必须是 JSON 对象")
-    _require_fields(
-        value,
-        _TOP_LEVEL_FIELDS,
-        label="content draft",
-        optional=_OPTIONAL_LEGACY_TOP_LEVEL_FIELDS,
-    )
+    structure_errors = _collect_content_draft_structure_errors(value)
+    if structure_errors:
+        raise ContentSourceError(
+            "content draft 结构错误: " + "; ".join(structure_errors)
+        )
     if value.get("schemaVersion") != 1:
         raise ContentSourceError("content draft schemaVersion 必须为 1")
     if value.get("contractVersion") != CONTENT_DRAFT_CONTRACT_VERSION:

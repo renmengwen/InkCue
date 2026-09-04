@@ -21,6 +21,8 @@ from typing import Any, Mapping
 
 try:  # direct CLI execution
     from agent_task_contract import (
+        CONTENT_DRAFT_CANDIDATE_SCHEMA,
+        CONTENT_DRAFT_CANDIDATE_SKELETON,
         ROLE_CONTRACT_VERSION,
         TASK_CONTRACT_VERSION,
         TrustedTaskContext,
@@ -43,9 +45,15 @@ try:  # direct CLI execution
         VisualStylePresetError,
         resolve_visual_style_preset,
     )
+    from visual_style_recommendation import (
+        VisualStyleRecommendationError,
+        recommend_visual_style_presets,
+    )
     from srt_timeline import SrtValidationError, group_scenes, parse_srt
 except ImportError:  # imported as scripts.prepare_draft_agent_task
     from scripts.agent_task_contract import (
+        CONTENT_DRAFT_CANDIDATE_SCHEMA,
+        CONTENT_DRAFT_CANDIDATE_SKELETON,
         ROLE_CONTRACT_VERSION,
         TASK_CONTRACT_VERSION,
         TrustedTaskContext,
@@ -67,6 +75,10 @@ except ImportError:  # imported as scripts.prepare_draft_agent_task
     from scripts.visual_style_presets import (
         VisualStylePresetError,
         resolve_visual_style_preset,
+    )
+    from scripts.visual_style_recommendation import (
+        VisualStyleRecommendationError,
+        recommend_visual_style_presets,
     )
     from scripts.srt_timeline import SrtValidationError, group_scenes, parse_srt
 
@@ -110,16 +122,15 @@ CONTENT_ROLE_CONTRACT = """# contentDrafting frozen role contract
 - topic 只允许 generate；text 只允许 preserve/polish；voiceoverMode 必须由 skill 根目录
   config/voice-providers.local.json 的 activeProvider 派生，不能由用户或调用方选择。
 - text+preserve 不改写语义；polish 不改变事实、数字、人物、结论、因果强度或责任主体。
-- 每个 imagePrompt 必须自含暖米黄纸张、线稿、配色、主体、构图、留白和禁水印要求，不引用前图；语义需要的画内文字可以出现，但须写明准确内容并避免乱码或意外文字。
-- 每个 imagePrompt 都必须体现 task 中冻结的 promptRecipe，同时继续保持暖米黄纸面和既有 stream renderer 可消费性；global 配方不能替代单幕自包含要求。
+- 每个 imagePrompt 必须自含当前 `warm-paper-stream-v1` 共享的 `#F5EBD7` 画布 surface、冻结 promptRecipe 的线条/造型/配色/纹理语言、主体、构图、留白和禁水印要求，不引用前图；不得额外套用默认“极简黑色白板线稿”去覆盖所选模板。语义需要的画内文字可以出现，但须写明准确内容并避免乱码或意外文字。
+- 每个 imagePrompt 都必须以 task 中冻结的 promptRecipe 为视觉权威，同时保持当前 renderer 的共享画布与流式揭示可消费性；global 配方不能替代单幕自包含要求。
 - cue 到 scene 按视觉状态变化拆分，不按具体名词类别机械拆分；允许通过增加 scene 降低单图叙事负担，但不得预设固定场景数量。
 - 每幕只表达一个核心视觉命题；当语义包含多个可依次呈现的状态或主体时，imagePrompt 应组织 2–3 个可独立揭示的视觉区域。只有不可分割的连续主体才合并，不设固定 scene 数量。
 - imagePrompt 应明确左到右或上到下的视觉阅读方向（只作为静态构图顺序，不是绘制元数据），为每个区域指定完整主体和真实、连续的暖米黄纸面留白；不以漫画格强行分区，语义需要的编号、短标签或标题可以保留。
 - 不得用跨区域的连续背景、共同底面、道路、长线、箭头、光束、河流、山脉或其他贯穿结构把区域连接起来；空间独立区域优先保持不遮挡，但局部接近不等于必须合并。
 - 若多个概念在视觉上确实必须组成不可分割的连续构图，则合并为一个视觉簇；不得为了凑数量强拆，也不得因为担心区域交叠把所有内容强行合并为一个簇。
-- 只写 allowedOutputs 中的 candidate.content-draft.json 与 result.json；不得运行 prepare_source.py、创建项目、调用 provider、写正式文件或批准。
-- result.json 使用 whiteboard-agent-result-v1，完整复制 task identity、taskSha256、role SHA、sequence 与全部 inputs 到 inspectedInputs；completed 时 outputs 列出候选相对路径及 SHA，findings/warnings 为数组，error 为 null。
-- 写完候选后把候选 UTF-8 JSON 送入 `python -B scripts/validate_content_draft.py --stdin`；不得使用仅限已确认输入的 `--draft`，只有只读校验退出码 0 才能 completed。
+- 只写 allowedOutputs 中的 candidate.content-draft.json；不得写 result.json、运行 prepare_source.py、创建项目、调用 provider、写正式文件或批准。
+- 写完候选后立即以 candidate_ready 返回；不得搜索源码、测试、examples、其他 reference 或 CLI help，也不得自行运行 coordinator validator。preparedTask.candidateValidationArgv 与 resultMaterializeArgv 由 coordinator 依次执行。
 """
 
 CONTENT_REVISION_ROLE_CONTRACT = """# contentDrafting frozen revision role contract
@@ -130,16 +141,15 @@ CONTENT_REVISION_ROLE_CONTRACT = """# contentDrafting frozen revision role contr
 - 输出完整的 whiteboard-content-draft-v1，不输出 patch；未被修改要求触及的事实、数字、人物、结论、因果强度、责任主体、cue/scene 内容与图片约束应保持不变。
 - globalInstructions、cueChanges、sceneChanges 是要执行的修改；mustPreserve 是修改时必须继续满足的保护条件。
 - cue/scene 可因修改需要重新编号或调整映射，但最终仍须满足连续 cue、连续 scene 和每幕至少一个 cue 的完整合同。
-- 每个 imagePrompt 必须自含暖米黄纸张、线稿、配色、主体、构图、留白和禁水印要求，不引用前图；语义需要的画内文字可以出现，但须写明准确内容并避免乱码或意外文字。
-- 每个 imagePrompt 都必须体现 task 中冻结的 promptRecipe，同时继续保持暖米黄纸面和既有 stream renderer 可消费性；global 配方不能替代单幕自包含要求。
+- 每个 imagePrompt 必须自含当前 `warm-paper-stream-v1` 共享的 `#F5EBD7` 画布 surface、冻结 promptRecipe 的线条/造型/配色/纹理语言、主体、构图、留白和禁水印要求，不引用前图；不得额外套用默认“极简黑色白板线稿”去覆盖所选模板。语义需要的画内文字可以出现，但须写明准确内容并避免乱码或意外文字。
+- 每个 imagePrompt 都必须以 task 中冻结的 promptRecipe 为视觉权威，同时保持当前 renderer 的共享画布与流式揭示可消费性；global 配方不能替代单幕自包含要求。
 - cue 到 scene 按视觉状态变化拆分，不按具体名词类别机械拆分；允许通过增加 scene 降低单图叙事负担，但不得预设固定场景数量。
 - 每幕只表达一个核心视觉命题；当语义包含多个可依次呈现的状态或主体时，imagePrompt 应组织 2–3 个可独立揭示的视觉区域。只有不可分割的连续主体才合并，不设固定 scene 数量。
 - imagePrompt 应明确左到右或上到下的视觉阅读方向（只作为静态构图顺序，不是绘制元数据），为每个区域指定完整主体和真实、连续的暖米黄纸面留白；不以漫画格强行分区，语义需要的编号、短标签或标题可以保留。
 - 不得用跨区域的连续背景、共同底面、道路、长线、箭头、光束、河流、山脉或其他贯穿结构把区域连接起来；空间独立区域优先保持不遮挡，但局部接近不等于必须合并。
 - 若多个概念在视觉上确实必须组成不可分割的连续构图，则合并为一个视觉簇；不得为了凑数量强拆，也不得因为担心区域交叠把所有内容强行合并为一个簇。
-- 只写 allowedOutputs 中的 candidate.content-draft.json 与 result.json；不得覆盖旧 attempt、运行 prepare_source.py、创建项目、调用 provider、写正式文件或批准。
-- result.json 使用 whiteboard-agent-result-v1，完整复制 task identity、taskSha256、role SHA、sequence 与全部 inputs 到 inspectedInputs；completed 时 outputs 列出候选相对路径及 SHA，findings/warnings 为数组，error 为 null。
-- 写完候选后把候选 UTF-8 JSON 送入 `python -B scripts/validate_content_draft.py --stdin`；不得使用仅限已确认输入的 `--draft`，只有只读校验退出码 0 才能 completed。
+- 只写 allowedOutputs 中的 candidate.content-draft.json；不得写 result.json、覆盖旧 attempt、运行 prepare_source.py、创建项目、调用 provider、写正式文件或批准。
+- 写完候选后立即以 candidate_ready 返回；不得搜索源码、测试、examples、其他 reference 或 CLI help，也不得自行运行 coordinator validator。preparedTask.candidateValidationArgv 与 resultMaterializeArgv 由 coordinator 依次执行。
 """
 
 STORYBOARD_ROLE_CONTRACT = """# storyboardPlanning frozen role contract
@@ -149,16 +159,41 @@ STORYBOARD_ROLE_CONTRACT = """# storyboardPlanning frozen role contract
 - task.json 已冻结具体 visualStylePreset、显示名、完整 promptRecipe 与配方 SHA；不得输出 auto，也不得自行改选模板。
 - candidate 顶层必须写入相同的 visualStylePreset、visualStyleDisplayName、visualStylePromptRecipeSha256，并把冻结的 promptRecipe 原样写入 globalPrompt。
 - scenes 必须按 parsed-srt 顺序覆盖全部 cue；每幕包含 sceneId、name、cueRange、sceneDurationMs、outputFile、prompt、coreIdea、visualSubject。
-- prompt 必须是可独立生图的暖米黄纸张白板线稿提示词并禁止供应商水印；语义需要的画内文字可以出现，但须写明准确内容并避免乱码或意外文字；不得使用 imagePrompt 或 sourceCueRange 字段。
-- 每个 prompt 都必须体现 task 中冻结的模板配方，同时继续保持暖米黄纸面、每幕自包含和既有 stream renderer 可消费性；globalPrompt 不能替代单幕自包含要求。
+- prompt 必须是可独立生图的提示词，自含当前 `warm-paper-stream-v1` 共享的 `#F5EBD7` 画布 surface，并以 task 冻结 promptRecipe 的线条/造型/配色/纹理语言为视觉权威；不得额外套用默认“极简黑色白板线稿”去覆盖所选模板。必须禁止供应商水印；语义需要的画内文字可以出现，但须写明准确内容并避免乱码或意外文字；不得使用 imagePrompt 或 sourceCueRange 字段。
+- 每个 prompt 都必须保持当前 renderer 的共享画布、每幕自包含和流式揭示可消费性；globalPrompt 不能替代单幕自包含要求。
 - cue 到 scene 按视觉状态变化拆分，不按具体名词类别机械拆分；允许通过增加 scene 降低单图叙事负担，但不得预设固定场景数量。
 - 每幕只表达一个核心视觉命题；当语义包含多个可依次呈现的状态或主体时，prompt 应组织 2–3 个可独立揭示的视觉区域。只有不可分割的连续主体才合并，不设固定 scene 数量。
 - prompt 应明确左到右或上到下的视觉阅读方向（只作为静态构图顺序，不是绘制元数据），为每个区域指定完整主体和真实、连续的暖米黄纸面留白；不以漫画格强行分区，语义需要的编号、短标签或标题可以保留。
 - 不得用跨区域的连续背景、共同底面、道路、长线、箭头、光束、河流、山脉或其他贯穿结构把区域连接起来；空间独立区域优先保持不遮挡，但局部接近不等于必须合并。
 - 若多个概念在视觉上确实必须组成不可分割的连续构图，则合并为一个视觉簇；不得为了凑数量强拆，也不得因为担心区域交叠把所有内容强行合并为一个簇。
-- 只写 allowedOutputs 中的 candidate.generation-plan.json 与 result.json；不得修改 SRT、调用 provider、写策略批准或正式文件。
-- result.json 使用 whiteboard-agent-result-v1，完整复制 task identity、taskSha256、role SHA、sequence 与全部 inputs 到 inspectedInputs；completed 时 outputs 列出候选相对路径及 SHA，findings/warnings 为数组，error 为 null。
+- 只写 allowedOutputs 中的 candidate.generation-plan.json；不得写 result.json、修改 SRT、调用 provider、写策略批准或正式文件。
+- 写完候选后立即以 candidate_ready 返回；不得搜索源码、测试、examples、其他 reference 或 CLI help，也不得自行运行 coordinator validator。preparedTask.candidateValidationArgv 与 resultMaterializeArgv 由 coordinator 依次执行。
 """
+
+_CONTENT_CANDIDATE_SCHEMA_JSON = json.dumps(
+    CONTENT_DRAFT_CANDIDATE_SCHEMA,
+    ensure_ascii=False,
+    separators=(",", ":"),
+)
+CONTENT_ROLE_CONTRACT += (
+    f"\nCANDIDATE_SCHEMA_JSON={_CONTENT_CANDIDATE_SCHEMA_JSON}\n"
+)
+CONTENT_REVISION_ROLE_CONTRACT += (
+    f"\nCANDIDATE_SCHEMA_JSON={_CONTENT_CANDIDATE_SCHEMA_JSON}\n"
+)
+_CONTENT_CANDIDATE_SKELETON_JSON = json.dumps(
+    CONTENT_DRAFT_CANDIDATE_SKELETON,
+    ensure_ascii=False,
+    separators=(",", ":"),
+)
+CONTENT_ROLE_CONTRACT += (
+    f"CANDIDATE_SKELETON_JSON={_CONTENT_CANDIDATE_SKELETON_JSON}\n"
+    "- candidateSkeleton 是待填充骨架；写 candidate 前必须替换其中所有 null/空字符串占位。\n"
+)
+CONTENT_REVISION_ROLE_CONTRACT += (
+    f"CANDIDATE_SKELETON_JSON={_CONTENT_CANDIDATE_SKELETON_JSON}\n"
+    "- candidateSkeleton 是待填充骨架；写 candidate 前必须替换其中所有 null/空字符串占位。\n"
+)
 
 
 class PrepareError(ValueError):
@@ -298,6 +333,84 @@ def validate_content_input(value: Any) -> dict[str, Any]:
         "voiceoverMode": active_mode,
         "visualStylePreset": visual_style.id,
     }
+
+
+def _sanitise_draft_label(value: Any) -> str:
+    if not isinstance(value, str):
+        raise PrepareError("new draft label 必须是字符串")
+    label = unicodedata.normalize("NFKC", value).strip()
+    label = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", label)
+    label = re.sub(r"\s+", "-", label).strip(". -")[:64].rstrip(". -")
+    if not label:
+        raise PrepareError("new draft label 清理后为空")
+    return label
+
+
+def _allocate_new_draft_root(workspace_root: Path, label: str) -> Path:
+    drafts_root = (workspace_root / "drafts").resolve(strict=False)
+    drafts_root.mkdir(parents=True, exist_ok=True)
+    safe_label = _sanitise_draft_label(label)
+    for _ in range(16):
+        candidate = drafts_root / f"{safe_label}-{uuid.uuid4().hex[:8]}"
+        try:
+            candidate.mkdir(exist_ok=False)
+            return candidate.resolve(strict=True)
+        except FileExistsError:
+            continue
+    raise PrepareError("无法分配唯一 draft-root", reason_code="attempt_conflict")
+
+
+def _build_fast_content_input(
+    args: argparse.Namespace,
+) -> tuple[dict[str, Any], str, list[dict[str, object]]]:
+    topic_arg = getattr(args, "topic", None)
+    body_file_arg = getattr(args, "body_file", None)
+    if (topic_arg is None) == (body_file_arg is None):
+        raise PrepareError("fast content input 必须在 --topic 与 --body-file 中二选一")
+    if body_file_arg is not None:
+        try:
+            body_path = Path(body_file_arg).resolve(strict=True)
+            if not body_path.is_file():
+                raise OSError("body-file 不是普通文件")
+            body = body_path.read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeError) as exc:
+            raise PrepareError(
+                "body-file 不可读或不是 UTF-8",
+                reason_code="input_unreadable",
+            ) from exc
+        mode, topic, content = "text", None, body
+    else:
+        mode, topic, body, content = "topic", topic_arg, None, topic_arg
+
+    explicit_preset = getattr(args, "visual_style_preset", None)
+    try:
+        if explicit_preset is not None:
+            selected = resolve_visual_style_preset(explicit_preset)
+            basis = "user_explicit"
+            recommendations: list[dict[str, object]] = []
+        else:
+            ranked = recommend_visual_style_presets(str(content), limit=3)
+            selected = resolve_visual_style_preset(ranked[0].preset_id)
+            basis = "deterministic_recommendation"
+            recommendations = [item.to_dict() for item in ranked]
+        normalised = validate_content_input(
+            {
+                "schemaVersion": 1,
+                "contractVersion": CONTENT_INPUT_CONTRACT_VERSION,
+                "inputMode": mode,
+                "topic": topic,
+                "body": body,
+                "rewritePolicy": getattr(args, "rewrite_policy", None),
+                "targetDurationSeconds": getattr(args, "target_sec", None),
+                "visualStylePreset": selected.id,
+            }
+        )
+    except (PrepareError, VisualStylePresetError, VisualStyleRecommendationError) as exc:
+        raise PrepareError(
+            "fast content input 无效",
+            reason_code="content_input_invalid",
+        ) from exc
+    return normalised, basis, recommendations
 
 
 def _normalise_revision_text(value: Any, *, label: str) -> str:
@@ -540,28 +653,33 @@ def _load_revision_sources(
 def _prepare_input(
     args: argparse.Namespace,
     draft_root: Path,
+    *,
+    managed_content_input: Mapping[str, Any] | None = None,
 ) -> tuple[str, Path, dict[str, str | None], str, dict[str, str]]:
     if args.role == "contentDrafting":
         target = draft_root / "content-input.json"
-        try:
-            source = Path(args.content_input).resolve(strict=True)
-        except OSError as exc:
-            raise PrepareError(
-                "content input 不可读",
-                reason_code="input_unreadable",
-            ) from exc
-        if _managed_path_conflicts(source, target):
-            raise PrepareError(
-                "content input 与 managed content-input.json 冲突",
-                reason_code="managed_input_path_conflict",
-            )
-        try:
-            normalised = validate_content_input(_read_json(source))
-        except PrepareError as exc:
-            raise PrepareError(
-                "content input 无效",
-                reason_code="content_input_invalid",
-            ) from exc
+        if managed_content_input is not None:
+            normalised = dict(managed_content_input)
+        else:
+            try:
+                source = Path(args.content_input).resolve(strict=True)
+            except OSError as exc:
+                raise PrepareError(
+                    "content input 不可读",
+                    reason_code="input_unreadable",
+                ) from exc
+            if _managed_path_conflicts(source, target):
+                raise PrepareError(
+                    "content input 与 managed content-input.json 冲突",
+                    reason_code="managed_input_path_conflict",
+                )
+            try:
+                normalised = validate_content_input(_read_json(source))
+            except PrepareError as exc:
+                raise PrepareError(
+                    "content input 无效",
+                    reason_code="content_input_invalid",
+                ) from exc
         _write_once_json(target, normalised)
         sha = sha256_file(target)
         return (
@@ -626,7 +744,21 @@ def prepare_draft_task(args: argparse.Namespace) -> dict[str, Any]:
     prepare_started = time.perf_counter()
     prepare_started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     workspace = load_workspace_config(args.workspace_config)
-    draft_root = Path(args.draft_root).resolve(strict=False)
+    fast_mode = args.role == "contentDrafting" and getattr(args, "new_draft_label", None) is not None
+    fast_content_input: dict[str, Any] | None = None
+    selection_basis: str | None = None
+    recommendations: list[dict[str, object]] = []
+    if fast_mode:
+        requested_workspace = Path(args.workspace).resolve(strict=False)
+        if os.path.normcase(str(requested_workspace)) != os.path.normcase(str(workspace.root)):
+            raise PrepareError(
+                "--workspace 必须与 workspace config 的 workspaceRoot 一致",
+                reason_code="workspace_invalid",
+            )
+        fast_content_input, selection_basis, recommendations = _build_fast_content_input(args)
+        draft_root = _allocate_new_draft_root(workspace.root, args.new_draft_label)
+    else:
+        draft_root = Path(args.draft_root).resolve(strict=False)
     expected_parent = (workspace.root / "drafts").resolve(strict=False)
     if draft_root.parent != expected_parent or not draft_root.name:
         raise PrepareError(
@@ -641,7 +773,7 @@ def prepare_draft_task(args: argparse.Namespace) -> dict[str, Any]:
             reason_code="invalid_arguments",
         )
     if args.role == "contentDrafting":
-        if bool(revision_request_arg) == bool(args.content_input):
+        if not fast_mode and bool(revision_request_arg) == bool(args.content_input):
             raise PrepareError(
                 "contentDrafting 必须在初次输入与修订输入中二选一",
                 reason_code="invalid_arguments",
@@ -685,7 +817,11 @@ def prepare_draft_task(args: argparse.Namespace) -> dict[str, Any]:
             bindings,
             role_contract_text,
             visual_style,
-        ) = _prepare_input(args, draft_root)
+        ) = _prepare_input(
+            args,
+            draft_root,
+            managed_content_input=fast_content_input,
+        )
     task_id = args.task_id or task_id_default
     run_id = args.run_id or ("cd-" if args.role == "contentDrafting" else "sb-") + uuid.uuid4().hex[:12]
     context = TrustedTaskContext(workspace.root, draft_root, "draft", run_id, task_id, args.attempt)
@@ -735,15 +871,22 @@ def prepare_draft_task(args: argparse.Namespace) -> dict[str, Any]:
         "requiredCapabilities": list(HOST_DRAFT_CAPABILITIES),
         "allowedOutputs": [
             context.relative_posix(candidate),
-            context.relative_posix(context.result_json),
         ],
         "formalWritesAllowed": False,
         "approvalWritesAllowed": False,
+        **(
+            {
+                "candidateSchema": CONTENT_DRAFT_CANDIDATE_SCHEMA,
+                "candidateSkeleton": CONTENT_DRAFT_CANDIDATE_SKELETON,
+            }
+            if args.role == "contentDrafting"
+            else {}
+        ),
         **visual_style,
     }
     write_json_atomic(context.task_json, task_data)
     task = validate_agent_task(context.task_json, context, expected_current_bindings=bindings)
-    prepared_task = build_prepared_task_descriptor(task)
+    prepared_task = build_prepared_task_descriptor(task, result_writer="coordinator")
     return {
         "contractVersion": PREPARE_CONTRACT_VERSION,
         "ok": True,
@@ -756,6 +899,15 @@ def prepare_draft_task(args: argparse.Namespace) -> dict[str, Any]:
         "runId": run_id,
         "attempt": args.attempt,
         "configuredAgentConcurrency": workspace.for_role(args.role),
+        **(
+            {
+                "voiceoverMode": fast_content_input["voiceoverMode"],
+                "visualStyleSelectionBasis": selection_basis,
+                "visualStyleRecommendations": recommendations,
+            }
+            if fast_content_input is not None
+            else {}
+        ),
         "visualStylePreset": visual_style["visualStylePreset"],
         "visualStyleDisplayName": visual_style["visualStyleDisplayName"],
         "visualStylePromptRecipeSha256": visual_style[
@@ -770,7 +922,16 @@ def prepare_draft_task(args: argparse.Namespace) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     parser = JsonArgumentParser(description="准备 content/storyboard draft subagent attempt；只准备，不实际 spawn")
     parser.add_argument("role", choices=("contentDrafting", "storyboardPlanning"))
-    parser.add_argument("--draft-root", required=True, help="workspace/drafts/<draft-id>")
+    parser.add_argument("--draft-root", help="workspace/drafts/<draft-id>")
+    parser.add_argument("--workspace", help="fast content 模式显式 workspaceRoot")
+    parser.add_argument("--new-draft-label", help="fast content 模式的新 draft 名称前缀")
+    parser.add_argument("--topic", help="fast content topic 原始文本")
+    parser.add_argument("--body-file", help="fast content UTF-8 正文文件")
+    parser.add_argument(
+        "--rewrite-policy",
+        choices=("generate", "preserve", "polish"),
+        help="fast content 的改写策略",
+    )
     parser.add_argument("--workspace-config", help="工作区配置；默认 config/workspace.local.json")
     parser.add_argument("--run-id", help="稳定 run ID；默认自动生成")
     parser.add_argument("--task-id", help="稳定 task ID；默认按 role 生成")
@@ -792,7 +953,7 @@ def build_parser() -> argparse.ArgumentParser:
             "传统 SRT 省略时使用兼容默认模板"
         ),
     )
-    parser.add_argument("--target-sec", type=float, default=30.0)
+    parser.add_argument("--target-sec", type=float)
     parser.add_argument("--min-sec", type=float, default=25.0)
     parser.add_argument("--max-sec", type=float, default=35.0)
     return parser
@@ -813,28 +974,57 @@ def main(argv: list[str] | None = None) -> int:
                 reason_code="invalid_arguments",
             )
         if args.role == "contentDrafting":
-            initial_mode = bool(args.content_input) and not args.revision_request and not args.base_content_draft
+            fast_fields = (
+                args.workspace,
+                args.new_draft_label,
+                args.topic,
+                args.body_file,
+                args.rewrite_policy,
+            )
+            fast_requested = any(item is not None for item in fast_fields)
+            fast_mode = (
+                fast_requested
+                and args.workspace is not None
+                and args.new_draft_label is not None
+                and (args.topic is None) != (args.body_file is None)
+                and args.rewrite_policy is not None
+                and args.target_sec is not None
+                and args.draft_root is None
+                and not args.content_input
+                and not args.revision_request
+                and not args.base_content_draft
+            )
+            initial_mode = bool(args.content_input) and not args.revision_request and not args.base_content_draft and bool(args.draft_root) and not fast_requested
             revision_mode = (
                 not args.content_input
                 and bool(args.revision_request)
                 and bool(args.base_content_draft)
+                and bool(args.draft_root)
+                and not fast_requested
             )
-            if args.source_srt or not (initial_mode or revision_mode):
+            if args.source_srt or sum((initial_mode, revision_mode, fast_mode)) != 1:
                 raise PrepareError(
-                    "contentDrafting 必须提供 --content-input，或成对提供 "
-                    "--revision-request 与 --base-content-draft",
+                    "contentDrafting 必须提供 legacy input/revision，或完整 fast raw-input 参数",
                     reason_code="invalid_arguments",
                 )
         elif (
             not args.source_srt
+            or not args.draft_root
             or args.content_input
             or args.revision_request
             or args.base_content_draft
+            or args.workspace
+            or args.new_draft_label
+            or args.topic
+            or args.body_file
+            or args.rewrite_policy
         ):
             raise PrepareError(
                 "storyboardPlanning 必须且只能提供 --source-srt",
                 reason_code="invalid_arguments",
             )
+        if args.role == "storyboardPlanning" and args.target_sec is None:
+            args.target_sec = 30.0
         result = prepare_draft_task(args)
     except SystemExit as exc:
         return int(exc.code)

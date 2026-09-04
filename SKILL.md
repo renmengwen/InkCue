@@ -1,237 +1,123 @@
 ---
 name: srt-whiteboard-animation
-description: 将主题、正文或 SRT 制作成暖米黄纸张底、按叙事顺序流式落墨的白板手绘视频；支持传统 SRT 的无旁白/Edge TTS/MiniMax/豆包语音路径，以及经一次内容与制作方案联合确认后派生严格 SRT 的 topic/text 路径。用户要求“把主题/正文/SRT 做成白板手绘视频”“按文案分镜画手绘”“生成带字幕或在线旁白的白板动画”时触发。
+description: 将主题、正文或 SRT 制作成按叙事顺序流式落墨的手绘视频；当前 warm-paper-stream-v1 的六个视觉模板共享暖米黄纸张画布。支持传统 SRT 的无旁白/Edge TTS/MiniMax/豆包语音路径，以及经一次内容与制作方案联合确认后派生严格 SRT 的 topic/text 路径。用户要求“把主题/正文/SRT 做成白板手绘视频”“按文案分镜画手绘”“生成带字幕或在线旁白的白板动画”时触发。
 ---
 
-# SRT 白板动画：路由与不变量
+# SRT 白板动画：入口路由
 
-本文件只负责入口路由、质量 Gate、不可变合同和命令索引；阶段细则以 references 为唯一来源。输出为 1920×1080、60fps 的暖米黄白板动画，所有面向用户的说明、分镜、配置和界面文字使用中文。不得把目录防覆盖、路径校验、candidate/正式文件分开、role 写入边界或普通 fallback 统称为“隔离/安全保护”，应报告真实原因。
+本文件只定义入口路由、不可变边界和按阶段读取的 reference。阶段字段、完整命令、批准句、provider 请求、恢复和验收细节只以对应 reference 为准，不在入口重复。输出为 1920×1080、60fps；当前六个 preset 均兼容 `warm-paper-stream-v1`，因此共享 `#F5EBD7` 暖米黄纸张 surface，但这不是所有未来 renderer/preset 的永久产品定义。具体视觉语言以 generation plan 冻结的 preset `promptRecipe` 为准。面向用户的说明、分镜、配置和界面文字使用中文。
 
-## 输入路由
+## 1. 输入与新建/恢复路由
 
-外部输入固定为 `inputMode = srt | topic | text`：
+| `inputMode` | `rewritePolicy` | `voiceoverMode` 来源 | 首个业务 reference |
+|---|---|---|---|
+| `srt` | 不适用 | 默认读取 active provider；用户明确静音时为 `disabled` | [content-input.md](references/content-input.md) |
+| `topic` | 仅 `generate` | 自动读取 active provider | [phase-0-content.md](references/phase-0-content.md)、[content-input.md](references/content-input.md) |
+| `text` | `preserve | polish` | 自动读取 active provider | [phase-0-content.md](references/phase-0-content.md)、[content-input.md](references/content-input.md) |
 
-| inputMode | rewritePolicy | voiceoverMode 来源 |
-|---|---|---|
-| `srt` | 不适用 | 默认读取 `activeProvider`；明确静音时为 `disabled` |
-| `topic` | 仅 `generate` | 自动读取 `activeProvider` |
-| `text` | `preserve | polish` | 自动读取 `activeProvider` |
+- `topic + preserve/polish`、`text + generate` 非法。非 SRT 必须冻结 15–600 秒的 `targetDurationSeconds`；缺失时可把建议值 60 秒与其他缺失配置一次性展示。
+- 用户明确说“新任务”“不要沿用旧任务”时必须新建 `draft-root`，不得根据同名目录或相似内容恢复，也不得使用 `--resume`。只有用户明确指定继续既有项目时才进入恢复路径。
+- 除明确静音外，`voiceoverMode` 只能通过 `voice_provider_config.py status` 的脱敏结果冻结为 `edge-tts | minimax | doubao`。不得让用户在三者间选择，不得直接读取或转述 `config/*.local.json`，也不得从旧项目、命令行参数或对话猜 provider。
+- 视觉模板采用“AI 推荐默认值 + 用户明确覆盖”。在创建 `contentDrafting` / `storyboardPlanning` attempt 前冻结具体 preset ID；不得把 `auto` 写入任何 artifact。
 
-用户明确说“新任务”“不要沿用旧任务”或同义表达时，该意图立即覆盖任何基于同名目录、相似输入或历史 artifact 的恢复推断：阶段 0 使用新的 `draft-root`，建项走新建路径且不得使用 `--resume`。只有用户明确要求继续某个既有项目时，才进入恢复路径。
+## 2. 一次环境预检与短上下文 child
 
-`topic + preserve/polish`、`text + generate` 非法。非 SRT 必须有 15–600 秒 `targetDurationSeconds`；缺失时可建议 60 秒，但要与其他缺失配置一次性展示并等待确认。`voiceoverMode` 不属于用户选择项：除非用户明确要求静音，否则必须通过 `voice_provider_config.py status` 的脱敏接口读取 active provider，规范化为 `edge-tts`、`minimax` 或 `doubao` 后自动冻结；禁止用 shell、文件读取工具或临时代码直接读取、打印、转述任何 `config/*.local.json` 原文。不得询问用户在 Edge TTS、MiniMax 与豆包语音之间选择，也不得从项目目录、旧项目 manifest、命令行 provider 参数或对话回复读取旁白 provider。
-
-视觉模板采用“AI 推荐默认值 + 用户明确覆盖”：coordinator 可先用 `coordinator_cli.py visual-style-catalog` 查看目录，并用 `recommend-visual-style` 从 topic/text 或传统 SRT 得到最多 3 个候选；用户明确模板时直接采用该具体 ID。即使用户说“AI 选”，coordinator 也必须先结合推荐与上下文确定一个具体 ID，再创建 `contentDrafting` / `storyboardPlanning` attempt；不得把 `auto` 写入 input、task、candidate、generation plan 或 project。目录与推荐命令不创建 attempt、不修改项目、不调用 child/provider，也不增加 Gate、identity、manifest 或状态机。
-
-topic/text 先冻结最小输入和 `contentDrafting` attempt；child 候选经只读校验后，coordinator 生成审阅 artifact，再确定性派生 source 并创建明确标记为 `pending_initial_approval` 的预项目。预项目只允许阶段 0 审阅、current 样音生成/技术验证、草案或样音修订与联合批准；完整旁白、正式生图、annotation、render、merge、burn、mux、final 必须在各自入口重验并硬拒绝 pending 项目。review 可以展示“当前已采用：豆包语音/MiniMax/Edge TTS”，但 active voice provider 不是用户选择项。
-
-旁白项目在预项目内生成绑定 current 草案/voice plan 的真实样音。用户一次检查草案、制作方案并试听 current 样音，然后从 coordinator 按当前能力生成的完整自然语言句子中复制一句或回复编号。合法通过句原子完成 content 与 sample 批准、冻结 `backgroundMusic.enabled`、`agentApprovalEnabled`、`imageGenerationMode`，把 `project.json.initialApproval` 从 pending 提升为 approved；任一 current identity、pending 状态、选项或能力重验失败不得留下半批准状态。旧项目缺少 `initialApproval` 时按已完成初始批准读取，缺少 `agentApprovalEnabled` 时仍按 `false`。草案或 voice/rate 修改只使受影响 identity/样音及下游 stale，不静默复用旧样音批准。用户明确要求新任务时总是创建新预项目，不 resume 旧项目。
-
-`imageGenerationMode = provider | gpt-login` 是正式项目字段。只有当前 Codex/ChatGPT 确实使用 GPT 账号登录且宿主内置 `image_gen` 可用时，才在上述联合确认中询问“当前登录的 GPT 账号/已配置图片供应商”；否则不询问并直接冻结为 `provider`。用户已经明确指定时不重复询问，只展示当前已采用；若明确指定 `gpt-login` 但宿主能力不可用，则 `BLOCKED`，不得静默切换 provider 或需要 API Key 的 CLI。传统 SRT 在首次分镜确认时一并冻结 BGM、代理批准和生图方式，不新增 Gate。旧项目缺失字段按 `provider` 读取；仅对尚未生图的旧项目，若当前满足 GPT 登录态与 `image_gen` 能力条件，coordinator 可在首次生图前补问一次并持久化选择。详见 [references/phase-0-content.md](references/phase-0-content.md)、[references/content-input.md](references/content-input.md) 与 [references/image-generation.md](references/image-generation.md)。
-
-`agentApprovalEnabled=false` 保持逐阶段人工 Gate。为 `true` 表示用户已经通过 current 样音授权声音主观方向，后续完整旁白与最终成片不再要求 AI 冒充完整听音：严格技术链通过后，coordinator 调用既有批准动作并把 `approvalBasis`/`reviewBasis` 记录为“用户样音授权后的技术推进”。完整旁白仍必须满足整轨单次 provider、canonical WAV、完整解码、原稿对齐、cue/scene/timeline/narration SRT、current identity 和时长偏差检查；Edge TTS 使用本地 FunASR token 证据，MiniMax 与豆包分别使用各自同一次合成响应绑定的 provider-native word 字幕证据。超过 10% 时按该授权采用真实音频时钟，不再询问。最终交付仍必须满足 current full audio、字幕、AAC、流结构、完整解码、时长/帧数/尾部、实际 BGM 模式和 `FINAL_IDENTITY` 技术证据。不得声称 AI 完整听过旁白或最终成片。视觉 Gate 在宿主能看图/视频时仍对 current artifact 实际检查；人工模式的完整旁白和最终看片听音 Gate 不变。
-
-权威时钟：`disabled` 使用 `source/source.srt` 原始全局时间轴；Edge/MiniMax/豆包语音使用获批 provider 生成的真实 audio timeline 与 `audio/narration.srt`。`targetDurationSeconds` 只作内容预算和 provisional SRT，不是成片时钟。
-
-## 七个工作阶段与交付链
-
-1. **阶段 0：预项目、样音与一次联合确认**。先完成旁白稿、cue、scene、分镜和 generation plan 候选，创建 pending 预项目并生成 current 样音；用户以一条完整句或编号原子批准 current content/sample identity 并冻结 BGM、后续模式和生图方式。传统静音 SRT 不生成或要求样音，使用“字幕与分镜方案通过……”语义完成初始批准。
-2. **阶段 1：严格 SRT 与分镜确认**。传统 SRT 严格解析、时长约束和 `storyboardPlanning` candidate/result 交接；用户首次确认分镜并同时冻结 BGM、代理批准与生图方式后才可建项。
-3. **阶段 3：样音后语音执行**。current 样音已在初始联合批准中绑定；完整旁白仍以单次 provider 请求生成 current WAV。Edge TTS 完成本地 FunASR token 级时间戳；MiniMax 请求 `subtitle_enable=true`、`subtitle_type=word` 并绑定同次响应的原生字幕；豆包使用 `doubao-seed-audio-expressive-native-word-v2`，固定 `enable_subtitle=true`，原子绑定同次响应的 Base64 音频与 `subtitle.sentences[].words[]` 毫秒时间戳。三条路径都继续执行权威原稿覆盖、语义安全切句与 scene/timeline binding。人工模式完整试听并处理时长偏差；自主模式以用户样音授权为主观依据，仅在全部严格技术证据 current 后写技术推进批准，超过 10% 自动采用真实音频时钟。
-4. **阶段 4：真实时间轴与 review policy**。发布 timeline、narration SRT 和 `FULL_IDENTITY`；人工模式由用户选择 review policy，自主模式确定性派生 `agent_first`，但该值不表示 AI 完整试听。
-5. **阶段 5：统一线稿确认**。图片候选独立有界生成、技术校验和 global visual review；全部正式 scene 已 validated 且文件存在后，同一生图入口自动生成或幂等复用全片封面，不额外调用图片供应商，并把封面 manifest 交给既有 review/final 证据链消费。线稿保留独立质量 Gate，主窗口只交付 review 文件链接、identity、计数和异常摘要。
-6. **阶段 6：annotation、区域预览与 reveal 联合确认**。技术 current 后生成预览和项目 URL；当前批准主体一次检查 annotation、区域、`protectedRegions`、reveal 时序并绑定 current review identity。
-7. **阶段 7：正式 scene bundle 确认**。按 `sceneRender` 有界并行生成候选，coordinator 按 generation plan 顺序单写发布；当前批准主体一次检查有序 scene bundle 后才可合并。
-
-阶段 2 是把已联合批准的 pending 预项目原子提升为正式可执行项目，不单独增加 Gate。阶段 8–10 为连续交付：静音画面母版合并 → 字幕烧录 →（旁白模式）音频封装和技术验证。clean master 不设确认；人工模式仍须用户完整看片听音后批准 `FINAL_IDENTITY`，自主模式则在严格 final 技术证据 current 后以 `reviewBasis=user_sample_authorization_technical_validation`（或项目实现的等价固定审计值）批准，不声称发生完整视听审阅。
-
-## 质量 Gate（全部 fail-closed）
-
-- 初始联合确认始终由用户亲自完成并绑定 current content identity；旁白项目还必须绑定 current `SAMPLE_IDENTITY`。生图方式只有在 GPT 登录态 `image_gen` 与已配置图片供应商同时真实可用时才展开为 8 个通过句，否则冻结唯一合法方式并显示 4 个完整通过句。不可用组合不得展示。
-- 固定生图方式的四个旁白通过句逐字为：“草案和样音通过，使用 BGM，后续由 AI 自主推进至成片。”“草案和样音通过，不使用 BGM，后续由 AI 自主推进至成片。”“草案和样音通过，使用 BGM，后续由我逐阶段确认。”“草案和样音通过，不使用 BGM，后续由我逐阶段确认。”两种生图能力同时可用时，每句增加“使用当前登录的 GPT 账号生成图片”或“使用已配置图片供应商生成图片”，例如“草案和样音通过，使用 BGM，使用当前登录的 GPT 账号生成图片，后续由 AI 自主推进至成片。”
-- 三个返工句逐字为：“草案需要修改，当前样音暂不批准。修改意见：……”“草案通过，样音需要调整，其他方案保持不变。调整意见：……”“草案和样音都需要修改。修改意见：……”。不提供斜杠填空句，也不把 active voice provider 列成选项。
-- `agentApprovalEnabled=false` 或缺失时，后续声音与最终 Gate 仍由用户真实审阅；`true` 时只有视觉 Gate 继续要求实际媒体检查，声音/final 采用用户样音授权后的严格技术推进审计。技术推进不是听音 PASS。
-- 未回复、笼统授权、技术 `validated`、fixture PASS、child candidate、child findings 或“用户没有反对”都不是批准。代理批准模式下也只有 coordinator 在实际检查 current artifact 并作出通过判断后，才能调用原批准脚本；child 始终 `approvalWritesAllowed:false`，CLI/runner 始终不能自行批准。
-- 初始 content/sample 联合批准是一个原子动作；线稿、annotation/区域/reveal、scene bundle 等视觉 Gate 仍独立。人工模式保留完整旁白与 final Gate；自主模式只用最小审计字段区分技术推进，不复制批准系统。修改上一步只重做受影响步骤。
-- 五类持久化 identity 必须绑定 current 字节和证据：`SAMPLE_IDENTITY`、`FULL_IDENTITY`、`annotationReviewIdentitySha256`、`sceneReviewIdentityHash`、`FINAL_IDENTITY`。批准脚本仅批准刚检查的 identity。
-- AI 视觉批准必须真实查看 current 图片/视频；能力不足时 `BLOCKED`。自主声音/final 路径不得把技术 PASS、波形、元数据、抽帧或 child 摘要描述成已听，只能准确报告“用户样音授权后的技术推进”。
-- `unknown_external_outcome`（provider 请求后 candidate/receipt 不完整且不能按同一幂等键查询）不得普通重跑或 `--retry-failed` 自动重发；必须单独取得用户承担新外部调用的授权。新的费用、凭据或服务授权、版权授权，以及必须实质改变阶段 0/首次分镜已冻结用户意图的修改，也必须单独询问用户。冻结计划内的正常有界 provider 调用和常规返工不打断用户。
-- 图片不设全局禁字：新 generation plan 默认 `constraints.forbidText=false`，允许语义需要的画内文字。视觉核对不得因“出现文字”本身判失败，只检查文字是否清晰、正确、符合语义且没有乱码、意外内容或供应商水印；旧项目或用户明确要求的 `forbidText=true` 仍按该计划执行。
-
-本地 coordinator runner 支持 `annotation-preview` 与 `final-delivery`。前者串联 annotation 确定性校验、receipt、preview/contact sheet；后者只在 current scene bundle 已获批准后连续执行 merge/burn/可选 mux/final validation，并输出逐步耗时。两者到达质量 Gate 都必须停止并保持 `approvalWritten=false`；人工模式由 coordinator 等待用户，代理批准模式由 coordinator 在 runner 外真实审阅、决定返工或调用原批准脚本。runner 本身不读取 `agentApprovalEnabled` 来批准；逐步 CLI 始终保留为调试和恢复路径。字段、Gate 停止与恢复合同见 [references/phase-4-runner.md](references/phase-4-runner.md)。
-- runner 技术链完成并停在 Gate 时进程退出码为 0，结构化状态仍使用现有 `WAITING_HUMAN_GATE` 且 `approvalWritten=false`。退出码 0 只避免 PowerShell/桌面包装层误报技术失败，不表示批准；任何自动化都必须读取 JSON 状态，不能据退出码越过 Gate。
-- preview 服务必须由 `serve_preview.py --ensure --project <root>` 启动/复用，并验证 `PREVIEW_READY=PASS`、项目 API、全部 ready/current scene 后交付完整 `PREVIEW_URL`；失败报告 `BLOCKED/FAIL` 真实原因。
-
-| Gate | 必须检查者与内容 | 通过后允许 |
-|---|---|---|
-| 初始联合批准 | 用户：current 草案/字幕分镜、制作方案；旁白项目还须试听 current 样音 | 原子冻结 BGM/后续模式/生图方式并提升 pending 预项目 |
-| 传统 SRT 分镜 | 用户：严格 SRT 解析结果、分镜 candidate、BGM、代理批准与生图方式 | 建项 |
-| 完整旁白 | 人工模式真实试听；自主模式重验严格技术证据并记录样音授权后的技术推进 | 使用 canonical audio timeline |
-| 线稿 | 当前批准主体：current 有序全量线稿 review artifact | annotation batch |
-| annotation 联合审阅 | 当前批准主体：annotation、区域预览、保护区和 reveal 时序 | 正式逐幕 render |
-| scene bundle | 当前批准主体：current 有序 scene review bundle | merge、字幕、mux、技术验证 |
-| 最终成片 | 人工模式完整看片听音；自主模式重验 current final 全套技术证据 | 写入区分真实审阅/技术推进的 final approval |
-
-## 核心不变量（实现和批准边界不得弱化）
-
-1. coordinator 是唯一用户接口和正式 writer；只有它能写正式 `scenes/*.png`、`audio/segments/*.wav`、manifest、timeline、SRT、identity、stale、checkpoint 与批准。
-2. child 只能写其冻结 attempt 内 candidate/log/result（`result.json` 通常由 coordinator 确定性生成），`formalWritesAllowed:false`、`approvalWritesAllowed:false`。
-3. 只有 coordinator 能根据当前真实宿主状态调用 `spawn_agent`、向已存在 child 发送 `followup`、等待或决定 fallback；任何 Python 脚本都不得接收/推断 child slots、宿主 role capability 或 coordinator budget，不得生成 `spawnAgentCall`/`spawnRequest`，也不得替宿主决定 dispatch/fallback。
-4. coordinator 从实际可用 child slots 计算 effective agent concurrency：取 configured、ready task/unit 和当前可用 child slots 的最小值，始终保留 coordinator 槽位；`execution.agents` 与 worker concurrency 分离，不相乘。具备所需工具时优先真实派发；只有真实派发不可用时才允许 coordinator fallback，并报告宿主真实原因；双方缺能力时 `BLOCKED`。
-5. attempt 是持久化版本边界，不是执行者边界。首次 `contentDrafting`、`storyboardPlanning` 与独立 `visualReview` 使用短上下文 child；用户对 content 草案提出修订时仍创建新 attempt，但优先 `followup` 上一 attempt 的同 role 原 child（它仍存在、idle、上一结果 completed 且 role contract 兼容时），让它读取新的 task/base/revision SHA。原 child 不可用、失败、role 改变、修改升级为全面独立重写或用户明确要求换执行者时才 spawn 新 child。同一 attempt 的执行性补正也 followup 原 child。`annotationDrafting` 一幕一 attempt，最多 3 个连续 scene 组成 unit；child prompt 只含冻结 task/role 定位与 SHA。
-6. `imagePrompt`（content draft）到 formal generation plan 的 `prompt` 只允许 coordinator 确定性映射；child 不接收完整主对话、完整 SRT、provider 凭据、长日志或批准信息。详见 [references/prompt-writing.md](references/prompt-writing.md) 与 [references/subagent-orchestration.md](references/subagent-orchestration.md)。
-7. 每幕只表达一个核心视觉命题；可独立揭示的 2–3 个视觉簇之间保持真实纸面留白，不以道路/河流/山脉/箭头等贯穿结构连接，除非该结构本身不可分割。annotation 按连续墨迹簇划分，最多 3 个且不为凑数强拆。
-8. reveal 时间严格串行、不可重叠；空间 region 仅在真实遮挡/交界处适度重叠；`protectedRegions` 只能保护正确分区中不可避免的局部，不能掩盖错误分区。
-9. 旁白字幕必须使用与 current 整轨音频绑定的真实词级边界，句级边界不得用于估算词内时间。Edge TTS 正式 runner 固定使用 15 秒 VAD 上限，保存每个 FunASR VAD 子结果的 token/timestamp，并按分段原序重建后与顶层数组逐项核对；其 token 证据不足、分段重建不一致、边界位移过大、滑动窗口局部语速异常或断词 QA 失败时必须 fail-closed。MiniMax 只使用同一次 T2A 请求返回的 `subtitle_file`；豆包只使用同一次 Seed Audio 响应的 `subtitle.text/sentences[].words[]`，固定 `enable_subtitle=true` 并独立发布 `audio/doubao-subtitles.json`。两种原生字幕都必须绑定各自 provider contract、合成 identity、完整 prompt SHA（豆包）、canonical audio SHA、原稿覆盖和正式 timeline，不运行 FunASR 二次识别，也不应用本地 ASR 的局部语速下限/波动比重判。三条路径的字幕都只在已确认原稿的标点或原始 cue 边界安全切分，禁止把金额、数字词组、英文词、固定词语或连续汉字从中间截断；真实前导、句间和尾部停顿允许保持无字幕空档。scene 边界不得早于本幕最后一个真实词结束；真实停顿内只能采用记录了 basis 的边界，禁止统一大延迟。
-10. 图片采用 `continue_independent`：单幕失败不阻止其他幕候选，但任一必需 scene 缺失/失败/stale 时 batch 总状态为 FAIL，不得启动全量预览或写批准。完整 TTS 固定为一个 full-track task；不得因 provider/ASR 失败回退成逐句多请求。
-11. provider worker 或宿主图片结果导入只能写已登记 attempt 的 candidate/去敏 receipt；coordinator 按 `prepared → requesting → candidate_ready → publishing → validated` 串行 checkpoint、重验、原子发布和清理。`gpt-login` 只替换图片字节来源，不另建 Gate、manifest 或发布链。
-12. `sceneRender` 是当前正式单幕候选的有界并行能力；worker 数只读 workspace `execution.concurrency.sceneRender`（缺失继承 pool default，最终默认 1，范围 1–16），候选完成顺序不得改变 generation plan 顺序或正式 manifest。
-13. image validation 每张 PNG 同一打开周期只完整解码一次；voice deep validation、timeline、SRT、累计帧、identity、binding 和 approval 仍按合同串行/有界，证据缺失或 bytes 变化不得降级为 binding PASS。
-14. 正式成片永远烧录字幕：disabled 为 H.264、0 音频且使用 source SRT；Edge/MiniMax/豆包语音为 H.264 + AAC 旁白且使用 current narration SRT。`backgroundMusic.enabled=true` 时，Edge/MiniMax 最终封装仍按固定 `-15 dB` 混入内置 CC0 BGM；豆包 v2 则由导演式 `text_prompt` 在 canonical `narration.wav` 内生成低于人声的无歌词器乐，最终 mux 只能按 `provider_embedded` 封装，禁止再次混入内置曲目。关闭或旧项目缺字段时保持纯旁白封装。旁白模式缺少 current narration SRT/timeline/full approval/identity 必须失败，不能回退 source SRT。
-15. 任一输入、旁白文本/分段、scene mapping、imagePrompt、音频/timing/render binding、annotation/reveal、scene 集合/顺序、手部素材 `handSha256`、字幕 preset/字体/SRT 或 clean/final SHA 变化，按 [references/recovery-and-identity.md](references/recovery-and-identity.md) 使受影响 identity 和批准 stale；历史 stale 证据不得作为 current 输入。
-16. 先把本 `SKILL.md` 所在目录解析为绝对 `SKILL_ROOT`；脚本路径一律使用 `<SKILL_ROOT>\scripts\...`，不得依赖调用者 cwd。每次进入工作区前先用当前可启动的 Python 运行 `<SKILL_ROOT>\scripts\prepare_env.py --check-workspace-access`，完成真实 create/write/flush/read/delete 预检；随后在任何业务脚本、导入探测或渲染启动前运行同一绝对脚本的 `--check`，读取末行 `ENV_PY=<绝对解释器路径>`。若仅因专用环境或依赖尚未就绪而失败，运行不带 `--check` 的同一绝对脚本完成准备并重新读取 `ENV_PY`。本次任务后续每条 Python 命令都必须直接调用该绝对解释器和绝对脚本路径；不得使用裸 `python`、`py`、shebang 或不会跨工具调用持久化的临时 shell 变量先试跑再回退，也不得把系统 Python 缺少 `cv2` 误报成 OpenCV 未安装。宿主 `CreateProcess rejected by policy` 与 Windows 文件写入拒绝必须分开报告；UI 刚切换权限时在新回合重跑预检，不用复杂 shell 写删命令试探。
-17. 旁白项目的 `approve-full` 必须显式带 `--review-policy user_first|agent_first` 并写入 `fullApproval.reviewPolicy`；后续线稿、annotation preview 和 scene review 自动继承且拒绝冲突值。`agentApprovalEnabled=true` 时由项目授权确定性派生 `agent_first`，不得再次询问或接受冲突值；为 `false`/缺失时仍由用户选择，不得静默采用默认策略。
-18. 正式 CLI 在进程入口把可重配置的 stdout/stderr 固定为 UTF-8；不得依赖 PowerShell 当前代码页或要求调用者临时设置 `PYTHONUTF8`。测试捕获流等不可重配置对象保持原样。
-
-## current、stale 与恢复摘要
-
-- candidate、`completed`、validator PASS、review findings 和发布成功均不自动成为 approved；用户亲自批准或 AI 代理批准都必须绑定刚刚实际检查的 current artifact。
-- source 内容/策略/scene mapping 变化时，从 content/source/timing 到 final 的受影响链全部重新判定。
-- 仅 `imagePrompt` 变化且 cue/scene boundary 不变时可保留有效音频，但 generation plan、图片和视觉下游 stale。
-- voice/rate/provider synthesis contract、朗读文本或分段变化时，样音、full audio/timeline、视觉时序与 final 的受影响链 stale。
-- 只有 source timing 变化且 synthesis identity 不变时，可按合同复用 validated audio 字节，但完整旁白时长决定、timeline 与下游重新绑定。
-- annotation/preview/保护区/reveal 变化使 annotation review approval stale；只重建受影响 preview。
-- scene 视频、render identity、hand SHA、scene 集合或 plan 顺序变化使 scene review approval stale；合并前必须重建并批准 bundle。
-- 字幕 preset、字体、权威 SRT 或 encoding contract 变化使字幕/final stale，但不应重建仍 current 的 clean video 或 audio。
-- 失败/取消/stale candidate 不得覆盖已验证正式文件；恢复只从最后一个 current checkpoint 继续。
-- 任何重试先区分确定失败、可查询请求和 `unknown_external_outcome`，详细决策只读 recovery reference。
-
-## 当前能力与失败边界
-
-支持真实 Edge TTS、MiniMax、豆包语音、图片 provider（按配置）、当前 GPT 登录态可用的宿主内置 `image_gen`，以及 fixture/fake provider 自动测试；不以 fixture、技术验证或 child/AI review findings 冒充真实外部或质量批准。`gpt-login` 不是 provider 配置或浏览器 cookie 路径，不读取 `image-providers.local.json`、不需要 API Key，也不得静默改用 provider/API CLI。正式 render 使用 BGR24 stdin → libx264 单次编码；禁止用 `--fps`、`--total-ms`、`--cap-long-edge` 覆盖持久化合同。需要 AI 代理批准时，coordinator 必须使用当前宿主实际可用的图片、音频或视频消费能力完整检查对应媒体；能力不足即 `BLOCKED`。
-
-### 项目预览链接交付合同
-
-coordinator 必须运行 `serve_preview.py --ensure --project <项目根目录>`，核验 `PREVIEW_READY=PASS`、项目 API 和全部 ready/current scenes 后，才可交付命令返回的完整 `PREVIEW_URL`；不得仅拼接未经验证的地址。服务启动、端口、API 或 scene 完整性任一失败时，必须报告 `BLOCKED`/`FAIL` 及真实原因。
-交付消息必须包含命令返回的完整、可点击 `PREVIEW_URL`，并说明打开后自动载入当前项目、无需手动导入；只报告代码已修改、服务已实现、端口号或项目目录均不算预览交付完成。
-
-外部服务、宿主 child capability、FFmpeg/字体/字幕/WAV、端口/API 或文件完整性不足时报告 `BLOCKED`/`FAIL` 及真实原因，不自动扩大范围、不伪造 PASS。详细阶段合同路由：
-
-| 阶段/主题 | 唯一 reference |
-|---|---|
-| 输入、旁白写作与 source evidence | [phase-0-content.md](references/phase-0-content.md)、[content-input.md](references/content-input.md) |
-| prompt、视觉拓扑和字段映射 | [prompt-writing.md](references/prompt-writing.md)、[image-generation.md](references/image-generation.md) |
-| child task/result、runtime、fallback、coordinator | [subagent-orchestration.md](references/subagent-orchestration.md) |
-| annotation、preview、联合批准 | [annotation-drafting-role.md](references/annotation-drafting-role.md)、[subagent-orchestration.md](references/subagent-orchestration.md) |
-| sceneRender、bundle、发布顺序 | [image-generation.md](references/image-generation.md)、[subagent-orchestration.md](references/subagent-orchestration.md) |
-| merge、字幕、mux、final | [subtitles.md](references/subtitles.md)、[voiceover.md](references/voiceover.md) |
-| stale、identity、retry、恢复 | [recovery-and-identity.md](references/recovery-and-identity.md) |
-| voice provider、真实时长 | [voiceover.md](references/voiceover.md) |
-
-当前阶段只读取与正在执行阶段对应的 reference；跨阶段只消费摘要、identity、current/stale/approval 状态，不把完整 prompt、原图、JSON 或长日志回灌主窗口。任何 role contract 需带 contract version 与 SHA 并冻结在 attempt。
-
-### 阶段摘要合同
-
-每次阶段结束只向 coordinator/用户返回可核验摘要：
-
-- `status = PASS | FAIL | BLOCKED | SKIP | 待确认`，并说明真实原因；
-- current/stale/approval 状态、对应 identity 和 artifact 路径；
-- configured/effective/peak concurrency、task count 与实际 dispatch/fallback 模式（适用时）；
-- 失败 scene/unit、是否 partial success、下一条安全恢复命令；
-- 质量 Gate 明确列出“批准主体”“需要检查的 artifact”和“通过后允许的下一步”；代理模式的摘要使用“AI 代理批准”，不得声称用户已经看片或听音。
-
-不得用阶段摘要重新嵌入完整正文、完整 prompt、全部图片、完整 JSON、长日志或重复 validator 输出。
-
-## 命令索引（逐步 CLI；命令不会自动批准）
-
-以下 `<SKILL_ROOT>` 必须解析为本文件所在目录的绝对路径；即使当前目录是 `D:\SRTWhiteboard` 也不能省略。其余 references 中的 `scripts/...` 只是排版简写，实际执行同样使用绝对脚本路径。
+coordinator 先把本文件目录解析为绝对 `SKILL_ROOT`。同一主任务、同一宿主运行环境只做一次：
 
 ```powershell
-# 环境与输入准备
 python <SKILL_ROOT>\scripts\prepare_env.py --check-workspace-access
 python <SKILL_ROOT>\scripts\prepare_env.py --check
-# 上一步仅因专用环境或依赖缺失而失败时：
-python <SKILL_ROOT>\scripts\prepare_env.py
-# 捕获末行 ENV_PY；后续每次工具调用都直接使用该绝对路径，不用裸 python/py
-# 仅 Edge TTS 首次生成整轨旁白前准备/检查当前 skill 自带的本地 ASR；MiniMax/豆包跳过：
-<ENV_PY> <SKILL_ROOT>\scripts\prepare_env.py --feature narration-asr
-<ENV_PY> <SKILL_ROOT>\scripts\prepare_env.py --check --feature narration-asr
-<ENV_PY> <SKILL_ROOT>\scripts\coordinator_cli.py visual-style-catalog
-<ENV_PY> <SKILL_ROOT>\scripts\coordinator_cli.py visual-style-catalog --output <模板目录.md>
-<ENV_PY> <SKILL_ROOT>\scripts\coordinator_cli.py recommend-visual-style --content-input <input.json>
-<ENV_PY> <SKILL_ROOT>\scripts\coordinator_cli.py recommend-visual-style --source-srt <字幕.srt>
-<ENV_PY> <SKILL_ROOT>\scripts\prepare_draft_agent_task.py contentDrafting --content-input <input.json> --draft-root <draft-root>
-<ENV_PY> <SKILL_ROOT>\scripts\validate_content_draft.py --stdin
-<ENV_PY> <SKILL_ROOT>\scripts\prepare_draft_agent_task.py storyboardPlanning --draft-root <draft-root> --source-srt <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 35
-<ENV_PY> <SKILL_ROOT>\scripts\parse_srt.py <字幕.srt> --target-sec 30 --min-sec 25 --max-sec 35
-<ENV_PY> <SKILL_ROOT>\scripts\create_project.py --name <项目名> --srt <source.srt> --plan <generation-plan.json> --source-input <input.json> --source-manifest <manifest.json> --pending-initial-approval
-# coordinator 将用户完整句/编号解析为绑定 current identities 的 selection.json 后：
-<ENV_PY> <SKILL_ROOT>\scripts\approve_initial_project.py --project <项目根目录> --selection <selection.json> --configured-image-provider-available [--gpt-login-capable]
-<ENV_PY> <SKILL_ROOT>\scripts\create_project.py --resume <项目根目录> --srt <原始字幕.srt>
-<ENV_PY> <SKILL_ROOT>\scripts\upgrade_project.py --project <项目根目录> --to-schema 2
-
-# 图片、线稿、语音
-<ENV_PY> <SKILL_ROOT>\scripts\voice_provider_config.py status
-<ENV_PY> <SKILL_ROOT>\scripts\generate_images.py --project <项目根目录>
-<ENV_PY> <SKILL_ROOT>\scripts\generate_images.py --project <项目根目录> --host-results <绝对JSON路径>
-# 两条正式入口都会在全部 current scene validated 后自动生成或幂等复用 previews/social-cover.png；没有 --cover 参数
-<ENV_PY> <SKILL_ROOT>\scripts\validate_generated_images.py --project <项目根目录> --review-policy user_first
-<ENV_PY> <SKILL_ROOT>\scripts\validate_generated_images.py --project <项目根目录> --review-policy agent_first
-<ENV_PY> <SKILL_ROOT>\scripts\generate_voiceover.py sample --project <项目根目录> --voice <voice> --rate <rate>
-<ENV_PY> <SKILL_ROOT>\scripts\generate_voiceover.py approve-sample --project <项目根目录> --identity-hash <SAMPLE_IDENTITY>
-<ENV_PY> <SKILL_ROOT>\scripts\generate_voiceover.py full --project <项目根目录>
-# Edge TTS 正常执行时自动调用当前 skill 内部 FunASR runner；MiniMax/豆包各自自动消费同请求 provider-native word 字幕。仅 Edge 调试/恢复可显式导入 ASR SRT：
-<ENV_PY> <SKILL_ROOT>\scripts\generate_voiceover.py publish-alignment --project <项目根目录> --asr-srt <FunASR一-token-一-cue声学字幕.srt>
-<ENV_PY> <SKILL_ROOT>\scripts\generate_voiceover.py status --project <项目根目录>
-<ENV_PY> <SKILL_ROOT>\scripts\validate_voiceover.py --project <项目根目录> [--force-deep]
-<ENV_PY> <SKILL_ROOT>\scripts\generate_voiceover.py approve-full --project <项目根目录> --identity-hash <FULL_IDENTITY> --review-policy <user_first|agent_first> [--duration-decision accept_actual]
-
-# annotation、preview、scene bundle
-<ENV_PY> <SKILL_ROOT>\scripts\validate_annotations.py prepare --project <项目根目录> --images-confirmed
-<ENV_PY> <SKILL_ROOT>\scripts\validate_annotations.py materialize --project <项目根目录> --candidate-root <candidate-root> --task-id <taskId>
-<ENV_PY> <SKILL_ROOT>\scripts\validate_annotations.py validate --project <项目根目录> --candidate-root <candidate-root>
-<ENV_PY> <SKILL_ROOT>\scripts\serve_preview.py --ensure --project <项目根目录>
-<ENV_PY> <SKILL_ROOT>\scripts\generate_annotation_previews.py --project <项目根目录> --all --review-policy user_first
-<ENV_PY> <SKILL_ROOT>\scripts\approve_annotation_review.py --project <项目根目录> --identity-hash <annotationReviewIdentitySha256>
-<ENV_PY> <SKILL_ROOT>\scripts\render_stream_whiteboard.py --project <项目根目录> --all --ink-path grid --color-fill contour-wipe
-<ENV_PY> <SKILL_ROOT>\scripts\scene_review.py --project <项目根目录> --review-policy user_first
-<ENV_PY> <SKILL_ROOT>\scripts\approve_scene_review.py --project <项目根目录> --identity-hash <sceneReviewIdentityHash>
-
-# 连续交付与最终 Gate
-<ENV_PY> <SKILL_ROOT>\scripts\merge_scenes.py --project <项目根目录> --inputs <幕1.mp4> <幕2.mp4>
-<ENV_PY> <SKILL_ROOT>\scripts\burn_subtitles.py --project <项目根目录>
-<ENV_PY> <SKILL_ROOT>\scripts\mux_voiceover.py --project <项目根目录>
-<ENV_PY> <SKILL_ROOT>\scripts\validate_final_media.py --project <项目根目录>
-<ENV_PY> <SKILL_ROOT>\scripts\run_phase.py --project <项目根目录> --phase final-delivery
-<ENV_PY> <SKILL_ROOT>\scripts\coordinator_cli.py project-status --project <项目根目录>
-<ENV_PY> <SKILL_ROOT>\scripts\coordinator_cli.py validate-draft-result --task <绝对task.json>
-<ENV_PY> <SKILL_ROOT>\scripts\coordinator_cli.py parse-initial-approval --project <项目根目录> --reply <用户完整回复> --output <项目\.work\selection.json> [能力参数]
-<ENV_PY> <SKILL_ROOT>\scripts\annotation_dispatch.py observe --manifest <dispatch-manifest.json> --task-id <taskId> --child-running
-<ENV_PY> <SKILL_ROOT>\scripts\approve_final_media.py --project <项目根目录> --identity-hash <FINAL_IDENTITY>
 ```
 
-`prepare_*`/`agent_first` 只冻结 attempt、task descriptor 或有序 unit；这些 artifact 不包含宿主调用参数，也不等于真实派发、candidate 完成或任何批准。coordinator 必须直接使用宿主协作工具并记录真实 agent/task 映射。正式 scene 由 `sceneRender` 有界并行生成、按 plan 顺序发布；`merge_scenes.py` 在任何写入前硬校验 current approved scene bundle。
+若第二条仅因专用环境或依赖未准备而失败，才运行不带 `--check` 的同一脚本。捕获末行绝对 `ENV_PY` 后，后续所有 Python 命令直接使用 `<ENV_PY> <SKILL_ROOT>\scripts\...`；不得先试裸 `python`、`py` 或依赖临时 shell 变量。只有宿主权限、工作区或解释器环境实际改变时才重新预检。
 
-## 退出码
+`contentDrafting`、`storyboardPlanning`、`visualReview`、`annotationDrafting` child 不重复运行 `prepare_env`。child 只读取本短入口、冻结的 `role-contract.md`、`task.json` 及 `task.inputs`；不得主动搜索源码、tests、examples、CLI `--help`、provider 配置、长日志或跨阶段 reference。descriptor 给出的纯本地 candidate lint/validation 命令可以直接执行，coordinator 仍须独立重验。
 
-| 码 | 权威含义 |
-|---:|---|
-| 0 | 操作成功且对应技术验证通过 |
-| 1 | 批处理失败/取消 unit；环境准备和 standalone helper 本地操作失败 |
-| 2 | content draft、参数、项目、配置、plan、manifest、SRT 或 timeline 无效 |
-| 3 | Edge 外部请求失败或限流重试耗尽 |
-| 4 | FFmpeg、ffprobe、字体、字幕、WAV 或媒体验证失败 |
-| 5 | stale、identity 不匹配或缺少所需批准 |
+正常 topic/text 新任务只有一条阶段 0 快路径：上述一次环境预检 → 一次 `prepare_draft_agent_task.py contentDrafting` fast-prepare → descriptor `nextAction=spawn_now` 后立即派发。fast-prepare 必须在一次调用内经脱敏接口冻结 active provider、采用用户明确指定的 preset 或自动推荐并冻结具体 preset ID、生成合法 managed content input、分配不覆盖既有目录的唯一新 `draft-root`，并准备 attempt descriptor。coordinator 不得在此前后再单独运行 provider status、视觉推荐、手写 `content-input.json`、用 `Test-Path` 试探名称，或搜索源码/tests/examples/CLI `--help`；只有用户主动要求浏览模板时才运行 visual style catalog。用户明确要求新任务时 fast-prepare 不得恢复或覆盖旧任务。
 
-脚本只返回与职责有关的子集，但正式项目必须遵循上表；`unknown_external_outcome` 另按恢复 reference 等待用户决定。
+prepared task 必须直接提供 `agentPrompt`、`candidateValidationArgv`、`resultMaterializeArgv` 和下一步定位信息；task 还必须携带该 role 的 canonical `candidateSchema` 与 `candidateSkeleton`。coordinator 收到后应立即派发，不再自行拼 prompt 或搜索 result/candidate schema；child 只能按冻结 schema/skeleton 生成 candidate/findings，不得猜字段。所有 role 的 `result.json` 均由 coordinator 根据冻结 task 与输出 SHA 确定性生成。
 
-## 质量底线
+candidate validator 的一次运行必须返回完整结构错误清单，不得只报第一个字段。首次结构失败时，同一 attempt 只 followup 一次原 child，要求按完整错误清单和冻结 `candidateSchema`/`candidateSkeleton` 做一次全量 schema 归一；仍结构失败就直接换用更强的短上下文 child，不得逐字段“洋葱式”反复补丁。该补正策略不创建新 Gate、状态机或批准语义，也不削弱 current、SHA、stale 与批准边界。
 
-- 首帧是干净暖米黄纸底，未开始区域完全隐藏；末尾至少保留 0.5 秒且不突破权威总时长。
-- reveal 不重叠，annotation 使用局部时钟且不越过 scene 边界；允许掩码和 `protectedRegions` 合同 current。
-- generation plan、manifest、图片 SHA、1920×1080 实际尺寸和线稿确认均 current。
-- 正式 scene 使用 current `assets/drawing-hand.png`，manifest `handSha256` 匹配；`@moveR` 版权层未经明确授权不得修改或移除。
-- 单幕和 clean master 帧数符合累计全局帧边界并全部完整解码；merge 已校验获批 bundle。
-- `subtitles/final.ass`、字体 hash、样式 hash、权威 SRT 与 contact sheet 写入 delivery evidence；Edge TTS 字幕必须通过 15 秒 VAD 分段 token 重建、顶层逐项一致性及局部语速 QA；MiniMax 与豆包必须分别通过各自 provider-native word sidecar receipt、audio/synthesis identity binding，豆包另绑定完整导演式 prompt SHA。全部旁白路径仍须通过原稿覆盖、语义切句、断词、scene 尾音边界与真实 gap QA。
-- disabled final 必须 1 路 H.264、0 音频；旁白 final 必须 1 路 H.264 + 1 路 24kHz mono AAC；两者都有可见烧录字幕。
-- 自动测试不调用真实 provider；外网或服务不可用写 `BLOCKED`，不以 fixture PASS、SKIP 或技术 `validated` 冒充外部或质量批准 PASS。
+宿主派发 child 时优先选用满足文本/图像/视频能力的最快可用模型和 `medium` effort；按上述一次完整 schema 归一仍失败、复杂实质修订或非结构业务校验失败时才升级更强模型/effort。模型和 effort 是执行策略，不进入 artifact identity。
+
+## 3. 阶段路由
+
+只读取当前正在执行阶段的 reference。跨阶段只消费短摘要、current/stale/approval 状态和 identity；不得提前加载后续 reference，或把完整正文、SRT、prompt、原图、JSON、媒体和长日志回灌主窗口/child prompt。
+
+| 阶段/主题 | 当前阶段唯一规范来源 |
+|---|---|
+| topic/text 内容、自然口播、pending 预项目、联合批准 | [phase-0-content.md](references/phase-0-content.md)、[content-input.md](references/content-input.md) |
+| 传统 SRT、scene 划分、prompt 与视觉拓扑 | [content-input.md](references/content-input.md)、[prompt-writing.md](references/prompt-writing.md) |
+| child task/result、模型策略、并发、fallback | [subagent-orchestration.md](references/subagent-orchestration.md) |
+| 正式生图、PNG 校验、线稿 review、scene bundle | [image-generation.md](references/image-generation.md) |
+| 整轨语音、provider-native 字幕、真实时钟 | [voiceover.md](references/voiceover.md)、[subtitles.md](references/subtitles.md) |
+| annotation drafting、preview 与联合批准 | [annotation-drafting-role.md](references/annotation-drafting-role.md)、[subagent-orchestration.md](references/subagent-orchestration.md) |
+| annotation-preview / final-delivery runner | [phase-4-runner.md](references/phase-4-runner.md) |
+| current、stale、identity、retry、恢复 | [recovery-and-identity.md](references/recovery-and-identity.md) |
+
+执行顺序概括为：阶段 0 联合批准 → 严格 source/正式项目 → current 整轨音频和真实时间轴 → 生图与线稿 Gate → annotation/区域/reveal Gate → scene bundle Gate → merge/burn/mux/final 技术验证 → final Gate。`targetDurationSeconds` 只是内容预算和 provisional SRT；静音以 source SRT 为权威时钟，旁白以获批 current audio timeline 和 narration SRT 为权威时钟。
+
+## 4. 不可变写入、并发与派发边界
+
+1. coordinator 是唯一用户接口和正式 writer；只有它能发布正式 scene/audio/annotation、manifest、timeline、SRT、identity、stale、checkpoint 和批准。child 始终 `formalWritesAllowed:false`、`approvalWritesAllowed:false`。
+2. attempt 是 artifact 版本边界，不是执行者边界。首次独立任务使用短上下文 child；同一 role 的修订/执行性补正优先 followup 仍兼容且 idle 的原 child，否则再 spawn。磁盘 task、input 和 SHA 始终高于代理记忆。
+3. 只有 coordinator 根据实际宿主 slots/capability 调用 spawn/followup/wait 或决定 fallback。Python 不推断 child slots，不生成宿主调用，不替 coordinator 决定 dispatch。effective agent concurrency 取 configured、ready task/unit、可用 child slots 和 coordinator budget 的最小值，并保留 coordinator 槽位。
+4. agent pool 与图片/校验/sceneRender worker pool 分离且不相乘；多个独立 ready task/unit 必须先填满安全 effective concurrency。正式发布仍按 generation plan 顺序。
+5. annotation 保留“一幕一 task/attempt/candidate/result”，最多 3 个连续 scene 组成一个 unit。同一 child 在 unit 内按序处理：每幕写 candidate 后执行 descriptor 给定的纯本地 lint；PASS 才继续下一幕，FAIL 只补正当前幕。整个 unit 只返回一次，coordinator 随后 batch observe/materialize 并执行完整 current validator。30 秒 tail grace 只用于异常恢复，不进入正常关键路径。
+6. `user_first` 不创建额外 visualReview。`agent_first` 的 image/annotation-preview visualReview child 只写 findings，由 coordinator 确定性生成 result 并作出独立 current 决定。scene bundle 若具备视频能力的 coordinator 本来就必须完整观看 current 视频，child 关键帧预审不是强制关键路径；只有需要独立第二意见或 coordinator 需要定位辅助时才派发。
+
+## 5. 全部 fail-closed 的 Gate
+
+| Gate | 必须检查者与 current 证据 | 通过后允许 |
+|---|---|---|
+| 初始联合批准 | 用户检查 current 草案/字幕分镜和制作方案；旁白项目还须试听 current `SAMPLE_IDENTITY` | 原子冻结 BGM、后续模式、生图方式并提升 pending 项目 |
+| 完整旁白 | 人工模式真实试听；自主模式重验严格技术证据并记录用户样音授权后的技术推进 | 使用 canonical audio timeline |
+| 线稿 | 当前批准主体实际检查 current 有序全量线稿 | annotation batch |
+| annotation 联合审阅 | 当前批准主体检查 annotation、区域、保护区和 reveal | 正式 scene render |
+| scene bundle | 当前批准主体实际检查 current 有序视频 | merge、burn、mux、final 技术验证 |
+| 最终成片 | 人工模式完整看片听音；自主模式重验 current final 全套技术证据 | 批准 `FINAL_IDENTITY` |
+
+- 阶段 0 的 topic/text candidate 经确定性校验后，coordinator 可先派生 source、创建 `pending_initial_approval` 预项目和 current 样音，再等待用户一次联合批准；pending 项目不得进入完整旁白、生图、annotation、render 或 final。
+- `agentApprovalEnabled=false`/缺失保留逐阶段人工 Gate；为 `true` 只允许 full/final 使用“用户样音授权后的技术推进”审计，不能声称 AI 完整听音。视觉 Gate 始终要求有能力的批准主体实际查看 current artifact。
+- candidate、`completed`、技术 `validated`、fixture PASS、child findings、无异常摘要、未回复或“没有反对”均不是批准。runner/CLI/child 不自行批准；只有 coordinator 能调用既有批准动作绑定刚检查的 current identity。
+- 必须保留 `SAMPLE_IDENTITY`、`FULL_IDENTITY`、`annotationReviewIdentitySha256`、`sceneReviewIdentityHash`、`FINAL_IDENTITY` 及其 current 字节/证据绑定。输入或相关字节变化必须按 recovery reference 传播 stale，旧批准不能复用。
+- provider 请求后 candidate/receipt 不完整且无法按同一幂等键查询时为 `unknown_external_outcome`：禁止普通重跑或 `--retry-failed` 自动重发，必须取得用户承担新外部调用的明确授权。新增费用/凭据/服务/版权授权或实质改变已冻结用户意图，也必须单独询问。
+
+## 6. Provider 与媒体底线
+
+- 正式图片请求只消费 current formal generation plan；topic/text 的 `imagePrompt` 由 coordinator 确定性映射为 formal `prompt`。每幕请求彼此独立，失败不阻断其他独立幕，但任一必需幕缺失/失败/stale 时 batch 不得越过 Gate。
+- Edge/MiniMax/豆包完整旁白都固定为一个整轨 synthesis task，不因 provider/ASR 失败回退为逐句多请求。Edge 使用本地 FunASR token 证据；MiniMax 与豆包只使用各自同一次合成响应绑定的 provider-native word 字幕，不重复跑 FunASR。
+- 豆包固定 `doubao-seed-audio-expressive-native-word-v2`。新旁白版本在样音前由 coordinator 重新读取 `C:\Users\MOVER\Desktop\seed-audio-1.0 text_prompt 参考.txt`，只把它作为风格/能力示例，结合 current 全文、scene 与 BGM 方向冻结 `doubao-performance-brief-v1`；程序逐字装配正文并把 brief、参考 SHA 和最终 prompt SHA 纳入既有 voice identity。关闭 BGM/样音禁音由程序固定，恢复或重试复用 brief。`backgroundMusic.enabled=true` 时豆包音乐已嵌入 canonical narration，且只在叙事确有变化处改变，不为每个 scene 强制补一句；final mux 不得再混内置曲。Edge/MiniMax 才按既有合同混入 CC0 BGM。
+- 正式 final 永远烧录字幕：静音为 H.264/0 音频并用 source SRT；旁白为 H.264 + 24kHz mono AAC 并用 current narration SRT。完整解码、流、尺寸、fps、帧数/时长/尾部、字体/字幕、BGM 模式和 identity 必须 current。
+- 自动测试、fixture、技术检查或 child 结果不得冒充真实 provider、真实媒体或主观质量 PASS；外部服务或宿主媒体能力不足时准确报告 `BLOCKED`/`FAIL`。
+
+## 7. 最短命令入口
+
+完整逐步命令只查当前阶段 reference。正常路径优先使用以下入口，不用 `--help` 探路：
+
+```powershell
+# 诊断/传统 SRT 的脱敏状态与恢复定位；正常 topic/text 快路径不单独调用 status
+<ENV_PY> <SKILL_ROOT>\scripts\voice_provider_config.py status
+<ENV_PY> <SKILL_ROOT>\scripts\coordinator_cli.py project-status --project <项目根目录>
+
+# topic/text 新任务的一次 fast-prepare；stdout descriptor 为 spawn_now 时立即派发
+<ENV_PY> <SKILL_ROOT>\scripts\prepare_draft_agent_task.py contentDrafting --workspace <workspace-root> --new-draft-label <label> (--topic <text> | --body-file <utf8-path>) --rewrite-policy <generate|preserve|polish> --target-sec <15..600> [--visual-style-preset <具体ID>]
+
+# 传统 SRT 分镜 task；stdout 的 preparedTask 可直接派发
+<ENV_PY> <SKILL_ROOT>\scripts\prepare_draft_agent_task.py storyboardPlanning --draft-root <draft-root> --source-srt <字幕.srt> --target-sec <秒> --min-sec <秒> --max-sec <秒>
+
+# 已覆盖的连续确定性阶段
+<ENV_PY> <SKILL_ROOT>\scripts\run_phase.py --project <项目根目录> --phase annotation-preview
+<ENV_PY> <SKILL_ROOT>\scripts\run_phase.py --project <项目根目录> --phase final-delivery
+```
+
+每次阶段结束只返回短摘要：`PASS | FAIL | BLOCKED | SKIP | 待确认`、真实原因、artifact 路径、current/stale/approval、identity、实际并发/派发模式、失败 scene/unit 和下一条安全动作。不得重新嵌入完整正文、prompt、图片、JSON、媒体或 validator 长输出。
+
+## 8. 质量底线
+
+- 首帧为所选模板与 renderer 冻结的干净画布（当前六模板均为 `warm-paper-stream-v1` 的 `#F5EBD7` 暖米黄纸张 surface），未开始区域完全隐藏；reveal 使用本幕局部时钟、严格串行、不越过 scene，末尾至少保留 0.5 秒。
+- generation plan、manifest、图片 SHA/尺寸、annotation/timing/render binding、手部素材、scene bundle 批准、字幕和 final evidence 均须 current。
+- 图片不全局禁字：新计划默认 `constraints.forbidText=false`；只检查文字是否清晰、正确、符合语义且无乱码、意外内容或水印。显式 `true` 才禁字。
+- `protectedRegions` 只能保护正确分区中的局部，不能掩盖错误分区；连续不可分割墨迹合并，可独立揭示簇保持纸面留白，首版最多 3 个。
+- `@moveR` 版权层未经明确授权不得修改或移除。

@@ -65,6 +65,7 @@ try:
     from .edge_tts_adapter import EdgeTtsAdapter
     from .doubao_adapter import (
         DoubaoAdapter,
+        DoubaoEvidenceUnavailable,
         DOUBAO_ENDPOINT,
         DOUBAO_PROVIDER_CONTRACT_VERSION,
         DOUBAO_SUBTITLE_TYPE,
@@ -76,6 +77,7 @@ try:
         build_doubao_prompt_spec,
         render_doubao_text_prompt,
         text_prompt_sha256,
+        validate_doubao_prompt_spec,
     )
     from .minimax_adapter import (
         MiniMaxAdapter,
@@ -97,6 +99,7 @@ except ImportError:  # pragma: no cover - direct script execution
     from edge_tts_adapter import EdgeTtsAdapter
     from doubao_adapter import (
         DoubaoAdapter,
+        DoubaoEvidenceUnavailable,
         DOUBAO_ENDPOINT,
         DOUBAO_PROVIDER_CONTRACT_VERSION,
         DOUBAO_SUBTITLE_TYPE,
@@ -108,6 +111,7 @@ except ImportError:  # pragma: no cover - direct script execution
         build_doubao_prompt_spec,
         render_doubao_text_prompt,
         text_prompt_sha256,
+        validate_doubao_prompt_spec,
     )
     from minimax_adapter import (
         MiniMaxAdapter,
@@ -258,6 +262,7 @@ def _build_plan_and_units(
     rate: int | str,
     provider_id: str = "edge-tts",
     provider_config: Mapping[str, Any] | None = None,
+    doubao_performance_brief: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     cues, scenes = _load_source_context(project)
     config = dict(provider_config or {})
@@ -285,7 +290,11 @@ def _build_plan_and_units(
         if key in config
     }
     if provider_id == "doubao":
-        provider_options["promptSpec"] = build_doubao_prompt_spec(cues, scenes)
+        provider_options["promptSpec"] = build_doubao_prompt_spec(
+            cues,
+            scenes,
+            performance_brief=doubao_performance_brief,
+        )
         provider_options["maxTextPromptCharacters"] = 3000
         provider_options["maxAudioDurationSeconds"] = DOUBAO_MAX_AUDIO_DURATION_SECONDS
         provider_options["nativeWordSubtitlesRequired"] = True
@@ -388,9 +397,14 @@ def _bind_current_synthesis_units(
         source_cues = parse_srt(
             project.path("source/source.srt").read_text(encoding="utf-8-sig")
         )
-        current_prompt_spec = build_doubao_prompt_spec(
-            source_cues, project.timing_plan["scenes"]
-        )
+        try:
+            current_prompt_spec = validate_doubao_prompt_spec(
+                plan["provider"].get("options", {}).get("promptSpec", {}),
+                source_cues,
+                project.timing_plan["scenes"],
+            )
+        except DoubaoPromptError as exc:
+            raise ApprovalGateError(str(exc)) from exc
         if plan["provider"].get("options", {}).get("promptSpec") != current_prompt_spec:
             raise ApprovalGateError("豆包导演式 promptSpec 与 current source/scenes 不一致")
         duration_seconds = source_cues[-1]["endMs"] / 1000.0
@@ -692,17 +706,23 @@ def _sample(
     rate: int,
     provider_id: str = "edge-tts",
     provider_config: Mapping[str, Any] | None = None,
+    doubao_performance_brief: Mapping[str, Any] | None = None,
+    authorize_new_request_after_unknown: bool = False,
     adapter: ProviderAdapter,
     normalizer: Callable[..., CanonicalAudioResult],
 ) -> tuple[str, str, str, str, str]:
     plan, units = _build_plan_and_units(
-        project, voice=voice, rate=rate, provider_id=provider_id, provider_config=provider_config
+        project,
+        voice=voice,
+        rate=rate,
+        provider_id=provider_id,
+        provider_config=provider_config,
+        doubao_performance_brief=doubao_performance_brief,
     )
     paths = _voice_paths(project)
     old = _read_json(paths["manifest"], "voice manifest") if paths["manifest"].is_file() else None
     manifest = _fresh_manifest_with_reuse(project, plan, units, old)
     text = _sample_text(units)
-    run_dir = project.create_run_dir(f"voice-sample-{uuid.uuid4().hex}")
     provider_text_prompt = None
     provider_prompt_sha = None
     if provider_id == "doubao":
@@ -714,9 +734,67 @@ def _sample(
             target_duration_seconds=DOUBAO_SAMPLE_MAX_AUDIO_DURATION_SECONDS,
         )
         provider_prompt_sha = text_prompt_sha256(provider_text_prompt)
-    raw = adapter.synthesize(
-        _request(plan, text, provider_text_prompt=provider_text_prompt)
-    )
+        old_sample = old.get("sample") if isinstance(old, Mapping) else None
+        if (
+            isinstance(old_sample, Mapping)
+            and old_sample.get("status") == "unknown_external_outcome"
+            and not authorize_new_request_after_unknown
+        ):
+            raise VoiceoverStateError(
+                "current 豆包样音已经是 unknown_external_outcome；"
+                "普通 sample 不得重复发送可能计费的请求。"
+                "只有用户明确承担一次新外部调用后，才可使用 "
+                "--authorize-new-request-after-unknown"
+            )
+        # 在任何外部请求前先冻结 authored brief、current source/scene binding
+        # 与确定性 prompt identity。恢复不得重新读取参考附件或重新创作 brief；
+        # 已收到音频但原生证据无效时会在下方改写为 unknown_external_outcome。
+        write_json_atomic(paths["plan"], plan)
+        _write_manifest(paths["manifest"], manifest, plan, units)
+    run_dir = project.create_run_dir(f"voice-sample-{uuid.uuid4().hex}")
+    sample_started_at = _now()
+    try:
+        raw = adapter.synthesize(
+            _request(plan, text, provider_text_prompt=provider_text_prompt)
+        )
+    except DoubaoEvidenceUnavailable as exc:
+        if provider_id != "doubao":
+            raise
+        finished_at = _now()
+        manifest["sample"] = {
+            "status": "unknown_external_outcome",
+            "identityHash": None,
+            "media": None,
+            "providerTextPromptSha256": provider_prompt_sha,
+            "failure": {
+                "stage": "provider_evidence",
+                "reasonCode": exc.reason_code,
+                "providerResponseReceived": True,
+                "externalResultIncomplete": True,
+                "retryAllowed": False,
+            },
+            "approval": {
+                "approved": False,
+                "identityHash": None,
+                "approvalBasis": None,
+                "approvedAt": None,
+            },
+        }
+        manifest["runs"].append(
+            {
+                "kind": "sample",
+                "provider": "doubao",
+                "status": "unknown_external_outcome",
+                "reasonCode": exc.reason_code,
+                "providerResponseReceived": True,
+                "externalResultIncomplete": True,
+                "retryAllowed": False,
+                "startedAt": sample_started_at,
+                "finishedAt": finished_at,
+            }
+        )
+        _write_manifest(paths["manifest"], manifest, plan, units)
+        raise
     result = normalizer(
         raw.bytes,
         paths["sample"],
@@ -779,9 +857,16 @@ def _sample(
             "approvedAt": None,
         },
     }
-    manifest["runs"].append(
-        {"kind": "sample", "status": "validated", "startedAt": _now(), "finishedAt": _now()}
-    )
+    sample_run: dict[str, Any] = {
+        "kind": "sample",
+        "provider": provider_id,
+        "status": "validated",
+        "startedAt": sample_started_at,
+        "finishedAt": _now(),
+    }
+    if authorize_new_request_after_unknown:
+        sample_run["authorizedNewRequestAfterUnknown"] = True
+    manifest["runs"].append(sample_run)
     write_json_atomic(paths["plan"], plan)
     _write_manifest(paths["manifest"], manifest, plan, units)
     return (
@@ -3537,6 +3622,22 @@ def _parser() -> argparse.ArgumentParser:
     sample.add_argument("--project", required=True, type=Path)
     sample.add_argument("--voice")
     sample.add_argument("--rate", type=int)
+    sample.add_argument(
+        "--doubao-performance-brief",
+        type=Path,
+        help=(
+            "coordinator 参考 current Seed Audio 示例生成的 JSON；"
+            "豆包样音必填，其他 provider 禁止"
+        ),
+    )
+    sample.add_argument(
+        "--authorize-new-request-after-unknown",
+        action="store_true",
+        help=(
+            "仅在用户明确承担一次可能重复计费的新豆包请求后使用；"
+            "普通恢复不得设置"
+        ),
+    )
     approve_sample = sub.add_parser("approve-sample", help="持久化用户已试听的 current 样音批准")
     approve_sample.add_argument("--project", required=True, type=Path)
     approve_sample.add_argument("--identity-hash", required=True)
@@ -3607,12 +3708,39 @@ def main(
                 raise VoiceoverStateError(
                     "activeProvider 必须与项目 voiceoverMode 一致；请使用匹配的项目"
                 )
+            doubao_performance_brief = None
+            if provider_id == "doubao":
+                if args.doubao_performance_brief is None:
+                    raise VoiceoverStateError(
+                        "豆包样音需要 --doubao-performance-brief；"
+                        "请由 coordinator 参考 current Seed Audio 示例生成"
+                    )
+                doubao_performance_brief = _read_json(
+                    args.doubao_performance_brief,
+                    "doubao performance brief",
+                )
+            elif args.doubao_performance_brief is not None:
+                raise VoiceoverStateError(
+                    "--doubao-performance-brief 只允许用于豆包项目"
+                )
+            if (
+                provider_id != "doubao"
+                and args.authorize_new_request_after_unknown
+            ):
+                raise VoiceoverStateError(
+                    "--authorize-new-request-after-unknown 只允许用于豆包项目"
+                )
             audio, identity, review_audio, request_audit, audio_sha256 = _sample(
                 project, voice=voice, rate=rate, provider_id=provider_id,
                 provider_config=provider_config,
+                doubao_performance_brief=doubao_performance_brief,
+                authorize_new_request_after_unknown=(
+                    args.authorize_new_request_after_unknown
+                ),
                 adapter=adapter or _adapter_from_plan(_build_plan_and_units(
                     project, voice=voice, rate=rate, provider_id=provider_id,
                     provider_config=provider_config,
+                    doubao_performance_brief=doubao_performance_brief,
                 )[0]),
                 normalizer=normalizer or normalize_and_publish,
             )

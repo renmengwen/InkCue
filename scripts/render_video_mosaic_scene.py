@@ -79,6 +79,12 @@ def _load_config(project: project_workspace.Project, relative: str) -> tuple[Pat
         int(background[1:], 16)
     except ValueError as exc:
         raise MosaicRenderError("backgroundHex 必须是 #RRGGBB") from exc
+    canvas = project.plan.get("outputCanvas")
+    plan_background = canvas.get("background") if isinstance(canvas, dict) else None
+    if background != plan_background:
+        raise MosaicRenderError(
+            "mosaic backgroundHex 必须与 current generation plan background 一致"
+        )
     sources = value["sources"]
     if not isinstance(sources, list) or len(sources) != 4:
         raise MosaicRenderError("首版视频四宫格必须恰好包含 4 个 source")

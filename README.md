@@ -198,9 +198,13 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 # 阶段 0 选择不传给 create_project；联合动作在重验 current identities 后原子冻结。
 # 省略 --pending-initial-approval 的旧调用仅用于兼容既有已批准工作流，不得用于新任务绕过阶段 0。
 
-# 在 pending 预项目中生成样音；用户在阶段 0 一次联合回复中批准 current identity
-& $envPy scripts\generate_voiceover.py sample --project <项目根目录> `
-  --voice zh-CN-YunjianNeural --rate 0
+# 在 pending 预项目中生成样音；豆包先由 coordinator 参考 current Seed Audio 示例生成 brief
+& $envPy scripts\generate_voiceover.py sample --project <豆包项目根目录> `
+  --voice <voice> --rate 0 `
+  --doubao-performance-brief <项目\.work\doubao-performance-brief.json>
+# Edge TTS / MiniMax 不使用 performance brief 参数
+& $envPy scripts\generate_voiceover.py sample --project <Edge或MiniMax项目根目录> `
+  --voice <voice> --rate 0
 # 不单独先写 sample approval；联合批准动作同时绑定 current content identity 与 SAMPLE_IDENTITY。
 & $envPy scripts\approve_initial_project.py --project <项目根目录> `
   --selection <parser 输出的-selection.json> `

@@ -23,7 +23,7 @@
 
 ## 2. 视觉拓扑
 
-每个 scene 的 prompt 必须明确画布、纸张、线稿/配色、该幕语义主体、构图、留白、
+每个 scene 的 prompt 必须优先消费 generation plan 冻结的 preset `promptRecipe`，并明确该 recipe 对应的画布 surface、线条/造型/配色、该幕语义主体、构图、留白、
 画内文字策略和禁水印要求，并且在本条内自包含。provider 请求彼此独立，不共享对话或前一张
 图片；不得使用“延续”“沿用”“同上”“上一幕”“参照前图”等跨请求指代。
 
@@ -73,8 +73,11 @@ generation plan 不得保留 `imagePrompt`，内容草案也不得提前把字�
 
 一个合格的 scene prompt 至少说明：
 
-1. 1920×1080、暖米黄纸张和极简黑色手绘基调（公共视觉 preset 可由
-   `globalPrompt` 提供，但 scene 仍不得依赖跨请求上下文）；
+1. 1920×1080、所选 renderer 的共享画布 surface，以及 generation plan 冻结
+   `promptRecipe` 的线条、造型、配色、纹理与装饰语言；当前六模板共享
+   `warm-paper-stream-v1` 的 `#F5EBD7` 暖米黄纸张，但不得再叠加“极简黑色手绘”等
+   默认模板风格去覆盖铅笔、国风、手账、复古或漫画 recipe。`globalPrompt` 可提供完整
+   preset recipe，但 scene 仍须自包含与本幕相关的视觉语言；
 2. 当前旁白对应的单一核心命题、主体和必要的动作/状态；
 3. 主体之间的空间关系、独立留白以及可被后续 annotation 分开的墨迹簇；
 4. `constraints.forbidText=false`（默认）时允许语义需要的画内文字，并明确其准确内容；

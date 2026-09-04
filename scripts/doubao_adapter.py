@@ -51,12 +51,48 @@ _RATE_LIMIT_MARKERS = (
     "请求过于频繁",
 )
 
+DOUBAO_EVIDENCE_REASON_CODES = frozenset(
+    {
+        "invalid_duration",
+        "invalid_original_duration",
+        "missing_subtitle",
+        "invalid_subtitle_text",
+        "empty_sentences",
+        "invalid_sentence",
+        "invalid_sentence_timing",
+        "empty_words",
+        "invalid_word",
+        "invalid_word_timing",
+        "sentence_words_text_mismatch",
+        "subtitle_sentences_text_mismatch",
+        "unclassified_native_evidence_failure",
+    }
+)
 
-class _DoubaoSubtitleUnavailable(PermanentProviderError):
+
+class DoubaoEvidenceUnavailable(PermanentProviderError):
     """响应已含可能计费的音频，但同请求原生字幕证据不完整。"""
 
     provider_response_received = True
     external_result_incomplete = True
+    retry_allowed = False
+
+    def __init__(self, reason_code: str) -> None:
+        if reason_code not in DOUBAO_EVIDENCE_REASON_CODES:
+            reason_code = "unclassified_native_evidence_failure"
+        self.reason_code = reason_code
+        super().__init__(
+            "豆包已返回音频，但同请求原生字级字幕或时长证据无效"
+            f"（reason={reason_code}）"
+        )
+
+
+class _DoubaoEvidenceValidationError(ValueError):
+    """只携带稳定原因码，避免把 provider 响应或正文写入审计。"""
+
+    def __init__(self, reason_code: str) -> None:
+        self.reason_code = reason_code
+        super().__init__(reason_code)
 
 
 def sanitize_provider_request_id(value: object | None) -> str | None:
@@ -266,9 +302,11 @@ class DoubaoAdapter:
             subtitle_bytes, subtitle_metadata = self._subtitle_sidecar(
                 value, text_prompt=request.text
             )
+        except _DoubaoEvidenceValidationError as exc:
+            raise DoubaoEvidenceUnavailable(exc.reason_code) from exc
         except (TypeError, ValueError, KeyError) as exc:
-            raise _DoubaoSubtitleUnavailable(
-                "豆包已返回音频，但同请求原生字级字幕或时长证据无效"
+            raise DoubaoEvidenceUnavailable(
+                "unclassified_native_evidence_failure"
             ) from exc
         header_get = getattr(headers, "get", None)
         log_id = header_get("X-Tt-Logid") if callable(header_get) else None
@@ -282,49 +320,52 @@ class DoubaoAdapter:
         )
 
     @staticmethod
-    def _duration_ms(value: object, *, label: str) -> int:
+    def _duration_ms(value: object, *, reason_code: str) -> int:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError(f"{label} 必须是数值")
+            raise _DoubaoEvidenceValidationError(reason_code)
         seconds = float(value)
         if not math.isfinite(seconds) or seconds <= 0 or seconds > DOUBAO_MAX_AUDIO_DURATION_SECONDS:
-            raise ValueError(f"{label} 必须位于 0–120 秒")
+            raise _DoubaoEvidenceValidationError(reason_code)
         return round(seconds * 1000)
 
     @staticmethod
-    def _timestamp(value: object, *, label: str) -> int:
+    def _timestamp(value: object, *, reason_code: str) -> int:
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValueError(f"{label} 必须是非负毫秒整数")
+            raise _DoubaoEvidenceValidationError(reason_code)
         return value
 
     @classmethod
     def _subtitle_sidecar(
         cls, value: Mapping[str, Any], *, text_prompt: str
     ) -> tuple[bytes, dict[str, Any]]:
-        duration_ms = cls._duration_ms(value.get("duration"), label="duration")
+        duration_ms = cls._duration_ms(
+            value.get("duration"), reason_code="invalid_duration"
+        )
         original_duration_ms = cls._duration_ms(
-            value.get("original_duration"), label="original_duration"
+            value.get("original_duration"),
+            reason_code="invalid_original_duration",
         )
         subtitle = value.get("subtitle")
         if not isinstance(subtitle, Mapping):
-            raise ValueError("subtitle 必须是对象")
+            raise _DoubaoEvidenceValidationError("missing_subtitle")
         subtitle_text = subtitle.get("text")
         sentences = subtitle.get("sentences")
         if not isinstance(subtitle_text, str) or not subtitle_text.strip():
-            raise ValueError("subtitle.text 不能为空")
+            raise _DoubaoEvidenceValidationError("invalid_subtitle_text")
         if not isinstance(sentences, list) or not sentences:
-            raise ValueError("subtitle.sentences 不能为空")
+            raise _DoubaoEvidenceValidationError("empty_sentences")
         normalized_sentences: list[dict[str, Any]] = []
         previous_sentence_end = -1
         previous_word_end = -1
         total_words = 0
-        for sentence_index, sentence in enumerate(sentences, start=1):
+        for sentence in sentences:
             if not isinstance(sentence, Mapping):
-                raise ValueError("subtitle sentence 必须是对象")
+                raise _DoubaoEvidenceValidationError("invalid_sentence")
             start_ms = cls._timestamp(
-                sentence.get("start_time"), label=f"sentence[{sentence_index}].start_time"
+                sentence.get("start_time"), reason_code="invalid_sentence_timing"
             )
             end_ms = cls._timestamp(
-                sentence.get("end_time"), label=f"sentence[{sentence_index}].end_time"
+                sentence.get("end_time"), reason_code="invalid_sentence_timing"
             )
             sentence_text = sentence.get("text")
             words = sentence.get("words")
@@ -332,24 +373,24 @@ class DoubaoAdapter:
                 end_ms <= start_ms
                 or end_ms > duration_ms
                 or start_ms < previous_sentence_end
-                or not isinstance(sentence_text, str)
-                or not sentence_text.strip()
-                or not isinstance(words, list)
-                or not words
             ):
-                raise ValueError("subtitle sentence 时间或文本结构无效")
+                raise _DoubaoEvidenceValidationError("invalid_sentence_timing")
+            if not isinstance(sentence_text, str) or not sentence_text.strip():
+                raise _DoubaoEvidenceValidationError("invalid_sentence")
+            if not isinstance(words, list) or not words:
+                raise _DoubaoEvidenceValidationError("empty_words")
             normalized_words: list[dict[str, Any]] = []
             sentence_word_text = ""
-            for word_index, word in enumerate(words, start=1):
+            for word in words:
                 if not isinstance(word, Mapping):
-                    raise ValueError("subtitle word 必须是对象")
+                    raise _DoubaoEvidenceValidationError("invalid_word")
                 word_start = cls._timestamp(
                     word.get("start_time"),
-                    label=f"sentence[{sentence_index}].word[{word_index}].start_time",
+                    reason_code="invalid_word_timing",
                 )
                 word_end = cls._timestamp(
                     word.get("end_time"),
-                    label=f"sentence[{sentence_index}].word[{word_index}].end_time",
+                    reason_code="invalid_word_timing",
                 )
                 word_text = word.get("text")
                 if (
@@ -357,10 +398,10 @@ class DoubaoAdapter:
                     or word_start < start_ms
                     or word_end > end_ms
                     or word_start < previous_word_end
-                    or not isinstance(word_text, str)
-                    or not word_text.strip()
                 ):
-                    raise ValueError("subtitle word 时间或文本结构无效")
+                    raise _DoubaoEvidenceValidationError("invalid_word_timing")
+                if not isinstance(word_text, str) or not word_text.strip():
+                    raise _DoubaoEvidenceValidationError("invalid_word")
                 normalized_words.append(
                     {"start_time": word_start, "end_time": word_end, "text": word_text}
                 )
@@ -370,7 +411,9 @@ class DoubaoAdapter:
             if re.sub(r"\s+", "", sentence_word_text) != re.sub(
                 r"\s+", "", sentence_text
             ):
-                raise ValueError("subtitle sentence.text 与 words 文本不一致")
+                raise _DoubaoEvidenceValidationError(
+                    "sentence_words_text_mismatch"
+                )
             normalized_sentences.append(
                 {
                     "start_time": start_ms,
@@ -383,7 +426,9 @@ class DoubaoAdapter:
         if re.sub(r"\s+", "", "".join(item["text"] for item in normalized_sentences)) != re.sub(
             r"\s+", "", subtitle_text
         ):
-            raise ValueError("subtitle.text 与 sentences 文本不一致")
+            raise _DoubaoEvidenceValidationError(
+                "subtitle_sentences_text_mismatch"
+            )
         sidecar = {
             "contractVersion": DOUBAO_SUBTITLE_TYPE,
             "providerContractVersion": DOUBAO_PROVIDER_CONTRACT_VERSION,
@@ -425,9 +470,11 @@ class DoubaoAdapter:
 
 
 __all__ = [
+    "DOUBAO_EVIDENCE_REASON_CODES",
     "DOUBAO_ENDPOINT",
     "DOUBAO_PROVIDER_CONTRACT_VERSION",
     "DOUBAO_SUBTITLE_TYPE",
     "DoubaoAdapter",
+    "DoubaoEvidenceUnavailable",
     "sanitize_provider_request_id",
 ]

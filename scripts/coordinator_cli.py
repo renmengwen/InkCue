@@ -13,7 +13,12 @@ from typing import Any
 
 try:
     from .agent_task_contract import (
+        RESULT_CONTRACT_VERSION,
+        ROLE_REQUIRED_OUTPUT_BASENAME,
+        AgentContractError,
         TrustedTaskContext,
+        ValidatedAgentTask,
+        build_coordinator_result_payload,
         sha256_file,
         validate_agent_result,
         validate_agent_task,
@@ -24,10 +29,19 @@ try:
         build_initial_approval_options,
         parse_initial_approval_response,
     )
-    from .project_workspace import load_project, write_json_atomic
+    from .project_workspace import (
+        load_project,
+        validate_pre_project_generation_plan_data,
+        write_json_atomic,
+    )
 except ImportError:  # pragma: no cover - direct script execution
     from agent_task_contract import (  # type: ignore
+        RESULT_CONTRACT_VERSION,
+        ROLE_REQUIRED_OUTPUT_BASENAME,
+        AgentContractError,
         TrustedTaskContext,
+        ValidatedAgentTask,
+        build_coordinator_result_payload,
         sha256_file,
         validate_agent_result,
         validate_agent_task,
@@ -38,15 +52,33 @@ except ImportError:  # pragma: no cover - direct script execution
         build_initial_approval_options,
         parse_initial_approval_response,
     )
-    from project_workspace import load_project, write_json_atomic  # type: ignore
+    from project_workspace import (  # type: ignore
+        load_project,
+        validate_pre_project_generation_plan_data,
+        write_json_atomic,
+    )
 
 
 CONTRACT = "whiteboard-coordinator-cli-v1"
 _ATTEMPT_RE = re.compile(r"attempt-(\d+)")
 
 
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"JSON 包含重复字段: {key}")
+        result[key] = value
+    return result
+
+
 def _read_json(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"JSON 必须是普通文件: {path}")
+    value = json.loads(
+        path.read_text(encoding="utf-8"),
+        object_pairs_hook=_reject_duplicate_keys,
+    )
     if not isinstance(value, dict):
         raise ValueError("JSON 顶层必须是对象")
     return value
@@ -68,16 +100,251 @@ def _trusted_context(task_path: Path) -> TrustedTaskContext:
     if run_dir.parent.name != ".work":
         raise ValueError("task 不在可信 .work/<run>/agent-tasks scope")
     scope_root = run_dir.parent.parent
-    if scope_root.parent.name != "drafts":
-        raise ValueError("draft task scope 必须位于 workspace/drafts/<draft-id>")
+    if scope_root.parent.name == "drafts":
+        scope_kind = "draft"
+    elif scope_root.parent.name == "projects":
+        scope_kind = "project"
+    else:
+        raise ValueError("task scope 必须位于 workspace/drafts 或 workspace/projects")
     return TrustedTaskContext(
         workspace_root=scope_root.parent.parent,
         scope_root=scope_root,
-        scope_kind="draft",
+        scope_kind=scope_kind,
         run_id=run_dir.name,
         task_id=task_id,
         attempt=int(match.group(1)),
     )
+
+
+def _load_dispatched_task(
+    task_path: Path,
+    dispatched_task_sha256: str,
+) -> ValidatedAgentTask:
+    context = _trusted_context(task_path)
+    task = validate_agent_task(
+        context.task_json,
+        context,
+        expected_current_bindings=None,
+    )
+    if task.task_sha256 != dispatched_task_sha256:
+        raise AgentContractError("stale", "task.json 与派发时 SHA 不一致")
+    return task
+
+
+def _required_candidate_path(task: ValidatedAgentTask) -> Path:
+    basename = ROLE_REQUIRED_OUTPUT_BASENAME[task.data["taskKind"]]
+    if basename is None:
+        raise ValueError("taskKind 没有 candidate 输出合同")
+    candidates = [path for path in task.allowed_output_files if path.name == basename]
+    if len(candidates) != 1:
+        raise ValueError("task allowedOutputs 没有唯一 candidate 输出")
+    path = candidates[0]
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"candidate 必须是 attempt 内普通文件: {path.name}")
+    return path
+
+
+def _validate_draft_candidate(task: ValidatedAgentTask, candidate: Path) -> dict[str, Any]:
+    value = _read_json(candidate)
+    if task.data["taskKind"] == "contentDrafting":
+        draft = validate_content_draft(value)
+        if draft["visualStylePreset"] != task.data["visualStylePreset"]:
+            raise ValueError("candidate visualStylePreset 与冻结 task 不匹配")
+        return {
+            "contentDraftIdentitySha256": content_draft_identity(draft),
+            "cueCount": len(draft["narrationCues"]),
+            "sceneCount": len(draft["scenes"]),
+            "visualStylePreset": draft["visualStylePreset"],
+        }
+
+    source_srt = next(
+        (path for path in task.input_files if path.name == "source.srt"),
+        None,
+    )
+    if source_srt is None:
+        raise ValueError("storyboard task 缺少冻结 source.srt")
+    plan = validate_pre_project_generation_plan_data(
+        value,
+        source_srt_path=source_srt,
+    )
+    expected_style = {
+        "visualStylePreset": task.data["visualStylePreset"],
+        "visualStyleDisplayName": task.data["visualStyleDisplayName"],
+        "visualStylePromptRecipeSha256": task.data["visualStylePromptRecipeSha256"],
+    }
+    for field, expected in expected_style.items():
+        if plan.get(field) != expected:
+            raise ValueError(f"candidate {field} 与冻结 task 不匹配")
+    if plan.get("globalPrompt") != task.data["visualStylePromptRecipe"]:
+        raise ValueError("candidate globalPrompt 未原样绑定冻结 promptRecipe")
+    return {
+        "sceneCount": len(plan["scenes"]),
+        **expected_style,
+    }
+
+
+def _scene_order_from_frozen_inputs(task: ValidatedAgentTask) -> list[str]:
+    preferred: list[Path] = []
+    fallback: list[Path] = []
+    for path in task.input_files:
+        normalized = path.as_posix()
+        if path.name == "scene-review-bundle.json":
+            preferred.append(path)
+        elif normalized.endswith("/planning/generation-plan.json"):
+            fallback.append(path)
+    for path in [*preferred, *fallback]:
+        value = _read_json(path)
+        raw_order = value.get("sceneOrder")
+        if raw_order is None:
+            scenes = value.get("scenes")
+            if isinstance(scenes, list):
+                raw_order = [item.get("sceneId") if isinstance(item, dict) else None for item in scenes]
+        if (
+            isinstance(raw_order, list)
+            and raw_order
+            and all(isinstance(item, str) and item for item in raw_order)
+            and len(set(raw_order)) == len(raw_order)
+        ):
+            return list(raw_order)
+    raise ValueError("visualReview task 缺少可绑定的冻结 sceneOrder")
+
+
+def _validate_visual_findings(
+    task: ValidatedAgentTask,
+    findings_path: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    document = _read_json(findings_path)
+    required = {"contractVersion", "sceneOrder", "findings", "approvalWritten"}
+    if set(document) != required:
+        raise ValueError("findings.json 字段必须严格匹配 visual review findings v1")
+    if document["contractVersion"] != "whiteboard-visual-review-findings-v1":
+        raise ValueError("findings.json contractVersion 不支持")
+    if document["approvalWritten"] is not False:
+        raise ValueError("findings.json approvalWritten 必须为 false")
+    scene_order = _scene_order_from_frozen_inputs(task)
+    if document["sceneOrder"] != scene_order:
+        raise ValueError("findings.json sceneOrder 与冻结 task 输入不一致")
+    findings = document["findings"]
+    if not isinstance(findings, list):
+        raise ValueError("findings.json findings 必须是数组")
+
+    allowed = {
+        "sceneId",
+        "priority",
+        "code",
+        "message",
+        "summary",
+        "file",
+        "timestampMs",
+        "frameNumber",
+    }
+    result_findings: list[dict[str, Any]] = []
+    reported_scene_ids: list[str] = []
+    for index, finding in enumerate(findings):
+        if not isinstance(finding, dict) or set(finding) - allowed:
+            raise ValueError(f"findings[{index}] 字段不合法")
+        scene_id = finding.get("sceneId")
+        if not isinstance(scene_id, str) or scene_id not in scene_order:
+            raise ValueError(f"findings[{index}].sceneId 不在冻结 sceneOrder")
+        if "message" not in finding and "summary" not in finding:
+            raise ValueError(f"findings[{index}] 缺少 message/summary")
+        for field in ("message", "summary", "code", "file"):
+            if field in finding and (
+                not isinstance(finding[field], str) or not finding[field].strip()
+            ):
+                raise ValueError(f"findings[{index}].{field} 必须是非空字符串")
+        reported_scene_ids.append(scene_id)
+        normalized = {
+            key: value
+            for key, value in finding.items()
+            if key in {"priority", "code", "message", "file", "summary"}
+        }
+        normalized.setdefault("file", scene_id)
+        result_findings.append(normalized)
+    if len(set(reported_scene_ids)) != len(reported_scene_ids):
+        raise ValueError("findings.json 同一 sceneId 最多一条 finding")
+    expected_subsequence = [scene_id for scene_id in scene_order if scene_id in reported_scene_ids]
+    if reported_scene_ids != expected_subsequence:
+        raise ValueError("findings.json 必须按冻结 sceneOrder 排序")
+    return result_findings, {
+        "sceneCount": len(scene_order),
+        "findingCount": len(findings),
+    }
+
+
+def _validate_candidate(
+    task: ValidatedAgentTask,
+) -> tuple[Path, list[dict[str, Any]], dict[str, Any]]:
+    candidate = _required_candidate_path(task)
+    if task.data["taskKind"] in {"contentDrafting", "storyboardPlanning"}:
+        summary = _validate_draft_candidate(task, candidate)
+        return candidate, [], summary
+    if task.data["taskKind"] == "visualReview":
+        findings, summary = _validate_visual_findings(task, candidate)
+        return candidate, findings, summary
+    raise ValueError("通用 candidate 入口不处理 annotationDrafting")
+
+
+def validate_agent_candidate(
+    task_path: Path,
+    dispatched_task_sha256: str,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    task = _load_dispatched_task(task_path, dispatched_task_sha256)
+    candidate, _findings, candidate_summary = _validate_candidate(task)
+    return {
+        "contractVersion": CONTRACT,
+        "operation": "validate-agent-candidate",
+        "status": "PASS",
+        "taskId": task.data["taskId"],
+        "taskKind": task.data["taskKind"],
+        "attempt": task.data["attempt"],
+        "candidatePath": str(candidate.resolve()),
+        "candidateSha256": sha256_file(candidate),
+        **candidate_summary,
+        "validationDurationMs": round((time.perf_counter() - started) * 1000),
+        "formalWritesPerformed": False,
+        "approvalWritten": False,
+    }
+
+
+def materialize_agent_result(
+    task_path: Path,
+    dispatched_task_sha256: str,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    task = _load_dispatched_task(task_path, dispatched_task_sha256)
+    candidate, findings, candidate_summary = _validate_candidate(task)
+    payload = build_coordinator_result_payload(
+        task,
+        output_files=[candidate],
+        findings=findings,
+    )
+    if payload["contractVersion"] != RESULT_CONTRACT_VERSION:
+        raise ValueError("coordinator result contractVersion 不匹配")
+    write_json_atomic(task.context.result_json, payload)
+    result = validate_agent_result(
+        task.context.result_json,
+        task,
+        dispatched_task_sha256=dispatched_task_sha256,
+        expected_current_bindings=task.data["currentBindings"],
+    )
+    return {
+        "contractVersion": CONTRACT,
+        "operation": "materialize-agent-result",
+        "status": "PASS",
+        "taskId": task.data["taskId"],
+        "taskKind": task.data["taskKind"],
+        "attempt": task.data["attempt"],
+        "candidatePath": str(candidate.resolve()),
+        "candidateSha256": sha256_file(candidate),
+        "resultJsonPath": str(task.context.result_json.resolve()),
+        "resultSha256": result.result_sha256,
+        **candidate_summary,
+        "validationDurationMs": round((time.perf_counter() - started) * 1000),
+        "formalWritesPerformed": False,
+        "approvalWritten": False,
+    }
 
 
 def validate_draft_result(task_path: Path) -> dict[str, Any]:
@@ -380,6 +647,18 @@ def build_parser() -> argparse.ArgumentParser:
     initial.add_argument("--fixed-image-generation-mode", choices=("provider", "gpt-login"))
     draft = sub.add_parser("validate-draft-result")
     draft.add_argument("--task", required=True, type=Path)
+    candidate = sub.add_parser(
+        "validate-agent-candidate",
+        help="只读校验 content/storyboard candidate 或 visualReview findings",
+    )
+    candidate.add_argument("--task", required=True, type=Path)
+    candidate.add_argument("--dispatched-task-sha256", required=True)
+    materialize = sub.add_parser(
+        "materialize-agent-result",
+        help="从已校验 candidate 确定性写 result.json 并重验",
+    )
+    materialize.add_argument("--task", required=True, type=Path)
+    materialize.add_argument("--dispatched-task-sha256", required=True)
     status = sub.add_parser("project-status")
     status.add_argument("--project", required=True, type=Path)
     recommend = sub.add_parser(
@@ -413,6 +692,16 @@ def main(argv: list[str] | None = None) -> int:
             summary = parse_initial(args)
         elif args.command == "validate-draft-result":
             summary = validate_draft_result(args.task)
+        elif args.command == "validate-agent-candidate":
+            summary = validate_agent_candidate(
+                args.task,
+                args.dispatched_task_sha256,
+            )
+        elif args.command == "materialize-agent-result":
+            summary = materialize_agent_result(
+                args.task,
+                args.dispatched_task_sha256,
+            )
         elif args.command == "recommend-visual-style":
             summary = recommend_visual_style(args)
         elif args.command == "visual-style-catalog":
@@ -440,8 +729,10 @@ if __name__ == "__main__":
 __all__ = [
     "CONTRACT",
     "main",
+    "materialize_agent_result",
     "project_status",
     "recommend_visual_style",
     "validate_draft_result",
+    "validate_agent_candidate",
     "visual_style_catalog",
 ]

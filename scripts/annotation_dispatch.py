@@ -31,7 +31,10 @@ except ImportError:  # pragma: no cover - direct script execution
 
 
 DISPATCH_MANIFEST_CONTRACT = "whiteboard-annotation-dispatch-v3"
-DISPATCH_PROTOCOL = "annotation-artifact-first-v1"
+# Normal execution is unit-complete: one child writes and locally lints every
+# candidate in its frozen contiguous unit, then returns once.  The artifact
+# watchdog below remains available for abnormal observation/recovery only.
+DISPATCH_PROTOCOL = "annotation-unit-complete-v1"
 DEFAULT_TAIL_GRACE_SECONDS = 30.0
 
 
@@ -142,12 +145,12 @@ class _WatchdogRecord:
 
 
 class ArtifactFirstWatchdog:
-    """Track candidate readiness independently from child process exit.
+    """Track candidate readiness for abnormal observation/recovery.
 
-    Once a valid candidate appears, callers may finalize immediately when the
-    child has exited, or after ``tail_grace_seconds`` while it is still running.
-    This prevents a natural-language final response from extending the critical
-    path indefinitely.
+    Normal unit-complete dispatch materializes only after the child has exited,
+    so it does not wait for this timer.  If a child remains running abnormally,
+    callers may recover after ``tail_grace_seconds`` once a valid candidate has
+    stabilized.  This keeps the grace period out of the normal critical path.
     """
 
     def __init__(self, *, tail_grace_seconds: float = DEFAULT_TAIL_GRACE_SECONDS, clock: Callable[[], float] = time.monotonic) -> None:
@@ -271,10 +274,13 @@ def build_dispatch_manifest(
             "WRITE_RESULT_JSON": False,
             "WRITE_FORMAL_FILES": False,
             "WRITE_APPROVAL_FILES": False,
-            "STOP_AFTER_CANDIDATE_READY": True,
+            "RETURN_AFTER_UNIT_COMPLETE": True,
+            "STOP_AFTER_CANDIDATE_READY": False,
             "LINT_CANDIDATE_BEFORE_NEXT_TASK": True,
             "REPAIR_SCHEMA_JSON_ONLY": True,
             "RESTART_SHORT_CONTEXT_AFTER_PAYLOAD_TOO_LARGE": True,
+            "TAIL_GRACE_RECOVERY_ONLY": True,
+            "CHILD_FINISHED_REQUIRED_FOR_NORMAL_MATERIALIZE": True,
         },
         "configuredConcurrency": int(configured_concurrency),
         "tasks": [dict(item) for item in tasks],
@@ -322,6 +328,31 @@ def observe_dispatch_manifest(
     )
     if task is None:
         raise ValueError("taskId 不在 dispatch manifest")
+    dispatch_units = raw.get("dispatchUnits")
+    if not isinstance(dispatch_units, list):
+        raise ValueError("dispatch manifest dispatchUnits 无效")
+    matching_units = [
+        item
+        for item in dispatch_units
+        if isinstance(item, Mapping)
+        and isinstance(item.get("taskIds"), list)
+        and task_id in item["taskIds"]
+    ]
+    if len(matching_units) != 1 or not isinstance(
+        matching_units[0].get("dispatchUnitId"), str
+    ):
+        raise ValueError("taskId 的 dispatch unit 缺失或不唯一")
+    dispatch_unit = matching_units[0]
+    dispatch_unit_id = dispatch_unit["dispatchUnitId"]
+    batch_materialize_argv = dispatch_unit.get("batchMaterializeArgv")
+    unit_complete_protocol = raw.get("protocol") == DISPATCH_PROTOCOL
+    if unit_complete_protocol and (
+        not isinstance(batch_materialize_argv, list)
+        or any(not isinstance(item, str) for item in batch_materialize_argv)
+    ):
+        raise ValueError("dispatch unit batchMaterializeArgv 无效")
+    if not isinstance(batch_materialize_argv, list):
+        batch_materialize_argv = None
     candidate_value = task.get("candidateAnnotationPath")
     attempt_value = task.get("allowedAttemptDir")
     if not isinstance(candidate_value, str) or not isinstance(attempt_value, str):
@@ -409,7 +440,17 @@ def observe_dispatch_manifest(
         "tailGraceSeconds": tail_grace_seconds,
         "childTailMs": tail_ms,
         "finalizeRecommended": finalize,
-        "nextAction": "materialize_and_validate_result" if finalize else "continue_observing",
+        "dispatchUnitId": dispatch_unit_id,
+        "batchMaterializeArgv": batch_materialize_argv,
+        "nextAction": (
+            "materialize_unit_after_child_finished"
+            if finalize and not child_running and unit_complete_protocol
+            else "abnormal_recovery_check_unit_then_materialize"
+            if finalize and unit_complete_protocol
+            else "materialize_and_validate_result"
+            if finalize
+            else "continue_observing"
+        ),
         "manifestPath": str(path),
         "formalWritesPerformed": False,
         "approvalWritten": False,

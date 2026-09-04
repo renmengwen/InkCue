@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Iterable, Literal, Mapping, Sequence
@@ -19,6 +20,69 @@ TASK_CONTRACT_VERSION = "whiteboard-agent-task-v1"
 RESULT_CONTRACT_VERSION = "whiteboard-agent-result-v1"
 ROLE_CONTRACT_VERSION = "whiteboard-subagent-orchestration-v1"
 PREPARED_TASK_CONTRACT_VERSION = "whiteboard-prepared-agent-task-v1"
+
+CONTENT_DRAFT_CANDIDATE_SCHEMA: Mapping[str, Any] = {
+    "contractVersion": "whiteboard-content-draft-v1",
+    "topLevel": {
+        "required": [
+            "schemaVersion",
+            "contractVersion",
+            "inputMode",
+            "topic",
+            "body",
+            "rewritePolicy",
+            "targetDurationSeconds",
+            "voiceoverMode",
+            "visualStylePreset",
+            "narrationCues",
+            "scenes",
+        ],
+        "allowed": [
+            "schemaVersion",
+            "contractVersion",
+            "inputMode",
+            "topic",
+            "body",
+            "rewritePolicy",
+            "targetDurationSeconds",
+            "voiceoverMode",
+            "visualStylePreset",
+            "narrationCues",
+            "scenes",
+        ],
+    },
+    "narrationCue": {
+        "required": ["cueId", "sceneId", "text"],
+        "allowed": ["cueId", "sceneId", "text"],
+    },
+    "scene": {
+        "required": ["sceneId", "name", "coreIdea", "visualSubject", "imagePrompt"],
+        "allowed": ["sceneId", "name", "coreIdea", "visualSubject", "imagePrompt"],
+    },
+}
+CONTENT_DRAFT_CANDIDATE_SKELETON: Mapping[str, Any] = {
+    "schemaVersion": 1,
+    "contractVersion": "whiteboard-content-draft-v1",
+    "inputMode": None,
+    "topic": None,
+    "body": None,
+    "rewritePolicy": None,
+    "targetDurationSeconds": None,
+    "voiceoverMode": None,
+    "visualStylePreset": None,
+    "narrationCues": [
+        {"cueId": "cue-001", "sceneId": "scene-01", "text": ""},
+    ],
+    "scenes": [
+        {
+            "sceneId": "scene-01",
+            "name": "",
+            "coreIdea": "",
+            "visualSubject": "",
+            "imagePrompt": "",
+        },
+    ],
+}
 
 TASK_KINDS = frozenset(
     {
@@ -64,7 +128,7 @@ ROLE_OUTPUT_BASENAMES: Mapping[str, frozenset[str]] = {
 ROLE_REQUIRED_OUTPUT_BASENAME: Mapping[str, str | None] = {
     "contentDrafting": "candidate.content-draft.json",
     "storyboardPlanning": "candidate.generation-plan.json",
-    "visualReview": None,
+    "visualReview": "findings.json",
     "annotationDrafting": "candidate.annotation.json",
 }
 CURRENT_BINDING_ALLOWLIST = frozenset(
@@ -175,6 +239,30 @@ def _validate_visual_style_snapshot(data: Mapping[str, Any], task_kind: str) -> 
     if actual_sha != expected_sha:
         raise AgentContractError(
             "schema", "visualStylePromptRecipeSha256 与冻结配方字节不匹配"
+        )
+
+
+def _validate_candidate_schema(data: Mapping[str, Any], task_kind: str) -> None:
+    """接受旧 task 缺失字段；新 content task 冻结唯一的最小候选结构。"""
+
+    present = {"candidateSchema", "candidateSkeleton"} & set(data)
+    if not present:
+        return
+    if task_kind != "contentDrafting":
+        raise AgentContractError(
+            "schema", "只有 contentDrafting 可以包含 candidateSchema/candidateSkeleton"
+        )
+    if present != {"candidateSchema", "candidateSkeleton"}:
+        raise AgentContractError(
+            "schema", "contentDrafting 必须同时冻结 candidateSchema 与 candidateSkeleton"
+        )
+    if data["candidateSchema"] != CONTENT_DRAFT_CANDIDATE_SCHEMA:
+        raise AgentContractError(
+            "schema", "candidateSchema 与 whiteboard-content-draft-v1 不匹配"
+        )
+    if data["candidateSkeleton"] != CONTENT_DRAFT_CANDIDATE_SKELETON:
+        raise AgentContractError(
+            "schema", "candidateSkeleton 与 whiteboard-content-draft-v1 不匹配"
         )
 
 
@@ -450,7 +538,12 @@ def validate_agent_task(
             "formalWritesAllowed",
             "approvalWritesAllowed",
         },
-        optional={"sceneId", *_VISUAL_STYLE_TASK_FIELDS},
+        optional={
+            "sceneId",
+            "candidateSchema",
+            "candidateSkeleton",
+            *_VISUAL_STYLE_TASK_FIELDS,
+        },
         field="task",
     )
     if data["contractVersion"] != TASK_CONTRACT_VERSION:
@@ -461,6 +554,7 @@ def validate_agent_task(
     if task_kind not in TASK_KINDS:
         raise AgentContractError("task_kind", "taskKind 不在 allowlist")
     _validate_visual_style_snapshot(data, task_kind)
+    _validate_candidate_schema(data, task_kind)
     if data["scopeKind"] != context.scope_kind:
         raise AgentContractError("scope", "scopeKind 与可信上下文不匹配")
     if ROLE_SCOPE[task_kind] != context.scope_kind:
@@ -535,14 +629,9 @@ def validate_agent_task(
         if output.name not in ROLE_OUTPUT_BASENAMES[task_kind]:
             raise AgentContractError("output_allowlist", "输出文件名不在 role allowlist")
         output_files.append(output)
-    # annotationDrafting children are visual candidate producers only.  The
-    # coordinator materializes the canonical result.json after the candidate
-    # artifact is ready.  Other roles retain the historical child-authored
-    # result contract.
-    if task_kind != "annotationDrafting" and context.result_json.absolute() not in [
-        path.absolute() for path in output_files
-    ]:
-        raise AgentContractError("schema", "allowedOutputs 必须包含 result.json")
+    # 所有 child 都只生产需要语义/视觉判断的 candidate；result.json 是
+    # coordinator 的确定性派生物。旧 task 若仍把 result.json 列入 allowlist，
+    # 继续接受以便恢复，但新 task 不再授权 child 写它。
     required_output = ROLE_REQUIRED_OUTPUT_BASENAME[task_kind]
     if required_output is not None and required_output not in {
         path.name for path in output_files
@@ -712,14 +801,118 @@ def validate_agent_result(
     )
 
 
+def build_coordinator_result_payload(
+    task: ValidatedAgentTask,
+    *,
+    output_files: Sequence[Path],
+    findings: Sequence[Any] = (),
+    warnings: Sequence[str] = (),
+) -> dict[str, Any]:
+    """从已冻结 task 和候选字节确定性构造 completed result。
+
+    本函数只构造 payload，不写文件、不发布正式工件、不写批准。调用方写入
+    ``task.context.result_json`` 后仍必须调用 :func:`validate_agent_result` 重验。
+    """
+
+    if any(not isinstance(item, str) for item in warnings):
+        raise AgentContractError("schema", "warnings 必须是字符串数组")
+    normalized_findings = list(findings)
+    _validate_findings(normalized_findings)
+
+    allowed = {
+        path.absolute(): path
+        for path in task.allowed_output_files
+        if path.name != "result.json"
+    }
+    requested: dict[Path, Path] = {}
+    for raw_path in output_files:
+        path = raw_path.absolute()
+        if path in requested:
+            raise AgentContractError("schema", "coordinator result 输出不能重复")
+        allowed_path = allowed.get(path)
+        if allowed_path is None:
+            raise AgentContractError("output_escape", "coordinator result 包含未授权输出")
+        _assert_no_symlink(allowed_path, task.context.scope_root)
+        if not allowed_path.is_file():
+            raise AgentContractError("missing_file", f"候选输出不是普通文件: {allowed_path.name}")
+        requested[path] = allowed_path
+
+    required_output = ROLE_REQUIRED_OUTPUT_BASENAME[task.data["taskKind"]]
+    if required_output is not None and required_output not in {
+        path.name for path in requested.values()
+    }:
+        raise AgentContractError("missing_output", "completed result 缺少必需候选")
+
+    # 固定使用 task 的 allowedOutputs 顺序，避免调用方参数顺序影响 result identity。
+    output_records = [
+        {
+            "file": task.context.relative_posix(path),
+            "sha256": sha256_file(path),
+        }
+        for path in task.allowed_output_files
+        if path.name != "result.json" and path.absolute() in requested
+    ]
+    return {
+        "contractVersion": RESULT_CONTRACT_VERSION,
+        "taskId": task.data["taskId"],
+        "taskKind": task.data["taskKind"],
+        "scopeKind": task.data["scopeKind"],
+        "attempt": task.data["attempt"],
+        "taskSha256": task.task_sha256,
+        "roleContractVersion": task.data["roleContractVersion"],
+        "roleContractSha256": task.data["roleContractSha256"],
+        "sequence": task.data["sequence"],
+        "status": "completed",
+        "inspectedInputs": list(task.data["inputs"]),
+        "outputs": output_records,
+        "findings": normalized_findings,
+        "warnings": list(warnings),
+        "error": None,
+    }
+
+
 def build_prepared_task_descriptor(
     task: ValidatedAgentTask,
     *,
-    result_writer: Literal["child", "coordinator"] = "child",
+    result_writer: Literal["child", "coordinator"] = "coordinator",
 ) -> dict[str, Any]:
     """返回宿主中立的冻结 task 定位信息，不推断或编码派发方式。"""
 
     role_contract = (task.context.task_dir / "role-contract.md").resolve()
+    candidate_name = ROLE_REQUIRED_OUTPUT_BASENAME[task.data["taskKind"]]
+    if candidate_name is None:
+        raise AgentContractError("schema", "prepared task 缺少 role 候选文件")
+    candidate_path = (task.context.task_dir / candidate_name).resolve(strict=False)
+    scripts_dir = Path(__file__).resolve().parent
+    coordinator_cli = (scripts_dir / "coordinator_cli.py").resolve()
+    common_argv = [
+        "--task",
+        str(task.context.task_json.resolve()),
+        "--dispatched-task-sha256",
+        task.task_sha256,
+    ]
+    if task.data["taskKind"] == "annotationDrafting":
+        candidate_validation_argv = [
+            sys.executable,
+            str((scripts_dir / "validate_annotations.py").resolve()),
+            "lint",
+            "--candidate",
+            str(candidate_path),
+        ]
+        result_materialize_argv = None
+    else:
+        candidate_validation_argv = [
+            sys.executable,
+            str(coordinator_cli),
+            "validate-agent-candidate",
+            *common_argv,
+        ]
+        result_materialize_argv = [
+            sys.executable,
+            str(coordinator_cli),
+            "materialize-agent-result",
+            *common_argv,
+        ]
     return {
         "contractVersion": PREPARED_TASK_CONTRACT_VERSION,
         "preparedOnly": True,
@@ -732,8 +925,21 @@ def build_prepared_task_descriptor(
         "allowedAttemptDir": str(task.context.task_dir.resolve()),
         "resultJsonPath": str(task.context.result_json.resolve()),
         "resultWriter": result_writer,
+        "nextAction": "spawn_now",
+        "candidateOutputPath": str(candidate_path),
         "allowedOutputs": list(task.data["allowedOutputs"]),
         "requiredCapabilities": list(task.data["requiredCapabilities"]),
+        "agentPrompt": build_agent_prompt(
+            task_json=task.context.task_json.resolve(),
+            role_contract=role_contract,
+            task_kind=str(task.data["taskKind"]),
+            task_sha256=task.task_sha256,
+            role_contract_sha256=str(task.data["roleContractSha256"]),
+            candidate_schema=task.data.get("candidateSchema"),
+            candidate_skeleton=task.data.get("candidateSkeleton"),
+        ),
+        "candidateValidationArgv": candidate_validation_argv,
+        "resultMaterializeArgv": result_materialize_argv,
     }
 
 
@@ -744,6 +950,8 @@ def build_agent_prompt(
     task_kind: str,
     task_sha256: str,
     role_contract_sha256: str,
+    candidate_schema: Any = None,
+    candidate_skeleton: Any = None,
 ) -> str:
     """生成不携带业务正文、主对话或数组的最小定位 prompt。"""
 
@@ -756,7 +964,6 @@ def build_agent_prompt(
     if task_json.parent != role_contract.parent:
         raise AgentContractError("prompt", "task 与 role contract 必须属于同一 attempt")
     attempt_dir = task_json.parent
-    result_json = attempt_dir / "result.json"
     if task_kind == "annotationDrafting":
         return (
             "WHITEBOARD_WORKER_PROTOCOL=annotation-elements-v2\n"
@@ -772,16 +979,38 @@ def build_agent_prompt(
             "VALIDATOR_STATUS=<PASS|FAIL|NOT_RUN>\n"
             "SUMMARY=<不超过240个字符的精简摘要>"
         )
+    output_name = ROLE_REQUIRED_OUTPUT_BASENAME[task_kind]
+    if output_name is None:
+        raise AgentContractError("prompt", "role 缺少 candidate 输出")
+    output_label = "FINDINGS_JSON" if task_kind == "visualReview" else "CANDIDATE_JSON"
+    candidate_schema_line = (
+        "CANDIDATE_SCHEMA_JSON="
+        + json.dumps(candidate_schema, ensure_ascii=False, separators=(",", ":"))
+        + "\n"
+        if candidate_schema is not None
+        else ""
+    )
+    candidate_skeleton_line = (
+        "CANDIDATE_SKELETON_JSON="
+        + json.dumps(candidate_skeleton, ensure_ascii=False, separators=(",", ":"))
+        + "\n"
+        if candidate_skeleton is not None
+        else ""
+    )
     return (
         f"ROLE_CONTRACT_PATH={role_contract}\n"
         f"ROLE_CONTRACT_SHA256={role_contract_sha256}\n"
         f"TASK_JSON_PATH={task_json}\n"
         f"TASK_SHA256={task_sha256}\n"
         f"ALLOWED_ATTEMPT_DIR={attempt_dir}\n\n"
+        f"{output_label}={attempt_dir / output_name}\n"
+        f"{candidate_schema_line}"
+        f"{candidate_skeleton_line}"
+        "WRITE_RESULT_JSON=false\n\n"
         "RETURN_FORMAT:\n"
-        "TASK_STATUS=<completed|failed|cancelled>\n"
-        f"RESULT_JSON={result_json}\n"
-        "VALIDATOR_STATUS=<PASS|FAIL|NOT_RUN>\n"
+        "TASK_STATUS=<candidate_ready|failed|cancelled>\n"
+        f"{output_label}=<{output_label.lower().replace('_', '-')}-absolute-path>\n"
+        "VALIDATOR_STATUS=NOT_RUN\n"
         "SUMMARY=<不超过240个字符的精简摘要>"
     )
 
@@ -817,13 +1046,14 @@ def build_agent_bundle_prompt(
 
     blocks = [
         "TASK_BUNDLE_VERSION=whiteboard-agent-task-bundle-v1",
-        "DISPATCH_PROTOCOL=annotation-artifact-first-v1",
+        "DISPATCH_PROTOCOL=annotation-unit-complete-v1",
         "PROCESS_TASKS_IN_SEQUENCE=true",
         "CONTINUE_AFTER_TASK_FAILURE=true",
         "WRITE_RESULT_JSON=false",
         "WRITE_FORMAL_FILES=false",
         "WRITE_APPROVAL_FILES=false",
-        "STOP_AFTER_CANDIDATE_READY=true",
+        "RETURN_AFTER_UNIT_COMPLETE=true",
+        "LINT_CANDIDATE_BEFORE_NEXT_TASK=true",
         f"TASK_COUNT={len(frozen)}",
     ]
     candidate_paths: list[str] = []
@@ -832,6 +1062,13 @@ def build_agent_bundle_prompt(
         role_contract = task.role_contract_file.resolve(strict=True)
         attempt_dir = task.context.task_dir.resolve(strict=True)
         candidate_json = (attempt_dir / "candidate.annotation.json").resolve(strict=False)
+        lint_argv = [
+            sys.executable,
+            str((Path(__file__).resolve().parent / "validate_annotations.py").resolve()),
+            "lint",
+            "--candidate",
+            str(candidate_json),
+        ]
         if task_json.parent != role_contract.parent or task_json.parent != attempt_dir:
             raise AgentContractError(
                 "prompt", "bundle task 与 role contract 必须属于同一 attempt"
@@ -853,6 +1090,8 @@ def build_agent_bundle_prompt(
                 f"TASK_{index}_SHA256={task_sha}",
                 f"TASK_{index}_ALLOWED_ATTEMPT_DIR={attempt_dir}",
                 f"TASK_{index}_CANDIDATE_JSON={candidate_json}",
+                f"TASK_{index}_CANDIDATE_LINT_ARGV="
+                + json.dumps(lint_argv, ensure_ascii=False, separators=(",", ":")),
                 # Compatibility locator for older host adapters.  This is a
                 # path declaration only; WRITE_RESULT_JSON=false remains the
                 # authoritative rule and children must not create the file.
@@ -865,9 +1104,10 @@ def build_agent_bundle_prompt(
             "",
             "PROCESSING_RULES:",
             "按 TASK_1..N 顺序处理；每个 task 独立写自己的 candidate。",
-            "单个 task 失败时不要伪造 candidate，并继续后续 task。",
-            "result.json 由 coordinator 在 candidate ready 后确定性生成；child 不得写 result.json。",
-            "写完 candidate.annotation.json 且文件可读后立即停止，不等待自然语言收尾。",
+            "每写完一幕 candidate，立即执行该幕 TASK_N_CANDIDATE_LINT_ARGV；只有 PASS 才继续下一幕。",
+            "单幕 lint FAIL 时只修当前 candidate 并重跑当前 lint；无法通过时不要伪造 candidate，记录失败后继续后续 task。",
+            "result.json 由 coordinator 在整个 unit 完成后确定性生成；child 不得写 result.json。",
+            "全部 task 处理完后一次返回，不在单幕 candidate_ready 时等待 coordinator followup。",
             "不得写列出的 attempt 目录之外的文件，不得合并多幕 candidate。",
             "",
             "RETURN_FORMAT:",

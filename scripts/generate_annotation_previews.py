@@ -119,8 +119,9 @@ ANNOTATION_VISUAL_REVIEW_ROLE_CONTRACT = """# annotation preview visualReview fr
   标签/叙事角色是否与画面一致，以及跨幕区域表达是否明显异常。
 - annotationDrafting 已完成；本 task 只做 post-generation 额外语义预审，不得修改
   annotation、preview、contact sheet、technical manifest 或任何正式项目文件。
-- 只写 findings.json/result.json；findings 仅供用户确认时参考，绝不代表批准，也不得
-  写 annotation review approval。
+- 只写 findings.json；不得写 result.json。findings 仅供用户确认时参考，绝不代表批准，也不得写 annotation review approval；result 由 coordinator 确定性生成。
+- findings.json 顶层严格使用 whiteboard-visual-review-findings-v1：只含 contractVersion、sceneOrder、findings、approvalWritten=false；每条 finding 必须带冻结 sceneOrder 内的 sceneId 和 message/summary，同一幕最多一条并按 scene 顺序。
+- 写完 findings.json 后立即以 candidate_ready 返回；不得搜索源码、测试、examples、其他 reference 或 CLI help，也不得自行运行 coordinator validator。
 """
 HOST_ANNOTATION_VISUAL_REVIEW_CAPABILITIES = (
     "readFiles",
@@ -251,7 +252,6 @@ def prepare_annotation_visual_review_dispatch(
         "requiredCapabilities": list(HOST_ANNOTATION_VISUAL_REVIEW_CAPABILITIES),
         "allowedOutputs": [
             trusted.relative_posix(findings),
-            trusted.relative_posix(trusted.result_json),
         ],
         "formalWritesAllowed": False,
         "approvalWritesAllowed": False,
@@ -273,7 +273,10 @@ def prepare_annotation_visual_review_dispatch(
         "status": "ready_for_coordinator_dispatch",
         "taskFile": trusted.relative_posix(trusted.task_json),
         "preparedOnly": True,
-        "preparedTask": build_prepared_task_descriptor(task),
+        "preparedTask": build_prepared_task_descriptor(
+            task,
+            result_writer="coordinator",
+        ),
         "findingsAreAdvisory": True,
         "approvalWritten": False,
     }
@@ -441,7 +444,8 @@ def build_annotation_preview_contact_sheet(
     columns = min(2, len(candidates))
     rows = (len(candidates) + columns - 1) // columns
     tile_width, tile_height = 760, 500
-    sheet = Image.new("RGB", (columns * tile_width, rows * tile_height), (245, 239, 221))
+    # Keep review padding aligned with the current warm-paper renderer surface.
+    sheet = Image.new("RGB", (columns * tile_width, rows * tile_height), (245, 235, 215))
     draw = ImageDraw.Draw(sheet)
     title_font = _contact_font(22)
     meta_font = _contact_font(18)

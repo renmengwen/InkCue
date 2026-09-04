@@ -69,7 +69,7 @@ class Config:
     # 这里描述的是真实落墨接触点，而非手部图像的外框。
     tip_anchor_x: float = 0.0
     tip_anchor_y: float = 0.0
-    canvas_hex: str = "#F6F1E3"    # 画布底色
+    canvas_hex: str = "#F5EBD7"    # 与 generation plan 固定画布合同一致
     match_bg: bool = True          # 用内容掩码清理独立生图产生的纸纹框
     paper_gray_cut: int = 170      # 深色线稿种子阈值
     paper_saturation_cut: int = 60 # 显著色彩种子阈值

@@ -35,7 +35,7 @@ SEGMENTATION_CONTRACT_VERSION = "speech-unit-v1"
 FULL_TRACK_SEGMENTATION_CONTRACT_VERSION = "full-track-v1"
 DEFAULT_PROVIDER_CONTRACT_VERSION = "edge-tts-python-7.2.8-v1"
 DOUBAO_PROVIDER_CONTRACT_VERSION = "doubao-seed-audio-expressive-native-word-v2"
-DOUBAO_PROMPT_SPEC_VERSION = "doubao-whiteboard-single-narrator-director-v2"
+DOUBAO_PROMPT_SPEC_VERSION = "doubao-whiteboard-authored-performance-v3"
 DOUBAO_MODEL = "seed-audio-1.0"
 DOUBAO_ENDPOINT = "https://openspeech.bytedance.com/api/v3/tts/create"
 SUPPORTED_PROVIDER_PROTOCOLS = {
@@ -75,6 +75,11 @@ SEGMENT_STATUSES = (
     "validated",
     "failed",
     "cancelled",
+    "unknown_external_outcome",
+)
+SAMPLE_STATUSES = (
+    "pending",
+    "validated",
     "unknown_external_outcome",
 )
 
@@ -1146,8 +1151,48 @@ def validate_voice_manifest(
     full_approval = manifest.get("fullApproval")
     if not isinstance(sample, Mapping) or not isinstance(sample.get("approval"), Mapping):
         raise VoiceoverValidationError("sample approval 结构无效")
+    sample_status = sample.get("status")
+    if sample_status not in SAMPLE_STATUSES:
+        raise VoiceoverValidationError("sample.status 无效")
     if not isinstance(sample["approval"].get("approved"), bool):
         raise VoiceoverValidationError("sample.approval.approved 必须是布尔值")
+    sample_prompt_sha = sample.get("providerTextPromptSha256")
+    if sample_prompt_sha is not None:
+        _require_sha256(
+            sample_prompt_sha, label="sample.providerTextPromptSha256"
+        )
+    if sample_status == "validated":
+        _require_sha256(sample.get("identityHash"), label="sample.identityHash")
+        if not isinstance(sample.get("media"), Mapping):
+            raise VoiceoverValidationError("validated sample 缺少 media")
+    elif sample_status == "unknown_external_outcome":
+        if sample.get("identityHash") is not None or sample.get("media") is not None:
+            raise VoiceoverValidationError(
+                "unknown_external_outcome sample 不得伪造 identity 或 media"
+            )
+        if sample["approval"].get("approved") is not False:
+            raise VoiceoverValidationError(
+                "unknown_external_outcome sample 不得保留批准"
+            )
+        failure = sample.get("failure")
+        if not isinstance(failure, Mapping):
+            raise VoiceoverValidationError(
+                "unknown_external_outcome sample 缺少 failure"
+            )
+        reason_code = failure.get("reasonCode")
+        if (
+            failure.get("stage") != "provider_evidence"
+            or not isinstance(reason_code, str)
+            or re.fullmatch(r"[a-z][a-z0-9_]*", reason_code) is None
+            or failure.get("providerResponseReceived") is not True
+            or failure.get("externalResultIncomplete") is not True
+            or failure.get("retryAllowed") is not False
+        ):
+            raise VoiceoverValidationError(
+                "unknown_external_outcome sample.failure 结构无效"
+            )
+    if not isinstance(manifest.get("runs"), list):
+        raise VoiceoverValidationError("voice manifest runs 必须是数组")
     if not isinstance(full_approval, Mapping) or not isinstance(full_approval.get("approved"), bool):
         raise VoiceoverValidationError("fullApproval.approved 必须是布尔值")
     # Technical validation is deliberately independent from human approval.
@@ -1272,6 +1317,7 @@ __all__ = [
     "ProviderError",
     "RawAudioResult",
     "RetryableProviderError",
+    "SAMPLE_STATUSES",
     "SEGMENTATION_CONTRACT_VERSION",
     "SEGMENT_STATUSES",
     "SUPPORTED_AUDIO_PROVIDERS",

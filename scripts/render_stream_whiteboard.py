@@ -556,6 +556,9 @@ def _build_cfg(args) -> sr.Config:
         kw["brush_radius"] = args.brush_radius
     if args.cap_long_edge is not None:
         kw["cap_long_edge"] = args.cap_long_edge
+    canvas_hex = getattr(args, "canvas_hex", None)
+    if canvas_hex is not None:
+        kw["canvas_hex"] = canvas_hex
     kw["ink_path_mode"] = args.ink_path
     kw["color_fill"] = args.color_fill
     kw["pause_mode"] = args.pause
@@ -910,6 +913,22 @@ def _render_formal_candidate_worker(task: dict) -> dict:
         scene = task["timingScene"]
         cfg = sr.Config(**task["config"])
 
+        plan_path = Path(task["generationPlanPath"])
+        if project_workspace.sha256_file(plan_path) != task["generationPlanSha256"]:
+            raise render_timing.RenderTimingError("batch worker 启动前 generation plan 已变化")
+        try:
+            current_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise render_timing.RenderTimingError("batch worker 无法读取 current generation plan") from exc
+        current_canvas = current_plan.get("outputCanvas") if isinstance(current_plan, dict) else None
+        current_background = (
+            current_canvas.get("background") if isinstance(current_canvas, dict) else None
+        )
+        if cfg.canvas_hex != current_background:
+            raise render_timing.RenderTimingError(
+                "batch worker canvasHex 与 current generation plan background 不一致"
+            )
+
         if project_workspace.sha256_file(image_path) != task["imageSha256"]:
             raise render_timing.RenderTimingError(
                 f"batch 期间 {task['sceneId']} current image 已变化"
@@ -1101,6 +1120,7 @@ def _render_formal_context(
     prepare_started_ns = time.perf_counter_ns()
     profile = context.project.render_profile
     render_timing.validate_formal_context_current(context.project, frozen)
+    _assert_formal_canvas_current(context.project, cfg)
     image_sha256 = project_workspace.sha256_file(context.image_path)
     annotation_sha256 = project_workspace.sha256_file(context.annotation_path)
     image_bgr = sr._imread_any(context.image_path)
@@ -1204,11 +1224,34 @@ def _render_formal_context(
     return context.output_path, identity
 
 
-def _formal_cfg(args, profile: dict) -> sr.Config:
+def _formal_canvas_hex(project: project_workspace.Project) -> str:
+    canvas = project.plan.get("outputCanvas")
+    background = canvas.get("background") if isinstance(canvas, dict) else None
+    if not isinstance(background, str):
+        raise render_timing.RenderTimingError(
+            "current generation plan 缺少有效 outputCanvas.background"
+        )
+    return background
+
+
+def _assert_formal_canvas_current(
+    project: project_workspace.Project,
+    cfg: sr.Config,
+) -> None:
+    if cfg.canvas_hex != _formal_canvas_hex(project):
+        raise render_timing.RenderTimingError(
+            "正式 render canvasHex 与 current generation plan background 不一致"
+        )
+
+
+def _formal_cfg(args, project: project_workspace.Project) -> sr.Config:
     cfg_args = argparse.Namespace(**vars(args))
-    cfg_args.fps = profile["fps"]
-    cfg_args.cap_long_edge = profile["width"]
-    return _build_cfg(cfg_args)
+    cfg_args.fps = project.render_profile["fps"]
+    cfg_args.cap_long_edge = project.render_profile["width"]
+    cfg_args.canvas_hex = _formal_canvas_hex(project)
+    cfg = _build_cfg(cfg_args)
+    _assert_formal_canvas_current(project, cfg)
+    return cfg
 
 
 def _run_formal(args) -> tuple[Path, str]:
@@ -1216,7 +1259,7 @@ def _run_formal(args) -> tuple[Path, str]:
     if len(contexts) != 1:
         raise render_timing.RenderTimingError("单幕兼容入口只接受一个 sceneId")
     context = contexts[0]
-    cfg = _formal_cfg(args, context.project.render_profile)
+    cfg = _formal_cfg(args, context.project)
     hand_png, hand_data, hand_sha256 = _load_formal_hand(args, cfg)
     encoding = project_workspace.load_workspace_config(
         verify_writable=False
@@ -1247,7 +1290,7 @@ def _run_formal_batch(args) -> dict:
     configured = workspace.for_stage("sceneRender")
     scene_preset = workspace.video_encoding.scene_preset
     scene_encoder_threads = workspace.video_encoding.scene_encoder_threads
-    cfg = _formal_cfg(args, project.render_profile)
+    cfg = _formal_cfg(args, project)
     hand_png, hand_data, hand_sha256 = _load_formal_hand(args, cfg)
     effective = min(configured, len(contexts))
     if effective == 1:
@@ -1344,6 +1387,8 @@ def _run_formal_batch(args) -> dict:
                 "timingScene": context.timing_scene,
                 "renderProfile": project.render_profile,
                 "config": vars(cfg).copy(),
+                "generationPlanPath": str(project.plan_path),
+                "generationPlanSha256": frozen.generation_plan_sha256,
                 "handPath": str(hand_png) if hand_png is not None else None,
                 "handSha256": hand_sha256,
                 "bareTip": bool(args.bare_tip),

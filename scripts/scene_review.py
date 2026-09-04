@@ -84,7 +84,9 @@ SCENE_VISUAL_REVIEW_ROLE_CONTRACT = """# scene visualReview frozen role contract
 
 - 只读 task.json 列出的 current scene review bundle、timing/render bindings 与单幕视频。
 - 对每幕只抽取首帧、中段、完成帧等少量关键帧，检查落墨顺序、完成状态和跨幕一致性。
-- 只写 findings.json/result.json；findings 仅为辅助信息，不得批准 scene review、修改 manifest 或合并视频。
+- 只写 findings.json；不得写 result.json。findings 仅为辅助信息，不得批准 scene review、修改 manifest 或合并视频；result 由 coordinator 确定性生成。
+- findings.json 顶层严格使用 whiteboard-visual-review-findings-v1：只含 contractVersion、sceneOrder、findings、approvalWritten=false；每条 finding 必须带冻结 sceneOrder 内的 sceneId 和 message/summary，同一幕最多一条并按 scene 顺序。
+- 写完 findings.json 后立即以 candidate_ready 返回；不得搜索源码、测试、examples、其他 reference 或 CLI help，也不得自行运行 coordinator validator。
 - 必须按冻结 bundle 的 sceneOrder 报告；不得重复抽取或审阅每幕之外的媒体。
 """
 
@@ -359,7 +361,7 @@ def _prepare_scene_visual_review_task(
         "inputs": inputs,
         "currentBindings": current_bindings,
         "requiredCapabilities": ["readFiles", "viewImage", "writeCandidateJson"],
-        "allowedOutputs": [context.relative_posix(findings), context.relative_posix(context.result_json)],
+        "allowedOutputs": [context.relative_posix(findings)],
         "formalWritesAllowed": False,
         "approvalWritesAllowed": False,
     }
@@ -373,7 +375,10 @@ def _prepare_scene_visual_review_task(
         "preparationMode": "artifact_only",
         "status": "ready_for_coordinator_dispatch",
         "preparedOnly": True,
-        "preparedTask": build_prepared_task_descriptor(task),
+        "preparedTask": build_prepared_task_descriptor(
+            task,
+            result_writer="coordinator",
+        ),
         "sceneReviewIdentityHash": bundle["identityHash"],
     }
     return audit

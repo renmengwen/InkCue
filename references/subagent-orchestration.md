@@ -23,10 +23,12 @@
 
 首版只允许四种 role：
 
-- `contentDrafting`：阶段 0 的 topic/text 内容草案；输出 attempt 内的 `candidate.content-draft.json`、`result.json` 和可选 `agent.log`。
-- `storyboardPlanning`：传统 SRT 分镜；输出 attempt 内的 `candidate.generation-plan.json`、`result.json` 和可选 `agent.log`。
-- `visualReview`：按冻结 scope 查看 current scene 图片、annotation preview bundle，或全部 current 单幕的少量关键帧；输出 attempt 内的 `findings.json`、`result.json` 和可选 `agent.log`。
-- `annotationDrafting`：每个 task 只处理一幕；child 仅输出 attempt 内的 `candidate.annotation.json` 和可选 `agent.log`，`result.json` 由 coordinator 在候选就绪后确定性生成。
+- `contentDrafting`：阶段 0 的 topic/text 内容草案；child 只输出 attempt 内的 `candidate.content-draft.json` 和可选 `agent.log`。
+- `storyboardPlanning`：传统 SRT 分镜；child 只输出 attempt 内的 `candidate.generation-plan.json` 和可选 `agent.log`。
+- `visualReview`：按冻结 scope 查看 current scene 图片或 annotation preview bundle；需要独立第二意见时也可查看全部 current 单幕的少量关键帧。child 只输出 attempt 内的 `findings.json` 和可选 `agent.log`。
+- `annotationDrafting`：每个 task 只处理一幕；child 只输出 attempt 内的 `candidate.annotation.json` 和可选 `agent.log`。
+
+四种 role 的 `result.json` 都由 coordinator 在 candidate/findings 就绪并通过相应纯本地校验后确定性生成；child 不得创建、修改或补写 result。
 
 视觉 role 必须实际具备 `viewImage`；只读取文件名、尺寸、metadata 或 SHA 不算查看图片。
 
@@ -54,9 +56,9 @@ agent.log
 
 ## 4. Task 与 Result
 
-`task.json` 使用 `whiteboard-agent-task-v1`，至少冻结 task identity、role contract version/SHA、input 相对路径和 SHA、current bindings、required capabilities、allowed outputs，以及两个显式 false 的写权限字段。
+`task.json` 使用 `whiteboard-agent-task-v1`，至少冻结 task identity、role contract version/SHA、input 相对路径和 SHA、current bindings、required capabilities、allowed outputs、该 role 的 canonical `candidateSchema` 与 `candidateSkeleton`，以及两个显式 false 的写权限字段。schema/skeleton 是 candidate 唯一结构来源，必须随 task 一起受 SHA/identity 保护；child 不得从 examples、源码、旧 candidate 或对话猜 schema。
 
-`result.json` 使用 `whiteboard-agent-result-v1`。`status` 只允许 `completed | failed | cancelled`。对于 `annotationDrafting`，result 由 coordinator 在 candidate artifact ready 后生成；其他 role 仍由 child 生成。result 必须回显 task identity、派发 task SHA、role contract version/SHA、实际检查过的 frozen inputs，以及 attempt 内 output 路径和 SHA。
+`result.json` 使用 `whiteboard-agent-result-v1`。`status` 只允许 `completed | failed | cancelled`。所有 role 的 result 均由 coordinator 的确定性 materializer 生成，必须回显 task identity、派发 task SHA、role contract version/SHA、task 声明的 frozen inputs，以及 attempt 内 output 路径和 SHA。materializer 不能把 child 的自然语言完成声明转换成成功；candidate/findings 不存在、校验失败或 SHA 不匹配时必须生成失败审计或拒绝 materialize。
 
 coordinator 收取 result 后必须重验：
 
@@ -72,7 +74,7 @@ coordinator 收取 result 后必须重验：
 
 ## 5. Prompt 最小化
 
-child prompt 只提供 attempt 内 `role-contract.md` 与 `task.json` 的绝对定位路径、对应 SHA、唯一允许写入的 attempt 目录，以及固定 `TASK_STATUS`/`RESULT_JSON` 返回格式。
+child prompt 只提供 attempt 内 `role-contract.md` 与 `task.json` 的绝对定位路径、对应 SHA、唯一允许写入的 attempt 目录，以及固定 `TASK_STATUS`/candidate 或 findings 路径返回格式。child 不返回或编写 `RESULT_JSON`。
 
 prompt 不复制完整主对话、完整 SRT/正文、所有 scene 数组、provider 配置、凭据、批准信息、长工具日志或未冻结状态。
 
@@ -80,7 +82,19 @@ prompt 不复制完整主对话、完整 SRT/正文、所有 scene 数组、prov
 
 `contentDrafting`、`storyboardPlanning`、`visualReview` 和 `annotationDrafting` 共用同一条最小 prompt 规则：prompt 是定位器，不是业务输入的第二份副本。child 必须从冻结的 `task.json`、其 `inputs` 与 `role-contract.md` 读取业务内容；主窗口不得把正文、完整 SRT、完整 scene 数组或上一轮对话重新拼进 prompt。provider 名称、endpoint、模型参数、API key/token/cookie、批准或拒绝内容、完整工具日志、外部响应和未冻结状态都不得进入 prompt。
 
-除固定返回协议外，prompt 只允许传递以下冻结值：`taskId`/`taskKind`、`taskSha256`、`roleContractPath`/`roleContractSha256`、`TASK_JSON_PATH`、唯一 `ALLOWED_ATTEMPT_DIR`、候选或 findings/result 的 attempt 内路径，以及固定的返回字段/枚举。`formalWritesAllowed:false` 与 `approvalWritesAllowed:false` 必须留在 task schema 中由 validator 校验，不得以自然语言授权代替。
+同一主任务的 workspace access / Python preflight 只由 coordinator 做一次并复用绝对 `ENV_PY`。child 不重复运行 `prepare_env`，不主动读取当前 task 之外的 reference，也不搜索源码、tests、examples、CLI `--help`、result/candidate schema 或 provider 配置；只允许读取短入口、冻结 `role-contract.md`、`task.json`、`task.inputs` 及 task 内 canonical `candidateSchema`/`candidateSkeleton`。descriptor 指定的纯本地 candidate lint/validation argv 可以直接执行，coordinator 仍必须独立重验。
+
+除固定返回协议外，prompt 只允许传递以下冻结值：`taskId`/`taskKind`、`taskSha256`、`roleContractPath`/`roleContractSha256`、`TASK_JSON_PATH`、唯一 `ALLOWED_ATTEMPT_DIR`、candidate/findings 的 attempt 内路径，以及固定的返回字段/枚举。`formalWritesAllowed:false` 与 `approvalWritesAllowed:false` 必须留在 task schema 中由 validator 校验，不得以自然语言授权代替。
+
+prepare/agent-first descriptor 必须直接给 coordinator：
+
+- 可原样派发的 `agentPrompt`；
+- 使用绝对 `ENV_PY`/脚本路径的 `candidateValidationArgv`；
+- coordinator-owned `resultMaterializeArgv`；
+- 稳定的 `nextAction`，正常 ready task 为 `spawn_now`。
+- task 内 canonical `candidateSchema` 与 `candidateSkeleton` 的定位/摘要；child 按完整骨架生成，不自行补猜字段。
+
+这些字段是确定性交接信息，不是宿主 dispatch 决策。descriptor 仍不得包含 agentId、child slot、`spawnAgentCall`、fallback 结论或把 prepare 伪报成真实派发。
 
 `contentDrafting` 的 `candidate.content-draft.json` 使用 scene 字段 `imagePrompt`；用户确认 current 草案后，coordinator 只能按以下唯一确定性映射生成正式 generation plan：
 
@@ -111,17 +125,21 @@ formal.scenes[i].sceneId/name/coreIdea/visualSubject/cueRange = candidate 对应
 
 effective concurrency 取 configured、ready task 数、宿主已换算 child slots 与 coordinator resource budget 的最小值。coordinator 始终保留自己的槽位；总 slot 到 child slot 只换算一次。
 
+模型和 reasoning effort 属于宿主执行策略，不进入 task、candidate、result 或作品 identity。默认选择满足 role 必需文本/图像/视频能力的最快可用 child，并使用 `medium` effort；一次完整 schema 归一后仍失败、复杂实质修订或非结构业务 validator 失败时再升级更强模型或 effort。不得为了填写 SHA、路径或 result 字段使用高推理 child；这些机械字段由 materializer 完成。
+
 只有 coordinator 能从当前实际宿主工具、live agents 和任务状态得知 child slots 与 role capability，并据此调用真实 `spawn_agent`、`followup` 和等待机制。Python prepare/validate 脚本只冻结 task descriptor 或有序 unit：不得接收/推断 runtime child slots、coordinator budget、宿主 capability，不得输出 `spawnAgentCall`/`spawnRequest`、`dispatchAllowed` 或替宿主选择 fallback。真实派发不可用时，才由具备相同 role capability 的 coordinator fallback，并报告当前宿主的真实原因；双方都缺能力时报告 `BLOCKED`。
 
-attempt 是 artifact 版本边界，不是 agent 生命周期边界。首次独立 draft/plan/review 使用短上下文 child；用户修订 content 草案仍创建新 attempt，但上一 attempt 的同 role child 仍存在、idle、上一结果 completed 且 role contract 兼容时，优先 followup 原 child，让它只读取新 task/base/revision 的路径与 SHA。原 child 不可用、失败、role 改变、修订升级为全面独立重写或用户明确要求换执行者时才 spawn 新 child。同一 attempt 的执行性补正也 followup 原 child；无论是否复用，磁盘 current 与 SHA 始终高于代理记忆。
+attempt 是 artifact 版本边界，不是 agent 生命周期边界。首次独立 draft/plan/review 使用短上下文 child；用户修订 content 草案仍创建新 attempt，但上一 attempt 的同 role child 仍存在、idle、上一结果 completed 且 role contract 兼容时，优先 followup 原 child，让它只读取新 task/base/revision 的路径与 SHA。原 child 不可用、失败、role 改变、修订升级为全面独立重写或用户明确要求换执行者时才 spawn 新 child。
+
+candidate validator 必须在一次运行中返回全部可确定的结构错误。首次结构失败属于同 attempt 执行性补正：只 followup 原 child 一次，传完整错误清单以及冻结 schema/skeleton 的定位，要求一次全量 canonical schema 归一，不重新附带正文、图片或长日志。若重验仍是结构失败，立即换用更强的短上下文 child 处理同一 attempt；不得逐字段 followup、重复试错或创建新 attempt。业务内容实质修订仍按 revision 规则创建新 attempt。无论是否复用或升级，磁盘 current 与 SHA 始终高于代理记忆，且不改变正式写入和批准边界。
 
 `contentDrafting`、`storyboardPlanning` 和 global `visualReview` 使用一 task一 child。`annotationDrafting` 保持一幕一 task/attempt/candidate/result（child 只写 candidate，result 由 coordinator 生成），但把按 plan 连续的最多 3 个 task 组成一个 dispatch unit，由同一 child 顺序执行。prepare 根据 configured concurrency 平衡连续切分：5 task/4 configured 为 `2+1+1+1`，9/3 为 `3+3+3`，5/2 为 `3+2`。多个 ready unit 必须先填满 effective 并发再等待，不能串行伪装成并发。
 
-coordinator 可在等待期间调用 `annotation_dispatch.py observe` 重验 candidate 并更新 coordinator-owned audit。首次 ready 的 candidate SHA 必须冻结；之后字节变化标记为 stale，当前观察不是 ready 时不得沿用旧 `candidateReadyAt` 建议 materialize。candidate ready 后 child 已结束则立即建议 materialize；仍运行时只等待固定 tail grace，随后返回 `finalizeRecommended=true`。公开 materialize 入口必须重验 current dispatch manifest、`finalizeRecommended` 和冻结 SHA 后才写 coordinator-owned result/materialized candidate。该 CLI 不调用、followup、取消或结束 child，也不写 result/formal/approval；coordinator 仍使用宿主协作工具处理 child 生命周期，再调用既有确定性 materialize/validate。audit 分别记录 prepare、first/last candidate ready、child tail 与 result materialize，阶段耗时不得全部留空。
+annotation 正常路径不在每幕 candidate 后进行宿主 followup。child 在一个 dispatch unit 内按 sequence 连续处理：每写完一幕 `candidate.annotation.json`，立即执行该 task descriptor 的纯本地 `candidateLint.command`；只有 lint `PASS` 才进入下一 task，lint `FAIL` 时只补正当前 candidate，避免统一 schema 错误扩散。处理完 unit 内全部 task 后只返回一次 unit 完成摘要。`LINT_CANDIDATE_BEFORE_NEXT_TASK` 仍是硬约束，`STOP_AFTER_CANDIDATE_READY` 不得用于正常路径。
 
-annotation unit 内不是“生成完三幕再统一校验”：child 每写完一个 `candidate.annotation.json` 就返回该 task 的 `candidate_ready`，coordinator 立即执行 descriptor 中的 `candidateLint.command`。只有 lint `PASS` 才允许该 child 继续 unit 内下一 task；lint `FAIL` 时只补正当前 candidate，避免统一 schema 错误扩散到整批。dispatch manifest 的 `LINT_CANDIDATE_BEFORE_NEXT_TASK` 是硬约束。
+coordinator 收到一次 unit 完成后，batch observe 并冻结各幕 candidate SHA，再用 batch materialize 循环复用现有单 task 逻辑，确定性生成各 task result/materialized candidate，最后执行绑定 current project/timing 的完整 validator。公开 materialize 入口必须重验 current dispatch manifest、candidate SHA 与 lint 状态；该 CLI 不调用、followup、取消或结束 child，也不写正式 annotation/approval。30 秒 child tail grace 只保留给 child 状态异常、宿主完成事件丢失等恢复路径，不得延迟 candidate 已齐全且 child 已正常返回的关键路径。audit 记录 prepare、各 candidate ready/lint、unit complete、batch materialize 和异常 tail（如有）。
 
-一个 annotation child 只服务一个 dispatch unit，图片上下文不得跨 unit 累积。同一 attempt 的执行性补正仍优先 followup 原 child，但只传冻结定位、candidate SHA 与精简错误，不重新附带原图或长日志。`413`、`Payload Too Large` 或 context length exceeded 表示原 child 对本次补正已不可用：禁止原样重试，改用新短上下文 child 做 JSON-only 补正；只有错误确实涉及 region/视觉簇时，才让新 child 单独加载当前一幕图片。换 child 不创建新 attempt，也不改变正式写入和批准边界。
+一个 annotation child 只服务一个 dispatch unit，图片上下文不得跨 unit 累积。同一 attempt 的执行性补正仍优先 followup 原 child，但只传冻结定位、candidate SHA 与精简错误，不重新附带原图或长日志。正常的下一幕不属于 followup。`413`、`Payload Too Large` 或 context length exceeded 表示原 child 对本次补正已不可用：禁止原样重试，改用新短上下文 child 做 JSON-only 补正；只有错误确实涉及 region/视觉簇时，才让新 child 单独加载当前一幕图片。换 child 不创建新 attempt，也不改变正式写入和批准边界。
 
 prepare 摘要只记录 configured concurrency、task/unit 数和冻结 descriptor；effective/peak、mode、真实原因和 task/agent 映射只能由 coordinator 在真实派发或 fallback 后记录。fake scheduler 和 prepared artifact 都不算真实 dispatch。
 
@@ -164,8 +182,8 @@ Phase 4 只能在线稿已获用户明确确认后开始。coordinator 先构建
 两种模式都不得在旁白未获 current Gate 批准时仅凭策略选择启动生图。
 
 - `user_first`：不创建或派发额外 `visualReview`，机器摘要记录 `semanticReview.status=skipped_by_user`，只把 current 线稿 review Markdown 链接、identity、计数和异常摘要交给用户；不得把全部图片重新嵌入主聊天。
-- `agent_first`：只冻结宿主中立 `visualReview` task descriptor；coordinator 必须直接调用宿主协作工具完成真实 spawn/wait。child 把完整意见写入 attempt 的 `findings.json/result.json`；coordinator 只接收路径、status、validator 状态和精简摘要，不得再次逐图审阅。人工模式将 advisory findings 摘要与 current review 文件一并交用户；AI 代理模式下，coordinator 必须重验 child 确实具备所需媒体能力、已检查全部冻结 scope、findings 内容和 current binding，再作出独立审阅决定；`completed` 或无 findings 不能自动推出批准。prepared descriptor 不能报告成真实派发或 review 完成。
-- 生图复用覆盖全部 current PNG 的 global `visualReview`；annotation 只复查已生成的 preview bundle，不能跳过 `annotationDrafting` 对原图的实际查看；scene 只在全部 current 单幕形成一次有序 bundle 后预审。自主模式的 scene bundle 仍须具备视频能力的审阅者实际检查 current 视频；final 不再重复声音主观 Gate，而按 current full audio/字幕/AAC/完整解码/时长帧数尾部/BGM/`FINAL_IDENTITY` 技术证据推进。
+- `agent_first`：只冻结宿主中立 `visualReview` task descriptor；coordinator 必须直接调用宿主协作工具完成真实 spawn/wait。child 把完整意见写入 attempt 的 `findings.json`，coordinator 执行确定性 materializer 生成 `result.json`，只接收路径、status、validator 状态和精简摘要，不得再次逐图审阅。人工模式将 advisory findings 摘要与 current review 文件一并交用户；AI 代理模式下，coordinator 必须重验 child 确实具备所需媒体能力、已检查全部冻结 scope、findings 内容和 current binding，再作出独立审阅决定；`completed` 或无 findings 不能自动推出批准。prepared descriptor 不能报告成真实派发或 review 完成。
+- 生图复用覆盖全部 current PNG 的 global `visualReview`；annotation 只复查已生成的 preview bundle，不能跳过 `annotationDrafting` 对原图的实际查看；scene 只在全部 current 单幕形成一次有序 bundle 后审阅。自主模式的 scene bundle 仍须具备视频能力的 coordinator 实际完整检查 current 视频；既然该完整观看是批准必需条件，关键帧 visualReview child 不作为强制关键路径，只在需要独立第二意见或定位辅助时派发。final 不再重复声音主观 Gate，而按 current full audio/字幕/AAC/完整解码/时长帧数尾部/BGM/`FINAL_IDENTITY` 技术证据推进。
 
 ## 9. Gate 决策与自动代理
 
@@ -184,4 +202,4 @@ topic/text 内容草案与传统 SRT 的初始分镜/策略属于阶段 0 用户
 - `SKIP`：当前阶段未执行真实派发或外部调用；
 - `待确认`：技术结果已准备，仍等待指定审阅主体的 Gate 决定；AI 代理模式下 coordinator 应立即接回审阅，不把该状态转成用户停顿。
 
-真实宿主协作只有在 child 从冻结 task 读取输入、写出 candidate（annotationDrafting 的 result 由 coordinator 随后生成），并记录真实 agent/task 标识后才能报告 dispatch `PASS`。真实图片 provider、Edge 服务、声音接受度和视觉接受度必须与自动 fixture/技术验证分别报告；报告中应按项目模式准确区分“待用户确认”和“待 coordinator 代理审阅”。
+真实宿主协作只有在 child 从冻结 task 读取输入、写出 candidate/findings、coordinator 确定性生成并重验 result，并记录真实 agent/task 标识后才能报告 dispatch `PASS`。真实图片 provider、Edge 服务、声音接受度和视觉接受度必须与自动 fixture/技术验证分别报告；报告中应按项目模式准确区分“待用户确认”和“待 coordinator 代理审阅”。
