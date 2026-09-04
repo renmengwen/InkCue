@@ -9,33 +9,37 @@ description: 将主题、正文或 SRT 制作成按叙事顺序流式落墨的�
 
 ## 1. 输入与新建/恢复路由
 
-| `inputMode` | `rewritePolicy` | `voiceoverMode` 来源 | 首个业务 reference |
+| `inputMode` | `rewritePolicy` | `voiceoverMode` 来源 | 业务 reference 的读取时机 |
 |---|---|---|---|
 | `srt` | 不适用 | 默认读取 active provider；用户明确静音时为 `disabled` | [content-input.md](references/content-input.md) |
-| `topic` | 仅 `generate` | 自动读取 active provider | [phase-0-content.md](references/phase-0-content.md)、[content-input.md](references/content-input.md) |
-| `text` | `preserve | polish` | 自动读取 active provider | [phase-0-content.md](references/phase-0-content.md)、[content-input.md](references/content-input.md) |
+| `topic` | 仅 `generate` | 自动读取 active provider | child 派发成功后按需读取 [phase-0-content.md](references/phase-0-content.md)、[content-input.md](references/content-input.md) |
+| `text` | `preserve | polish` | 自动读取 active provider | child 派发成功后按需读取 [phase-0-content.md](references/phase-0-content.md)、[content-input.md](references/content-input.md) |
 
 - `topic + preserve/polish`、`text + generate` 非法。非 SRT 必须冻结 15–600 秒的 `targetDurationSeconds`；缺失时可把建议值 60 秒与其他缺失配置一次性展示。
 - 用户明确说“新任务”“不要沿用旧任务”时必须新建 `draft-root`，不得根据同名目录或相似内容恢复，也不得使用 `--resume`。只有用户明确指定继续既有项目时才进入恢复路径。
 - 除明确静音外，`voiceoverMode` 只能通过 `voice_provider_config.py status` 的脱敏结果冻结为 `edge-tts | minimax | doubao`。不得让用户在三者间选择，不得直接读取或转述 `config/*.local.json`，也不得从旧项目、命令行参数或对话猜 provider。
 - 视觉模板采用“AI 推荐默认值 + 用户明确覆盖”。在创建 `contentDrafting` / `storyboardPlanning` attempt 前冻结具体 preset ID；不得把 `auto` 写入任何 artifact。
 
-## 2. 一次环境预检与短上下文 child
+## 2. topic/text 单次 bootstrap 与短上下文 child
 
-coordinator 先把本文件目录解析为绝对 `SKILL_ROOT`。同一主任务、同一宿主运行环境只做一次：
+coordinator 先把本文件目录解析为绝对 `SKILL_ROOT`。下列独立环境预检只适用于传统 SRT、兼容或诊断路径；正常 `topic`/`text` 新任务不得在 bootstrap 前运行它们：
 
 ```powershell
 python <SKILL_ROOT>\scripts\prepare_env.py --check-workspace-access
 python <SKILL_ROOT>\scripts\prepare_env.py --check
 ```
 
-若第二条仅因专用环境或依赖未准备而失败，才运行不带 `--check` 的同一脚本。捕获末行绝对 `ENV_PY` 后，后续所有 Python 命令直接使用 `<ENV_PY> <SKILL_ROOT>\scripts\...`；不得先试裸 `python`、`py` 或依赖临时 shell 变量。只有宿主权限、工作区或解释器环境实际改变时才重新预检。
+若第二条仅因专用环境或依赖未准备而失败，才运行不带 `--check` 的同一脚本。捕获末行绝对 `ENV_PY` 后，传统 SRT、兼容或诊断路径的后续 Python 命令直接使用 `<ENV_PY> <SKILL_ROOT>\scripts\...`；不得先试裸 `python`、`py` 或依赖临时 shell 变量。只有宿主权限、工作区或解释器环境实际改变时才重新预检。
 
 `contentDrafting`、`storyboardPlanning`、`visualReview`、`annotationDrafting` child 不重复运行 `prepare_env`。child 只读取本短入口、冻结的 `role-contract.md`、`task.json` 及 `task.inputs`；不得主动搜索源码、tests、examples、CLI `--help`、provider 配置、长日志或跨阶段 reference。descriptor 给出的纯本地 candidate lint/validation 命令可以直接执行，coordinator 仍须独立重验。
 
-正常 topic/text 新任务只有一条阶段 0 快路径：上述一次环境预检 → 一次 `prepare_draft_agent_task.py contentDrafting` fast-prepare → descriptor `nextAction=spawn_now` 后立即派发。fast-prepare 必须在一次调用内经脱敏接口冻结 active provider、采用用户明确指定的 preset 或自动推荐并冻结具体 preset ID、生成合法 managed content input、分配不覆盖既有目录的唯一新 `draft-root`，并准备 attempt descriptor。coordinator 不得在此前后再单独运行 provider status、视觉推荐、手写 `content-input.json`、用 `Test-Path` 试探名称，或搜索源码/tests/examples/CLI `--help`；只有用户主动要求浏览模板时才运行 visual style catalog。用户明确要求新任务时 fast-prepare 不得恢复或覆盖旧任务。
+对正常 `topic`/`text` 新任务，coordinator 在完整读取本文件后，真实派发前只允许一条确定性 bootstrap 链路：解析 `SKILL_ROOT` → 一次 `prepare_env.py --bootstrap-content-draft` → 读取 descriptor 的派发字段 → 立即调用顶层 direct `spawn_agent`。除这条链路外，派发前禁止 memory lookup、分段重读任何 reference、搜索源码/tests/examples、试跑 CLI `--help` 或以 `Test-Path` 探路；不得预先读取 `phase-0-content.md`、`content-input.md`、`prompt-writing.md`、`subagent-orchestration.md`。这些业务 reference 只能在 child 已成功派发后，由 child 或 coordinator 处理 candidate、进入后续阶段时按需读取。bootstrap 不得被 provider status、视觉推荐、手写输入或其他探路步骤拆开。
+
+正常 topic/text 新任务只有一条阶段 0 快路径：上述一次 `prepare_env.py --bootstrap-content-draft` → descriptor `nextAction=spawn_now` 后立即派发。该单次 bootstrap 已完成 workspace-access、环境 check、经脱敏接口冻结 active provider、采用用户明确指定的 preset 或自动推荐并冻结具体 preset ID、生成合法 managed content input、分配不覆盖既有目录的唯一新 `draft-root`，并准备 attempt descriptor。coordinator 不得在此前后再单独运行 provider status、视觉推荐、手写 `content-input.json`、先落 `body-file`、用 `Test-Path` 试探名称，或搜索源码/tests/examples/CLI `--help`；只有用户主动要求浏览模板时才运行 visual style catalog。用户明确要求新任务时 bootstrap 不得恢复或覆盖旧任务。
 
 prepared task 必须直接提供 `agentPrompt`、`candidateValidationArgv`、`resultMaterializeArgv` 和下一步定位信息；task 还必须携带该 role 的 canonical `candidateSchema` 与 `candidateSkeleton`。coordinator 收到后应立即派发，不再自行拼 prompt 或搜索 result/candidate schema；child 只能按冻结 schema/skeleton 生成 candidate/findings，不得猜字段。所有 role 的 `result.json` 均由 coordinator 根据冻结 task 与输出 SHA 确定性生成。
+
+`spawn_agent` 是开发者工具定义中的顶层 collaboration direct tool，必须直接调用；它被有意排除在 `functions.exec` 的 `tools.*` / `ALL_TOOLS` 中。不得因为嵌套工具列表中找不到它就宣称 child unavailable，也不得在真实派发前选择 coordinator fallback。descriptor 为 `nextAction=spawn_now` 后，下一步必须先发起真实的 direct `spawn_agent` 调用；只有该 direct call 实际返回 tool error，才能报告派发失败，并再按当前用户约束决定 `BLOCKED` 或是否允许 fallback。当前用户明确要求“主代理只编排”时，本 Skill 全链路禁止 coordinator 编写或修改 `contentDrafting`、`storyboardPlanning`、`visualReview`、`annotationDrafting` 的生成式 candidate/findings；派发失败只能准确报告，不能伪装为即将派发或由主代理代做。
 
 candidate validator 的一次运行必须返回完整结构错误清单，不得只报第一个字段。首次结构失败时，同一 attempt 只 followup 一次原 child，要求按完整错误清单和冻结 `candidateSchema`/`candidateSkeleton` 做一次全量 schema 归一；仍结构失败就直接换用更强的短上下文 child，不得逐字段“洋葱式”反复补丁。该补正策略不创建新 Gate、状态机或批准语义，也不削弱 current、SHA、stale 与批准边界。
 
@@ -62,7 +66,7 @@ candidate validator 的一次运行必须返回完整结构错误清单，不得
 
 1. coordinator 是唯一用户接口和正式 writer；只有它能发布正式 scene/audio/annotation、manifest、timeline、SRT、identity、stale、checkpoint 和批准。child 始终 `formalWritesAllowed:false`、`approvalWritesAllowed:false`。
 2. attempt 是 artifact 版本边界，不是执行者边界。首次独立任务使用短上下文 child；同一 role 的修订/执行性补正优先 followup 仍兼容且 idle 的原 child，否则再 spawn。磁盘 task、input 和 SHA 始终高于代理记忆。
-3. 只有 coordinator 根据实际宿主 slots/capability 调用 spawn/followup/wait 或决定 fallback。Python 不推断 child slots，不生成宿主调用，不替 coordinator 决定 dispatch。effective agent concurrency 取 configured、ready task/unit、可用 child slots 和 coordinator budget 的最小值，并保留 coordinator 槽位。
+3. 只有 coordinator 根据实际宿主 slots/capability 直接调用顶层 spawn/followup/wait。Python 不推断 child slots，不生成宿主调用，不替 coordinator 决定 dispatch；coordinator 也不得从 `functions.exec` 的嵌套工具清单预判 direct collaboration tool 不可用。只有真实 direct call 返回 tool error 后，才按当前用户约束决定失败收口；用户要求主代理只编排时不得 fallback 生成 candidate。effective agent concurrency 取 configured、ready task/unit、可用 child slots 和 coordinator budget 的最小值，并保留 coordinator 槽位。
 4. agent pool 与图片/校验/sceneRender worker pool 分离且不相乘；多个独立 ready task/unit 必须先填满安全 effective concurrency。正式发布仍按 generation plan 顺序。
 5. annotation 保留“一幕一 task/attempt/candidate/result”，最多 3 个连续 scene 组成一个 unit。同一 child 在 unit 内按序处理：每幕写 candidate 后执行 descriptor 给定的纯本地 lint；PASS 才继续下一幕，FAIL 只补正当前幕。整个 unit 只返回一次，coordinator 随后 batch observe/materialize 并执行完整 current validator。30 秒 tail grace 只用于异常恢复，不进入正常关键路径。
 6. `user_first` 不创建额外 visualReview。`agent_first` 的 image/annotation-preview visualReview child 只写 findings，由 coordinator 确定性生成 result 并作出独立 current 决定。scene bundle 若具备视频能力的 coordinator 本来就必须完整观看 current 视频，child 关键帧预审不是强制关键路径；只有需要独立第二意见或 coordinator 需要定位辅助时才派发。
@@ -101,8 +105,8 @@ candidate validator 的一次运行必须返回完整结构错误清单，不得
 <ENV_PY> <SKILL_ROOT>\scripts\voice_provider_config.py status
 <ENV_PY> <SKILL_ROOT>\scripts\coordinator_cli.py project-status --project <项目根目录>
 
-# topic/text 新任务的一次 fast-prepare；stdout descriptor 为 spawn_now 时立即派发
-<ENV_PY> <SKILL_ROOT>\scripts\prepare_draft_agent_task.py contentDrafting --workspace <workspace-root> --new-draft-label <label> (--topic <text> | --body-file <utf8-path>) --rewrite-policy <generate|preserve|polish> --target-sec <15..600> [--visual-style-preset <具体ID>]
+# topic/text 新任务的唯一派发前命令；stdout 紧凑 descriptor 为 spawn_now 时立即派发
+python <SKILL_ROOT>\scripts\prepare_env.py --bootstrap-content-draft --workspace <workspace-root> --new-draft-label <label> (--topic <text> | --body <正文>) --rewrite-policy <generate|preserve|polish> --target-sec <15..600> [--visual-style-preset <具体ID>]
 
 # 传统 SRT 分镜 task；stdout 的 preparedTask 可直接派发
 <ENV_PY> <SKILL_ROOT>\scripts\prepare_draft_agent_task.py storyboardPlanning --draft-root <draft-root> --source-srt <字幕.srt> --target-sec <秒> --min-sec <秒> --max-sec <秒>

@@ -7,6 +7,17 @@
 制作方案联合 Gate 以本文为准；视觉拓扑统一见
 [`prompt-writing.md`](prompt-writing.md)。
 
+### 正常新任务的读取时机
+
+本文件是 **child 已真实派发后** 的阶段 0 内容规则，不是正常 `topic | text` 新任务的
+派发前前置材料。入口在读取 `SKILL.md` 后，只使用入口已记录的一次 bootstrap
+fast-prepare 命令；在该调用和 `nextAction=spawn_now` 的 direct spawn 之间，禁止 memory
+lookup、整份或分段重读本文件/`content-input.md`/`subagent-orchestration.md`，也禁止预读
+`prompt-writing.md`。fast-prepare descriptor 已冻结 schema、skeleton、prompt 与 argv，足以
+直接派发。只有 child 已实际派发后，coordinator 才可为 candidate 校验、materialize、
+`pending_initial_approval`、样音或具体修订等当前阶段按需读取相关小节；不得把这条时序
+变成额外 Gate。
+
 ## 1. 输入路由
 
 外部输入只能是 `inputMode=srt | topic | text`：
@@ -23,8 +34,8 @@ topic/text 的正式时钟由获批真实音频 timeline 接管。
 
 ## 2. 阶段 0 预项目、样音与一次联合 Gate
 
-1. coordinator 取得一次环境预检结果后，对正常 topic/text 新任务只运行一次 `prepare_draft_agent_task.py contentDrafting` fast-prepare。该调用接收已确认的 input mode、rewritePolicy、target 和用户明确 preset（若有），在内部通过脱敏接口读取并冻结 active provider；显式 preset 优先，否则自动推荐并冻结一个具体 ID，绝不持久化 `auto`；同时确定性生成合法 managed content input、分配不覆盖既有目录的唯一新 `draft-root` 并创建 attempt descriptor。用户明确要求新任务时不得恢复、覆盖或续接同名旧 draft/project。coordinator 不得为正常快路径另跑 provider status、`recommend-visual-style`、手写 `content-input.json`、用 `Test-Path` 串行试目录名，或搜索源码/tests/examples/CLI `--help`。只有用户主动要求浏览模板时才运行 `visual-style-catalog`；浏览不新增选择 Gate。review 只展示当前采用的 provider/preset。BGM、后续模式和生图方式仍只在能力过滤后的完整句中由联合动作原子冻结。
-2. fast-prepare 返回 descriptor `nextAction=spawn_now` 时，coordinator 立即按当前宿主状态调用 `spawn_agent` 或 `followup`，不再搜索 candidate/result schema 或重读长 reference。由 `contentDrafting` child（或同合同 fallback）生成 `whiteboard-content-draft-v1` candidate；child 只读取冻结 task、role contract 和 inputs，并按 task 自带的 canonical `candidateSchema`/`candidateSkeleton` 一次成形，不猜字段、不调用 provider、不写正式项目。
+1. 对正常 topic/text 新任务，coordinator 只运行一次入口已记录的 `python <SKILL_ROOT>\scripts\prepare_env.py --bootstrap-content-draft ...` bootstrap。该单次调用已完成 workspace-access、环境 check、provider/preset/input/draft/task fast-prepare，并输出紧凑 descriptor；它冻结 active provider、具体 preset、合法 managed input、唯一不覆盖既有内容的 `draft-root` 与 attempt descriptor。用户明确要求新任务时不得恢复、覆盖或续接旧 draft/project。派发前不另跑两条 `prepare_env`、provider status、`recommend-visual-style`，不先落 `body-file`、不手写 `content-input.json`、试目录名、搜索源码/tests/examples/CLI `--help`，也不做 memory lookup、reference 或 `prompt-writing.md` 预读。只有用户主动要求浏览模板时才运行 `visual-style-catalog`；浏览不新增选择 Gate。BGM、后续模式和生图方式仍只在能力过滤后的完整句中由联合动作原子冻结。
+2. fast-prepare 返回 descriptor `nextAction=spawn_now` 时，coordinator 立即按当前宿主状态调用 `spawn_agent` 或 `followup`；descriptor 的 canonical `candidateSchema`/`candidateSkeleton`、`agentPrompt` 和 argv 已是充分交接，不再搜索或回读。由 `contentDrafting` child（或同合同 fallback）生成 `whiteboard-content-draft-v1` candidate；child 只读取冻结 task、role contract 和 inputs，不猜字段、不调用 provider、不写正式项目。
 3. coordinator 校验 candidate，确定性渲染 review Markdown，确定性派生 source package，并创建 `project.json.initialApproval.status=pending` 的 `pending_initial_approval` 预项目。确认前创建的是受限预项目，不是可执行下游的正式项目。
 4. 预项目中只允许阶段 0 审阅、样音生成/技术验证、草案或 voice/rate 修订与联合批准。coordinator 生成绑定 current content identity、voice plan 与项目的真实样音，向用户交付 review 与不可变样音副本。完整旁白、正式生图、annotation、render、merge、burn、mux、final 必须在入口调用统一 pending guard，不能只依赖 coordinator 记忆。
 5. coordinator 调用 `build_initial_approval_options()` 按当前真实能力生成完整自然语言句子。固定生图方式时必须逐字列出四个旁白通过句；仅当登录态 `image_gen` 与已配置图片供应商同时可用时，才把生图方式并入每条通过句并枚举 BGM × 后续模式 × 生图方式共 8 项。不可用组合不展示，active voice provider 只显示“当前已采用”。另列三条草案/样音定向返工句。传统 `disabled` SRT 不生成样音，使用“字幕与分镜方案通过……”语义。

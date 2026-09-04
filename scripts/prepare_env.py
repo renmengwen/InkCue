@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import subprocess
 import sys
 import venv
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from typing import Iterator
 
@@ -569,7 +570,92 @@ def _parse_arguments(arguments: list[str]) -> argparse.Namespace:
         action="store_true",
         help="只运行工作区 create/write/flush/read/delete 预检并输出结构化结果",
     )
+    parser.add_argument(
+        "--bootstrap-content-draft",
+        action="store_true",
+        help="一次完成 workspace/env 预检并准备 contentDrafting fast task",
+    )
+    parser.add_argument("--workspace", help="bootstrap fast task 的 workspaceRoot")
+    parser.add_argument("--new-draft-label", help="bootstrap fast task 的新 draft 名称前缀")
+    parser.add_argument("--topic", help="bootstrap fast task 的 topic 原始文本")
+    parser.add_argument("--body", help="bootstrap fast task 的直接正文文本")
+    parser.add_argument("--body-file", help="bootstrap fast task 的 UTF-8 正文文件（兼容）")
+    parser.add_argument(
+        "--rewrite-policy",
+        choices=("generate", "preserve", "polish"),
+        help="bootstrap fast task 的改写策略",
+    )
+    parser.add_argument("--target-sec", type=float, help="bootstrap fast task 的目标秒数")
+    parser.add_argument("--visual-style-preset", help="可选的具体视觉模板 ID")
     return parser.parse_args(arguments)
+
+
+def _bootstrap_content_draft(args: argparse.Namespace) -> tuple[int, dict[str, object]]:
+    """复用既有预检和 fast-prepare，在一次 CLI 调用中返回可直接派发的 descriptor。"""
+
+    if args.check or args.feature is not None or args.check_workspace_access:
+        raise RuntimeError("bootstrap-content-draft 不接受 --check、--feature 或 --check-workspace-access")
+    if (
+        args.workspace is None
+        or args.new_draft_label is None
+        or args.rewrite_policy is None
+        or args.target_sec is None
+        or sum(value is not None for value in (args.topic, args.body, args.body_file)) != 1
+    ):
+        raise RuntimeError("bootstrap-content-draft 缺少完整 fast content 参数")
+
+    workspace = load_workspace_config(args.config, verify_writable=False)
+    access = probe_workspace_access(workspace.root)
+    if not access.ok:
+        return 2, {"ok": False, "reason": "workspace_access_failed", "workspaceAccess": access.as_dict()}
+
+    # 组合入口的 stdout 是供 coordinator 直接解析的单个 descriptor；复用函数的
+    # 人类可读 venv 状态行不应混入其中。
+    with redirect_stdout(io.StringIO()):
+        py, pip_cache, runtime_tmp = ensure_venv(True, args.config)
+    env = subprocess_environment(pip_cache, runtime_tmp)
+    availability = probe_dependencies(py, dict(BASE_DEPS), env)
+    missing = [requirement for name, requirement in BASE_DEPS.items() if not availability[name]]
+    if missing:
+        return 1, {"ok": False, "reason": "dependency_missing", "missingDependencies": missing}
+
+    command = [
+        str(py),
+        str((Path(__file__).resolve().parent / "prepare_draft_agent_task.py").resolve()),
+        "contentDrafting",
+        "--workspace",
+        args.workspace,
+        "--new-draft-label",
+        args.new_draft_label,
+        "--rewrite-policy",
+        args.rewrite_policy,
+        "--target-sec",
+        str(args.target_sec),
+    ]
+    for option, value in (("--topic", args.topic), ("--body", args.body), ("--body-file", args.body_file)):
+        if value is not None:
+            command.extend((option, value))
+    if args.visual_style_preset is not None:
+        command.extend(("--visual-style-preset", args.visual_style_preset))
+    if args.config is not None:
+        command.extend(("--workspace-config", args.config))
+    prepared = subprocess.run(command, capture_output=True, text=True, env=env, check=False)
+    try:
+        payload = json.loads(prepared.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("fast content prepare 未返回有效 descriptor") from exc
+    if prepared.returncode != 0 or not payload.get("ok"):
+        return 2, payload
+    descriptor = payload["preparedTask"]
+    return 0, {
+        "contractVersion": "whiteboard-bootstrap-content-draft-v1",
+        "ok": True,
+        "workspaceAccess": access.as_dict(),
+        "draftRoot": payload["draftRoot"],
+        "runId": payload["runId"],
+        "attempt": payload["attempt"],
+        "preparedTask": descriptor,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -587,6 +673,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         return 2
     try:
+        if args.bootstrap_content_draft:
+            status, payload = _bootstrap_content_draft(args)
+            print(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+            return status
         if args.check_workspace_access:
             workspace = load_workspace_config(args.config, verify_writable=False)
             access = probe_workspace_access(workspace.root)

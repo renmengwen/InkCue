@@ -39,6 +39,7 @@ DOUBAO_PROVIDER_CONTRACT_VERSION = "doubao-seed-audio-expressive-native-word-v2"
 DOUBAO_SUBTITLE_TYPE = "doubao-seed-audio-native-word-json-v1"
 DOUBAO_ENDPOINT = "https://openspeech.bytedance.com/api/v3/tts/create"
 DOUBAO_MAX_AUDIO_DURATION_SECONDS = 120
+DOUBAO_TIMESTAMP_TOLERANCE_MS = 100
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_QUEUE_INTERVAL_SECONDS = 0.5
 _RETRYABLE_HTTP_STATUSES = {429, 502, 503, 504}
@@ -355,8 +356,8 @@ class DoubaoAdapter:
         if not isinstance(sentences, list) or not sentences:
             raise _DoubaoEvidenceValidationError("empty_sentences")
         normalized_sentences: list[dict[str, Any]] = []
-        previous_sentence_end = -1
-        previous_word_end = -1
+        previous_sentence_start = -1
+        previous_word_start = -1
         total_words = 0
         for sentence in sentences:
             if not isinstance(sentence, Mapping):
@@ -371,8 +372,8 @@ class DoubaoAdapter:
             words = sentence.get("words")
             if (
                 end_ms <= start_ms
-                or end_ms > duration_ms
-                or start_ms < previous_sentence_end
+                or end_ms > duration_ms + DOUBAO_TIMESTAMP_TOLERANCE_MS
+                or start_ms < previous_sentence_start
             ):
                 raise _DoubaoEvidenceValidationError("invalid_sentence_timing")
             if not isinstance(sentence_text, str) or not sentence_text.strip():
@@ -393,20 +394,23 @@ class DoubaoAdapter:
                     reason_code="invalid_word_timing",
                 )
                 word_text = word.get("text")
-                if (
-                    word_end <= word_start
-                    or word_start < start_ms
-                    or word_end > end_ms
-                    or word_start < previous_word_end
-                ):
-                    raise _DoubaoEvidenceValidationError("invalid_word_timing")
                 if not isinstance(word_text, str) or not word_text.strip():
                     raise _DoubaoEvidenceValidationError("invalid_word")
+                has_lexical_content = any(
+                    character.isalnum() for character in word_text
+                )
+                if (
+                    word_end < word_start
+                    or word_end > duration_ms + DOUBAO_TIMESTAMP_TOLERANCE_MS
+                    or word_start < previous_word_start
+                    or (word_end == word_start and has_lexical_content)
+                ):
+                    raise _DoubaoEvidenceValidationError("invalid_word_timing")
                 normalized_words.append(
                     {"start_time": word_start, "end_time": word_end, "text": word_text}
                 )
                 sentence_word_text += word_text
-                previous_word_end = word_end
+                previous_word_start = word_start
                 total_words += 1
             if re.sub(r"\s+", "", sentence_word_text) != re.sub(
                 r"\s+", "", sentence_text
@@ -422,7 +426,7 @@ class DoubaoAdapter:
                     "words": normalized_words,
                 }
             )
-            previous_sentence_end = end_ms
+            previous_sentence_start = start_ms
         if re.sub(r"\s+", "", "".join(item["text"] for item in normalized_sentences)) != re.sub(
             r"\s+", "", subtitle_text
         ):
@@ -474,6 +478,7 @@ __all__ = [
     "DOUBAO_ENDPOINT",
     "DOUBAO_PROVIDER_CONTRACT_VERSION",
     "DOUBAO_SUBTITLE_TYPE",
+    "DOUBAO_TIMESTAMP_TOLERANCE_MS",
     "DoubaoAdapter",
     "DoubaoEvidenceUnavailable",
     "sanitize_provider_request_id",

@@ -2,6 +2,21 @@
 
 本文说明阶段 0 的 `topic | text` 首版入口、`whiteboard-content-draft-v1`、artifact-first 审阅与修订、内容与制作方案联合确认、确定性 source package、正式项目 provenance、stale/恢复与验收边界。传统 `inputMode=srt` 路径保持一次独立的模式/语义分镜确认；其 `voiceoverMode=disabled | edge-tts | minimax | doubao`、严格 SRT、质量 Gate 和最终交付语义不得回归。
 
+## 正常新任务的 fast path
+
+对正常 `topic | text` 新任务，入口读取 `SKILL.md` 后即执行入口中已记录的一次
+`python <SKILL_ROOT>\scripts\prepare_env.py --bootstrap-content-draft ...` bootstrap。该单次调用
+已完成 workspace-access、环境 check、provider/preset/input/draft/task fast-prepare 并输出紧凑
+descriptor；派发前不得预先另跑两条 `prepare_env`，也不得先落 `body-file`。派发前不以阅读本文件、
+`phase-0-content.md`、`subagent-orchestration.md` 或 `prompt-writing.md` 为前置；也禁止
+memory lookup、整份/分段 reference 重读、源码/tests/examples/CLI `--help` 搜索及任何额外
+探路。descriptor 已携带 canonical schema/skeleton、可原样派发的 prompt 与校验/
+materialize argv；`nextAction=spawn_now` 即直接 direct spawn。
+
+这些 reference 只在 child 已真实派发后，按 candidate 校验、result materialize、受限预项目、
+pending approval、样音或具体 revision 的当前需要读取相应小节。该时序优化不改变输入、
+批准或恢复合同，也不新增 Gate。
+
 ## 首版能力边界
 
 外部输入模式固定为：
@@ -21,7 +36,7 @@ rewritePolicy = preserve | polish | generate
 
 `topic + preserve`、`topic + polish`、`text + generate` 以及非 SRT + `disabled` 均须拒绝。topic/text 首版不使用估算阅读时长作为最终权威时钟；target 只用于内容预算与 provisional SRT，获批的真实音频 provider timeline 才接管正式时钟。
 
-首版不接入通用文本模型 provider。旁白稿、cue、scene 和画面建议由宿主真实派发的 `contentDrafting` child 生成 candidate，再由 coordinator 校验、确定性生成 `result.json` 与 Markdown 审阅 artifact；`prepare_draft_agent_task.py` 只冻结 attempt 和宿主中立 task descriptor，并直接给出可派发的 `agentPrompt`、candidate 校验 argv 与 result materialize argv。`content_source.py` 与 `prepare_source.py` 只做确定性规范化、校验、排时、hash、持久化和派生文件。上述脚本都不判断宿主能力、不发起文本模型请求、不读取外部凭据、不自行改写或批准草案，也不创建正式项目。
+首版不接入通用文本模型 provider。旁白稿、cue、scene 和画面建议由宿主真实派发的 `contentDrafting` child 生成 candidate，再由 coordinator 校验、确定性生成 `result.json` 与 Markdown 审阅 artifact；bootstrap 已冻结 attempt 和宿主中立 task descriptor，并直接给出可派发的 `agentPrompt`、candidate 校验 argv 与 result materialize argv。`prepare_draft_agent_task.py` 保留为兼容、恢复或特殊路径接口。`content_source.py` 与 `prepare_source.py` 只做确定性规范化、校验、排时、hash、持久化和派生文件。上述脚本都不判断宿主能力、不发起文本模型请求、不读取外部凭据、不自行改写或批准草案，也不创建正式项目。
 
 ## 阶段 0 内容与制作方案联合关卡
 
@@ -29,8 +44,8 @@ topic/text 的权威顺序是：
 
 用户明确要求“新任务”或“不要沿用旧任务”时，coordinator 立即停止旧项目/旧 draft 的恢复推断，为阶段 0 分配新的 `draft-root`，后续只走新建项目命令；仅在用户明确指定续接既有项目时才允许恢复。该优先级不增加状态字段或恢复协议。
 
-1. 一次环境预检后，正常 topic/text 新任务直接运行一次 `prepare_draft_agent_task.py contentDrafting` fast-prepare。它在单次调用中接收原始主题/正文、`rewritePolicy`、`targetDurationSeconds` 和可选显式 preset，经脱敏接口冻结 active provider；用户显式 preset 优先，否则自动推荐并冻结一个具体 ID，禁止保存 `auto`；同时生成合法 managed input、分配唯一且不覆盖既有内容的新 `draft-root` 并创建 `preparedTask`。用户明确要求“新任务”时绝不恢复或覆盖旧任务。coordinator 不得在正常快路径中另跑 provider status/recommend、手写 `content-input.json`、以 `Test-Path` 逐个试名称，或搜索源码/tests/examples/CLI `--help`。仅当用户主动要求浏览模板时才运行 `visual-style-catalog`；目录不新增批准选择轴。BGM、后续模式和生图方式仍只由联合动作原子冻结。
-2. descriptor 为 `nextAction=spawn_now` 时，coordinator 使用其 `agentPrompt` 立即按宿主状态调用 `spawn_agent` 或 `followup`，不再搜索 result/candidate schema 或重读长 reference。脚本不参与 dispatch/fallback 决策；首次草案默认使用短上下文 child，真实派发不可用时才由具备相同能力的 coordinator fallback。
+1. 正常 topic/text 新任务直接运行一次入口已记录的 `prepare_env.py --bootstrap-content-draft`。它在一次调用中完成 workspace-access、环境 check、provider/preset/input/draft/task fast-prepare，输出紧凑 descriptor 并冻结 active provider、具体 preset、managed input、唯一不覆盖既有内容的 `draft-root` 与 `preparedTask`；用户明确要求“新任务”时绝不恢复或覆盖旧任务。派发前不另跑两条 `prepare_env`、provider status/recommend，不先落 `body-file`、不手写 `content-input.json`、不试名称，也不做 memory/reference/`prompt-writing.md` 预读。仅当用户主动要求浏览模板时才运行 `visual-style-catalog`；目录不新增批准选择轴。BGM、后续模式和生图方式仍只由联合动作原子冻结。
+2. descriptor 为 `nextAction=spawn_now` 时，coordinator 使用其 `agentPrompt` 立即按宿主状态调用 `spawn_agent` 或 `followup`。task 自带 schema/skeleton，descriptor 自带校验与 materialize argv；无需搜索 schema 或重读 reference。脚本不参与 dispatch/fallback 决策；首次草案默认使用短上下文 child，真实派发不可用时才由具备相同能力的 coordinator fallback。
 3. task 必须自带该 role 的 canonical `candidateSchema` 和 `candidateSkeleton`。child 只读取冻结 task/role/input 并按它们一次生成 `candidate.content-draft.json`（及可选 `agent.log`），不得猜 schema，不写 `result.json`。candidate validator 一次返回完整结构错误清单；首次结构失败只允许同 attempt followup 原 child 一次，要求按完整清单和 schema/skeleton 做一次全量归一。若仍结构失败，直接换更强的短上下文 child，不逐字段反复修。coordinator 随后执行 descriptor 的 candidate 校验 argv 和 result materialize argv，重验 result/task/input/SHA/current binding，并从 canonical candidate 确定性生成不可变 Markdown 审阅 artifact。
 4. coordinator 确定性派生 source package，并创建 `initialApproval.status=pending` 的预项目。它只能承载阶段 0 review、current 样音、技术验证、草案/样音修订和联合动作；完整旁白、生图、annotation、render、merge、burn、mux 与 final 都必须调用 pending guard。
 5. 旁白项目在预项目中生成绑定 current content/voice plan 的真实样音。固定生图方式时展示 4 个完整通过句；仅登录态 `image_gen` 与已配置图片供应商同时可用时展示 8 个。active provider 不进入选项。传统 `disabled` SRT 不生成或要求样音，使用“字幕与分镜方案通过……”语义。
@@ -99,16 +114,16 @@ revision request 固定 `schemaVersion: 1`，只保存用户本轮真实要求�
 正常 topic/text 新任务的阶段 0 生产准备只有一次 fast-prepare：
 
 ```powershell
-<ENV_PY> scripts/prepare_draft_agent_task.py contentDrafting `
+python <SKILL_ROOT>\scripts\prepare_env.py --bootstrap-content-draft `
   --workspace <workspace-root> `
   --new-draft-label <label> `
-  (--topic <text> | --body-file <utf8-path>) `
+  (--topic <text> | --body <正文>) `
   --rewrite-policy <generate|preserve|polish> `
   --target-sec <15..600> `
   [--visual-style-preset <具体模板ID>]
 ```
 
-`--visual-style-preset` 缺失时由 fast-prepare 自动推荐并冻结具体 ID；用户明确提供时以该 ID 为准。只有用户主动要求浏览模板时才单独运行只读 `coordinator_cli.py visual-style-catalog`。旧的 `--draft-root --content-input` 接口保留兼容，但不是正常 topic/text 新任务快路径。
+该单次 bootstrap 已完成 workspace-access、环境 check、provider/preset/input/draft/task fast-prepare 并输出紧凑 descriptor；`--visual-style-preset` 缺失时自动推荐并冻结具体 ID，用户明确提供时以该 ID 为准。正常新任务不得预先另跑两条 `prepare_env`，也不得先落 `body-file`。只有用户主动要求浏览模板时才单独运行只读 `coordinator_cli.py visual-style-catalog`。旧 `prepare_draft_agent_task.py`、`--body-file` 及 `--draft-root --content-input` 接口保留兼容，供恢复或特殊路径使用，不是正常 topic/text 新任务快路径。
 
 用户要求实质修改时，coordinator 先冻结 revision request，再以成对参数创建新 attempt；它们与 `--content-input` 互斥：
 

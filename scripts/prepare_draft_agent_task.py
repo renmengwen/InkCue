@@ -364,9 +364,10 @@ def _build_fast_content_input(
     args: argparse.Namespace,
 ) -> tuple[dict[str, Any], str, list[dict[str, object]]]:
     topic_arg = getattr(args, "topic", None)
+    body_arg = getattr(args, "body", None)
     body_file_arg = getattr(args, "body_file", None)
-    if (topic_arg is None) == (body_file_arg is None):
-        raise PrepareError("fast content input 必须在 --topic 与 --body-file 中二选一")
+    if sum(value is not None for value in (topic_arg, body_arg, body_file_arg)) != 1:
+        raise PrepareError("fast content input 必须在 --topic、--body 与 --body-file 中三选一")
     if body_file_arg is not None:
         try:
             body_path = Path(body_file_arg).resolve(strict=True)
@@ -379,6 +380,8 @@ def _build_fast_content_input(
                 reason_code="input_unreadable",
             ) from exc
         mode, topic, content = "text", None, body
+    elif body_arg is not None:
+        mode, topic, body, content = "text", None, body_arg, body_arg
     else:
         mode, topic, body, content = "topic", topic_arg, None, topic_arg
 
@@ -926,6 +929,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workspace", help="fast content 模式显式 workspaceRoot")
     parser.add_argument("--new-draft-label", help="fast content 模式的新 draft 名称前缀")
     parser.add_argument("--topic", help="fast content topic 原始文本")
+    parser.add_argument("--body", help="fast content 直接传入的正文文本")
     parser.add_argument("--body-file", help="fast content UTF-8 正文文件")
     parser.add_argument(
         "--rewrite-policy",
@@ -978,6 +982,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.workspace,
                 args.new_draft_label,
                 args.topic,
+                args.body,
                 args.body_file,
                 args.rewrite_policy,
             )
@@ -986,7 +991,7 @@ def main(argv: list[str] | None = None) -> int:
                 fast_requested
                 and args.workspace is not None
                 and args.new_draft_label is not None
-                and (args.topic is None) != (args.body_file is None)
+                and sum(value is not None for value in (args.topic, args.body, args.body_file)) == 1
                 and args.rewrite_policy is not None
                 and args.target_sec is not None
                 and args.draft_root is None
@@ -1016,6 +1021,7 @@ def main(argv: list[str] | None = None) -> int:
             or args.workspace
             or args.new_draft_label
             or args.topic
+            or args.body
             or args.body_file
             or args.rewrite_policy
         ):

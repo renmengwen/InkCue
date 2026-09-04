@@ -4,6 +4,10 @@
 
 本合同定义 coordinator 如何以 artifact-first 方式准备、真实派发、校验和回收候选任务。child 不拥有正式写入、批准或用户交互权限。
 
+对正常 topic/text 新任务，入口在读取 `SKILL.md` 后只执行已记录的一次 `python <SKILL_ROOT>\scripts\prepare_env.py --bootstrap-content-draft ...` bootstrap；该单次调用已完成 workspace-access、环境 check、provider/preset/input/draft/task fast-prepare 并输出紧凑 descriptor。派发前不得预先另跑两条 `prepare_env` 或先落 `body-file`，并禁止 memory lookup、整份或分段重读本合同/其他 reference，以及 `prompt-writing.md` 预读。prepared descriptor 已含 canonical schema/skeleton、`agentPrompt` 与 argv；`nextAction=spawn_now` 是立刻 direct spawn 的充分条件。candidate、materialize、pending approval、样音及具体 revision 等阶段开始后，才按需读取相应 reference 小节。
+
+宿主 collaboration 的 `spawn_agent` 是开发者工具定义中的顶层 direct tool，不属于 `functions.exec` 的嵌套 `tools.*`，也被有意排除在其 `ALL_TOOLS` 中。coordinator 不得通过检查嵌套工具列表来预判 child 不可用；普通会话不得因此提前进入 fallback 或报告 `BLOCKED`。prepared descriptor 为 `nextAction=spawn_now` 时，必须先真实发起 direct `spawn_agent` 调用。只有该 direct call 实际返回 tool error，才能认定本次派发失败，再依据当前用户约束决定准确报告 `BLOCKED` 或是否允许 fallback；不得把未调用、嵌套列表缺失或准备完成冒充派发失败/成功。
+
 ## 1. 唯一 Coordinator
 
 主 agent 是唯一 coordinator、用户接口和正式写者。只有 coordinator 可以决定阶段和 role 是否 ready，接收用户确认/修改或根据项目冻结的 `agentApprovalEnabled` 执行代理审阅，创建 task，计算有效并发，派发或 retry，验证 task/result 与 current binding，发布正式候选，并写 manifest、timeline、SRT、identity、stale、checkpoint 和批准。
@@ -127,7 +131,7 @@ effective concurrency 取 configured、ready task 数、宿主已换算 child sl
 
 模型和 reasoning effort 属于宿主执行策略，不进入 task、candidate、result 或作品 identity。默认选择满足 role 必需文本/图像/视频能力的最快可用 child，并使用 `medium` effort；一次完整 schema 归一后仍失败、复杂实质修订或非结构业务 validator 失败时再升级更强模型或 effort。不得为了填写 SHA、路径或 result 字段使用高推理 child；这些机械字段由 materializer 完成。
 
-只有 coordinator 能从当前实际宿主工具、live agents 和任务状态得知 child slots 与 role capability，并据此调用真实 `spawn_agent`、`followup` 和等待机制。Python prepare/validate 脚本只冻结 task descriptor 或有序 unit：不得接收/推断 runtime child slots、coordinator budget、宿主 capability，不得输出 `spawnAgentCall`/`spawnRequest`、`dispatchAllowed` 或替宿主选择 fallback。真实派发不可用时，才由具备相同 role capability 的 coordinator fallback，并报告当前宿主的真实原因；双方都缺能力时报告 `BLOCKED`。
+只有 coordinator 能从当前实际宿主状态、live agents 和任务状态得知 child slots 与 role capability，并据此直接调用顶层 `spawn_agent`、`followup` 和等待机制。Python prepare/validate 脚本只冻结 task descriptor 或有序 unit：不得接收/推断 runtime child slots、coordinator budget、宿主 capability，不得输出 `spawnAgentCall`/`spawnRequest`、`dispatchAllowed` 或替宿主选择 fallback。`spawn_agent` 不出现在 `functions.exec` 的 `tools.*` / `ALL_TOOLS` 是预期行为，不构成 unavailable 证据；必须以真实 direct call 的返回结果为准。只有 direct call 实际返回 tool error 后，coordinator 才能报告派发失败，并按用户约束决定 `BLOCKED` 或允许的 fallback。当前用户要求主代理只编排时，coordinator 不得生成、编写或修改任何生成式 candidate/findings，派发失败即停止该生成任务并准确报告。
 
 attempt 是 artifact 版本边界，不是 agent 生命周期边界。首次独立 draft/plan/review 使用短上下文 child；用户修订 content 草案仍创建新 attempt，但上一 attempt 的同 role child 仍存在、idle、上一结果 completed 且 role contract 兼容时，优先 followup 原 child，让它只读取新 task/base/revision 的路径与 SHA。原 child 不可用、失败、role 改变、修订升级为全面独立重写或用户明确要求换执行者时才 spawn 新 child。
 
@@ -141,7 +145,7 @@ coordinator 收到一次 unit 完成后，batch observe 并冻结各幕 candidat
 
 一个 annotation child 只服务一个 dispatch unit，图片上下文不得跨 unit 累积。同一 attempt 的执行性补正仍优先 followup 原 child，但只传冻结定位、candidate SHA 与精简错误，不重新附带原图或长日志。正常的下一幕不属于 followup。`413`、`Payload Too Large` 或 context length exceeded 表示原 child 对本次补正已不可用：禁止原样重试，改用新短上下文 child 做 JSON-only 补正；只有错误确实涉及 region/视觉簇时，才让新 child 单独加载当前一幕图片。换 child 不创建新 attempt，也不改变正式写入和批准边界。
 
-prepare 摘要只记录 configured concurrency、task/unit 数和冻结 descriptor；effective/peak、mode、真实原因和 task/agent 映射只能由 coordinator 在真实派发或 fallback 后记录。fake scheduler 和 prepared artifact 都不算真实 dispatch。
+prepare 摘要只记录 configured concurrency、task/unit 数和冻结 descriptor；effective/peak、mode、真实原因和 task/agent 映射只能由 coordinator 在真实 direct 派发后记录，或在 direct call 实际失败且当前用户约束允许 fallback 时记录 fallback。fake scheduler、prepared artifact、未执行的派发意图和嵌套工具清单都不算真实 dispatch。
 
 agent pool 与 worker pool 独立，不做乘法。agent task 不得内部再启动 provider、FFmpeg、深验或其他 worker batch。
 

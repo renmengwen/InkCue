@@ -69,6 +69,7 @@ try:
         DOUBAO_ENDPOINT,
         DOUBAO_PROVIDER_CONTRACT_VERSION,
         DOUBAO_SUBTITLE_TYPE,
+        DOUBAO_TIMESTAMP_TOLERANCE_MS,
     )
     from .doubao_prompt import (
         DOUBAO_MAX_AUDIO_DURATION_SECONDS,
@@ -103,6 +104,7 @@ except ImportError:  # pragma: no cover - direct script execution
         DOUBAO_ENDPOINT,
         DOUBAO_PROVIDER_CONTRACT_VERSION,
         DOUBAO_SUBTITLE_TYPE,
+        DOUBAO_TIMESTAMP_TOLERANCE_MS,
     )
     from doubao_prompt import (
         DOUBAO_MAX_AUDIO_DURATION_SECONDS,
@@ -476,7 +478,10 @@ def _request(
 
 
 def _adapter_from_plan(
-    plan: Mapping[str, Any], *, native_minimax_subtitles: bool = False
+    plan: Mapping[str, Any],
+    *,
+    native_minimax_subtitles: bool = False,
+    single_doubao_attempt: bool = False,
 ) -> ProviderAdapter:
     provider_id = plan["provider"]["id"]
     configured_provider = active_provider_id()
@@ -509,7 +514,11 @@ def _adapter_from_plan(
             api_key=str(config["apiKey"]),
             model=str(options.get("model", config.get("model", "seed-audio-1.0"))),
             endpoint=str(options.get("endpoint", config.get("endpoint", DOUBAO_ENDPOINT))),
-            max_attempts=int(config.get("maxRetries", 2)) + 1,
+            max_attempts=(
+                1
+                if single_doubao_attempt
+                else int(config.get("maxRetries", 2)) + 1
+            ),
             queue_interval_seconds=float(config.get("queueIntervalMs", 500)) / 1000.0,
         )
     raise VoiceoverStateError(f"不支持的旁白 provider: {provider_id}")
@@ -1163,8 +1172,8 @@ def _doubao_subtitle_receipt(path: Path) -> dict[str, Any]:
     ):
         raise VoiceoverStateError("豆包原生字幕 sidecar 合同字段无效")
     word_count = 0
-    previous_sentence_end = -1
-    previous_word_end = -1
+    previous_sentence_start = -1
+    previous_word_start = -1
     sentence_texts: list[str] = []
     for sentence_index, sentence in enumerate(sentences, start=1):
         if not isinstance(sentence, Mapping):
@@ -1180,8 +1189,8 @@ def _doubao_subtitle_receipt(path: Path) -> dict[str, Any]:
             or not isinstance(end_ms, int)
             or start_ms < 0
             or end_ms <= start_ms
-            or end_ms > value["durationMs"]
-            or start_ms < previous_sentence_end
+            or end_ms > value["durationMs"] + DOUBAO_TIMESTAMP_TOLERANCE_MS
+            or start_ms < previous_sentence_start
             or not isinstance(sentence_text, str)
             or not sentence_text.strip()
             or not isinstance(words, list)
@@ -1197,30 +1206,36 @@ def _doubao_subtitle_receipt(path: Path) -> dict[str, Any]:
             word_start = word.get("start_time")
             word_end = word.get("end_time")
             word_text = word.get("text")
+            has_lexical_content = (
+                isinstance(word_text, str)
+                and any(character.isalnum() for character in word_text)
+            )
             if (
                 isinstance(word_start, bool)
                 or not isinstance(word_start, int)
                 or isinstance(word_end, bool)
                 or not isinstance(word_end, int)
-                or word_start < start_ms
-                or word_end <= word_start
-                or word_end > end_ms
-                or word_start < previous_word_end
+                or word_start < 0
+                or word_end < word_start
+                or word_end
+                > value["durationMs"] + DOUBAO_TIMESTAMP_TOLERANCE_MS
+                or word_start < previous_word_start
+                or (word_end == word_start and has_lexical_content)
                 or not isinstance(word_text, str)
                 or not word_text.strip()
             ):
                 raise VoiceoverStateError(
                     f"豆包原生字幕 word[{sentence_index}:{word_index}] 时间或文本无效"
-                )
+            )
             word_texts.append(word_text)
-            previous_word_end = word_end
+            previous_word_start = word_start
             word_count += 1
         if re.sub(r"\s+", "", "".join(word_texts)) != re.sub(
             r"\s+", "", sentence_text
         ):
             raise VoiceoverStateError("豆包原生字幕 sentence.text 与 words 不一致")
         sentence_texts.append(sentence_text)
-        previous_sentence_end = end_ms
+        previous_sentence_start = start_ms
     if re.sub(r"\s+", "", "".join(sentence_texts)) != re.sub(
         r"\s+", "", subtitle["text"]
     ):
@@ -2926,17 +2941,33 @@ def _doubao_word_srt(
     subtitle = value["subtitle"]
     cues: list[dict[str, Any]] = []
     previous_end = -1
+    ignored_non_lexical_tokens = 0
+    adjusted_overlap_tokens = 0
     for sentence in subtitle["sentences"]:
         for word in sentence["words"]:
             start_ms = int(word["start_time"])
             end_ms = int(word["end_time"])
+            word_text = str(word["text"])
+            if not any(character.isalnum() for character in word_text):
+                ignored_non_lexical_tokens += 1
+                continue
             if end_ms > audio_duration_ms and end_ms - audio_duration_ms <= 100:
                 end_ms = audio_duration_ms
+            if previous_end >= 0 and start_ms < previous_end:
+                overlap_ms = previous_end - start_ms
+                if (
+                    overlap_ms > DOUBAO_TIMESTAMP_TOLERANCE_MS
+                    or end_ms <= previous_end
+                ):
+                    raise VoiceoverStateError(
+                        "豆包原生字幕语义 token 重叠超过安全修正范围"
+                    )
+                start_ms = previous_end
+                adjusted_overlap_tokens += 1
             if (
                 start_ms < 0
                 or end_ms <= start_ms
                 or end_ms > audio_duration_ms
-                or (previous_end >= 0 and start_ms < previous_end)
             ):
                 raise VoiceoverStateError(
                     "豆包原生字幕 word 时间必须递增且位于 canonical 整轨范围内"
@@ -2946,7 +2977,7 @@ def _doubao_word_srt(
                     "originalIndex": len(cues) + 1,
                     "startMs": start_ms,
                     "endMs": end_ms,
-                    "text": word["text"],
+                    "text": word_text,
                 }
             )
             previous_end = end_ms
@@ -2957,6 +2988,8 @@ def _doubao_word_srt(
         "validated": True,
         "evidenceKind": "provider_native_word_timestamp",
         "wordEntryCount": len(cues),
+        "ignoredNonLexicalTokenCount": ignored_non_lexical_tokens,
+        "adjustedOverlapTokenCount": adjusted_overlap_tokens,
         "audioDurationMs": audio_duration_ms,
     }
     return serialize_srt(cues), evidence
@@ -3737,11 +3770,20 @@ def main(
                 authorize_new_request_after_unknown=(
                     args.authorize_new_request_after_unknown
                 ),
-                adapter=adapter or _adapter_from_plan(_build_plan_and_units(
-                    project, voice=voice, rate=rate, provider_id=provider_id,
-                    provider_config=provider_config,
-                    doubao_performance_brief=doubao_performance_brief,
-                )[0]),
+                adapter=adapter or _adapter_from_plan(
+                    _build_plan_and_units(
+                        project,
+                        voice=voice,
+                        rate=rate,
+                        provider_id=provider_id,
+                        provider_config=provider_config,
+                        doubao_performance_brief=doubao_performance_brief,
+                    )[0],
+                    single_doubao_attempt=(
+                        provider_id == "doubao"
+                        and args.authorize_new_request_after_unknown
+                    ),
+                ),
                 normalizer=normalizer or normalize_and_publish,
             )
             print(f"SAMPLE_AUDIO={audio}")

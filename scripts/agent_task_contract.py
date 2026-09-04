@@ -935,8 +935,6 @@ def build_prepared_task_descriptor(
             task_kind=str(task.data["taskKind"]),
             task_sha256=task.task_sha256,
             role_contract_sha256=str(task.data["roleContractSha256"]),
-            candidate_schema=task.data.get("candidateSchema"),
-            candidate_skeleton=task.data.get("candidateSkeleton"),
         ),
         "candidateValidationArgv": candidate_validation_argv,
         "resultMaterializeArgv": result_materialize_argv,
@@ -983,20 +981,6 @@ def build_agent_prompt(
     if output_name is None:
         raise AgentContractError("prompt", "role 缺少 candidate 输出")
     output_label = "FINDINGS_JSON" if task_kind == "visualReview" else "CANDIDATE_JSON"
-    candidate_schema_line = (
-        "CANDIDATE_SCHEMA_JSON="
-        + json.dumps(candidate_schema, ensure_ascii=False, separators=(",", ":"))
-        + "\n"
-        if candidate_schema is not None
-        else ""
-    )
-    candidate_skeleton_line = (
-        "CANDIDATE_SKELETON_JSON="
-        + json.dumps(candidate_skeleton, ensure_ascii=False, separators=(",", ":"))
-        + "\n"
-        if candidate_skeleton is not None
-        else ""
-    )
     return (
         f"ROLE_CONTRACT_PATH={role_contract}\n"
         f"ROLE_CONTRACT_SHA256={role_contract_sha256}\n"
@@ -1004,8 +988,6 @@ def build_agent_prompt(
         f"TASK_SHA256={task_sha256}\n"
         f"ALLOWED_ATTEMPT_DIR={attempt_dir}\n\n"
         f"{output_label}={attempt_dir / output_name}\n"
-        f"{candidate_schema_line}"
-        f"{candidate_skeleton_line}"
         "WRITE_RESULT_JSON=false\n\n"
         "RETURN_FORMAT:\n"
         "TASK_STATUS=<candidate_ready|failed|cancelled>\n"
