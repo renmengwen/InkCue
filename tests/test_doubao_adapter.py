@@ -9,7 +9,6 @@ import urllib.error
 from pathlib import Path
 
 from scripts.doubao_adapter import (
-    DOUBAO_PROVIDER_CONTRACT_VERSION,
     DoubaoAdapter,
 )
 from scripts.voice_provider_config import (
@@ -18,6 +17,11 @@ from scripts.voice_provider_config import (
     load_voice_provider_config,
 )
 from scripts.voiceover import (
+    DOUBAO_ENDPOINT,
+    DOUBAO_MODEL,
+    DOUBAO_PROMPT_SCHEMA_VERSION,
+    DOUBAO_PROMPT_SPEC_KIND,
+    DOUBAO_PROMPT_VOICE_ID,
     PermanentProviderError,
     RetryableProviderError,
     SynthesisRequest,
@@ -56,11 +60,10 @@ def request(
 ) -> SynthesisRequest:
     return SynthesisRequest(
         text,
-        "speaker-fixture",
+        DOUBAO_PROMPT_VOICE_ID,
         rate,
         pitch,
         volume,
-        DOUBAO_PROVIDER_CONTRACT_VERSION,
         5,
         None,
     )
@@ -95,15 +98,13 @@ class DoubaoAdapterTests(unittest.TestCase):
         self.assertEqual(seen["headers"]["x-api-request-id"], "client-request-id")
         self.assertEqual(seen["timeout"], 5)
         self.assertEqual(seen["payload"]["model"], "seed-audio-1.0")
-        self.assertEqual(
-            seen["payload"]["references"], [{"speaker": "speaker-fixture"}]
-        )
+        self.assertNotIn("references", seen["payload"])
         self.assertEqual(seen["payload"]["audio_config"]["format"], "wav")
         self.assertEqual(seen["payload"]["audio_config"]["sample_rate"], 24000)
         self.assertEqual(seen["payload"]["audio_config"]["speech_rate"], 10)
         self.assertEqual(seen["payload"]["audio_config"]["loudness_rate"], 10)
         self.assertEqual(seen["payload"]["audio_config"]["pitch_rate"], 0)
-        self.assertFalse(seen["payload"]["audio_config"]["enable_subtitle"])
+        self.assertTrue(seen["payload"]["audio_config"]["enable_subtitle"])
 
     def test_accepts_success_response_without_business_code(self) -> None:
         result = DoubaoAdapter(
@@ -193,9 +194,7 @@ class DoubaoConfigurationAndPlanTests(unittest.TestCase):
                 "providers": {
                     "doubao": {
                         "protocol": "Doubao",
-                        "contractVersion": DOUBAO_PROVIDER_CONTRACT_VERSION,
                         "apiKey": "local-secret",
-                        "voice": "speaker-fixture",
                         "language": "zh-CN",
                         "rate": 10,
                         "pitch": 0,
@@ -236,9 +235,20 @@ class DoubaoConfigurationAndPlanTests(unittest.TestCase):
             ],
             provider_id="doubao",
             protocol="Doubao",
-            voice="speaker-fixture",
-            provider_contract_version=DOUBAO_PROVIDER_CONTRACT_VERSION,
-            provider_options={"model": "seed-audio-1.0"},
+            voice=DOUBAO_PROMPT_VOICE_ID,
+            provider_options={
+                "model": DOUBAO_MODEL,
+                "endpoint": DOUBAO_ENDPOINT,
+                "promptSpec": {
+                    "schemaVersion": DOUBAO_PROMPT_SCHEMA_VERSION,
+                    "kind": DOUBAO_PROMPT_SPEC_KIND,
+                },
+                "maxTextPromptCharacters": 3000,
+                "maxAudioDurationSeconds": 120,
+                "nativeWordSubtitlesRequired": True,
+                "voiceControlMode": "text_prompt",
+                "timeControlMode": "scene_windows",
+            },
         )
         self.assertEqual(plan["mode"], "doubao")
         self.assertEqual(plan["provider"]["protocol"], "Doubao")

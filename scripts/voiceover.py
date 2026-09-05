@@ -29,13 +29,14 @@ elif __name__ == "voiceover":
     sys.modules.setdefault("scripts.voiceover", sys.modules[__name__])
 
 
-VOICE_PLAN_SCHEMA_VERSION = 1
-VOICE_MANIFEST_SCHEMA_VERSION = 1
-SEGMENTATION_CONTRACT_VERSION = "speech-unit-v1"
-FULL_TRACK_SEGMENTATION_CONTRACT_VERSION = "full-track-v1"
-DEFAULT_PROVIDER_CONTRACT_VERSION = "edge-tts-python-7.2.8-v1"
-DOUBAO_PROVIDER_CONTRACT_VERSION = "doubao-seed-audio-expressive-native-word-v2"
-DOUBAO_PROMPT_SPEC_VERSION = "doubao-whiteboard-authored-performance-v3"
+VOICE_PLAN_SCHEMA_VERSION = 2
+VOICE_MANIFEST_SCHEMA_VERSION = 2
+SEGMENTATION_MODE = "speech_units"
+FULL_TRACK_SEGMENTATION_MODE = "full_track"
+EDGE_TTS_PACKAGE_VERSION = "7.2.8"
+DOUBAO_PROMPT_SCHEMA_VERSION = 1
+DOUBAO_PROMPT_SPEC_KIND = "textPromptPlan"
+DOUBAO_PROMPT_VOICE_ID = "text-prompt-authored"
 DOUBAO_MODEL = "seed-audio-1.0"
 DOUBAO_ENDPOINT = "https://openspeech.bytedance.com/api/v3/tts/create"
 SUPPORTED_PROVIDER_PROTOCOLS = {
@@ -55,13 +56,13 @@ FULL_REVIEW_BASES = frozenset(
 )
 DEFAULT_OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3"
 DEFAULT_SEGMENTATION = {
-    "contractVersion": SEGMENTATION_CONTRACT_VERSION,
+    "mode": SEGMENTATION_MODE,
     "minCodePoints": 12,
     "targetCodePoints": 24,
     "maxCodePoints": 36,
 }
 FULL_TRACK_SEGMENTATION = {
-    "contractVersion": FULL_TRACK_SEGMENTATION_CONTRACT_VERSION,
+    "mode": FULL_TRACK_SEGMENTATION_MODE,
     "sceneSeparator": "\n\n",
 }
 SEGMENT_STATUSES = (
@@ -119,7 +120,6 @@ class SynthesisRequest:
     normalizedRate: str
     normalizedPitch: str
     normalizedVolume: str
-    providerContractVersion: str
     timeoutSeconds: float
     cancellationToken: object | None = None
 
@@ -274,15 +274,15 @@ def _split_long_text(text: str, maximum: int) -> list[str]:
 
 def _validate_segmentation(value: Mapping[str, Any] | None) -> dict[str, Any]:
     segmentation = dict(DEFAULT_SEGMENTATION if value is None else value)
-    contract_version = segmentation.get("contractVersion")
-    if contract_version == FULL_TRACK_SEGMENTATION_CONTRACT_VERSION:
+    mode = segmentation.get("mode")
+    if mode == FULL_TRACK_SEGMENTATION_MODE:
         if segmentation.get("sceneSeparator") != "\n\n":
             raise VoiceoverValidationError("full-track sceneSeparator 首版固定为两个换行")
-        if set(segmentation) != {"contractVersion", "sceneSeparator"}:
+        if set(segmentation) != {"mode", "sceneSeparator"}:
             raise VoiceoverValidationError("full-track segmentation 包含未知字段")
         return copy.deepcopy(FULL_TRACK_SEGMENTATION)
-    if contract_version != SEGMENTATION_CONTRACT_VERSION:
-        raise VoiceoverValidationError("segmentation.contractVersion 不受支持")
+    if mode != SEGMENTATION_MODE:
+        raise VoiceoverValidationError("segmentation.mode 不受支持")
     minimum = segmentation.get("minCodePoints")
     target = segmentation.get("targetCodePoints")
     maximum = segmentation.get("maxCodePoints")
@@ -291,7 +291,7 @@ def _validate_segmentation(value: Mapping[str, Any] | None) -> dict[str, Any]:
     if not 0 < minimum <= target <= maximum:
         raise VoiceoverValidationError("分段阈值必须满足 0 < min <= target <= max")
     return {
-        "contractVersion": SEGMENTATION_CONTRACT_VERSION,
+        "mode": SEGMENTATION_MODE,
         "minCodePoints": minimum,
         "targetCodePoints": target,
         "maxCodePoints": maximum,
@@ -313,8 +313,8 @@ def plan_full_track_unit(
     validated_cues = _validate_cues(cues)
     scene_ranges = _scene_assignments(validated_cues, scenes)
     contract = _validate_segmentation(segmentation or FULL_TRACK_SEGMENTATION)
-    if contract["contractVersion"] != FULL_TRACK_SEGMENTATION_CONTRACT_VERSION:
-        raise VoiceoverValidationError("整轨规划必须使用 full-track segmentation contract")
+    if contract["mode"] != FULL_TRACK_SEGMENTATION_MODE:
+        raise VoiceoverValidationError("整轨规划必须使用 full_track segmentation mode")
 
     scene_texts: list[str] = []
     source_parts: list[dict[str, int]] = []
@@ -532,8 +532,7 @@ def _unit_from_fragments(
                 "voice": synthesis["voice"],
                 "normalizedRate": synthesis["normalizedRate"],
                 "language": synthesis["language"],
-                "segmentationContractVersion": segmentation["contractVersion"],
-                "providerContractVersion": synthesis["providerContractVersion"],
+                "segmentationMode": segmentation["mode"],
                 "providerOptions": synthesis.get("providerOptions", {}),
             }
         )
@@ -548,7 +547,6 @@ def plan_speech_units(
     voice: str | None = None,
     normalized_rate: int | str = 0,
     language: str = "zh-CN",
-    provider_contract_version: str = DEFAULT_PROVIDER_CONTRACT_VERSION,
 ) -> list[dict[str, Any]]:
     """Build deterministic, scene-bounded speech units from shared SRT cues.
 
@@ -566,13 +564,10 @@ def plan_speech_units(
             raise VoiceoverValidationError("voice 不能为空")
         if not isinstance(language, str) or not language:
             raise VoiceoverValidationError("language 不能为空")
-        if not isinstance(provider_contract_version, str) or not provider_contract_version:
-            raise VoiceoverValidationError("provider contract version 不能为空")
         synthesis = {
             "voice": voice,
             "normalizedRate": normalize_rate(normalized_rate),
             "language": language,
-            "providerContractVersion": provider_contract_version,
         }
 
     units: list[dict[str, Any]] = []
@@ -767,7 +762,6 @@ def build_voice_plan(
     output_format: str = DEFAULT_OUTPUT_FORMAT,
     provider_id: str = "edge-tts",
     protocol: str = "edge-tts",
-    provider_contract_version: str = DEFAULT_PROVIDER_CONTRACT_VERSION,
     provider_options: Mapping[str, Any] | None = None,
     source_file: str = "source/source.srt",
     segmentation: Mapping[str, Any] | None = None,
@@ -775,7 +769,7 @@ def build_voice_plan(
 ) -> dict[str, Any]:
     if not isinstance(project_id, str) or not project_id:
         raise VoiceoverValidationError("projectId 不能为空")
-    if not all(isinstance(value, str) and value for value in (voice, language, output_format, provider_id, protocol, provider_contract_version)):
+    if not all(isinstance(value, str) and value for value in (voice, language, output_format, provider_id, protocol)):
         raise VoiceoverValidationError("provider、voice、language、output format 不能为空")
     provider_id = provider_id.lower()
     expected_protocol = SUPPORTED_PROVIDER_PROTOCOLS.get(provider_id)
@@ -787,6 +781,9 @@ def build_voice_plan(
         raise VoiceoverValidationError("首版 durationReviewThresholdRatio 固定为 0.10")
     source_sha = _require_sha256(source_srt_sha256, label="source.sha256")
     contract = _validate_segmentation(segmentation)
+    options = copy.deepcopy(dict(provider_options or {}))
+    if provider_id == "edge-tts" and provider_options is None:
+        options["packageVersion"] = EDGE_TTS_PACKAGE_VERSION
     plan = {
         "schemaVersion": VOICE_PLAN_SCHEMA_VERSION,
         "projectId": project_id,
@@ -794,8 +791,7 @@ def build_voice_plan(
         "provider": {
             "id": provider_id,
             "protocol": protocol,
-            "contractVersion": provider_contract_version,
-            "options": copy.deepcopy(dict(provider_options or {})),
+            "options": options,
         },
         "selection": {
             "voice": voice,
@@ -842,27 +838,37 @@ def validate_voice_plan(value: Mapping[str, Any]) -> dict[str, Any]:
         raise VoiceoverValidationError("provider/protocol 与支持的 provider 不匹配")
     if plan.get("mode") != provider_id:
         raise VoiceoverValidationError("voice plan mode 必须与 provider.id 一致")
-    if not isinstance(provider.get("contractVersion"), str) or not provider["contractVersion"]:
-        raise VoiceoverValidationError("provider.contractVersion 不能为空")
     if not isinstance(provider.get("options", {}), Mapping):
         raise VoiceoverValidationError("provider.options 必须是对象")
+    options = provider.get("options", {})
+    if provider_id == "edge-tts" and options.get("packageVersion") != EDGE_TTS_PACKAGE_VERSION:
+        raise VoiceoverValidationError("Edge TTS voice plan packageVersion 不匹配")
+    if provider_id == "minimax" and (
+        not isinstance(options.get("model"), str)
+        or not options["model"]
+        or options.get("endpoint") != "https://api.minimaxi.com/v1/t2a_v2"
+    ):
+        raise VoiceoverValidationError("MiniMax voice plan model/endpoint 无效")
     if provider_id == "doubao":
-        options = provider.get("options", {})
         prompt_spec = options.get("promptSpec")
         if (
-            provider.get("contractVersion") != DOUBAO_PROVIDER_CONTRACT_VERSION
-            or options.get("model") != DOUBAO_MODEL
+            options.get("model") != DOUBAO_MODEL
             or options.get("endpoint") != DOUBAO_ENDPOINT
             or not isinstance(prompt_spec, Mapping)
-            or prompt_spec.get("contractVersion") != DOUBAO_PROMPT_SPEC_VERSION
+            or prompt_spec.get("schemaVersion") != DOUBAO_PROMPT_SCHEMA_VERSION
+            or prompt_spec.get("kind") != DOUBAO_PROMPT_SPEC_KIND
             or options.get("maxTextPromptCharacters") != 3000
             or options.get("maxAudioDurationSeconds") != 120
             or options.get("nativeWordSubtitlesRequired") is not True
+            or options.get("voiceControlMode") != "text_prompt"
+            or options.get("timeControlMode") != "scene_windows"
         ):
-            raise VoiceoverValidationError("豆包 voice plan 与当前 v2 合同不匹配")
+            raise VoiceoverValidationError("豆包 voice plan 与当前 prompt-only 能力不匹配")
     for field in ("voice", "language", "outputFormat"):
         if not isinstance(selection.get(field), str) or not selection[field]:
             raise VoiceoverValidationError(f"selection.{field} 不能为空")
+    if provider_id == "doubao" and selection.get("voice") != DOUBAO_PROMPT_VOICE_ID:
+        raise VoiceoverValidationError("豆包 prompt-only 模式不得绑定 speaker 音色 ID")
     selection["rate"] = normalize_rate(selection.get("rate"))
     selection["pitch"] = normalize_pitch(selection.get("pitch"))
     selection["volume"] = normalize_volume(selection.get("volume"))
@@ -890,7 +896,6 @@ def synthesis_settings_from_plan(plan: Mapping[str, Any]) -> dict[str, str]:
         "normalizedPitch": validated["selection"]["pitch"],
         "normalizedVolume": validated["selection"]["volume"],
         "language": validated["selection"]["language"],
-        "providerContractVersion": validated["provider"]["contractVersion"],
     }
 
 
@@ -913,8 +918,11 @@ def bind_synthesis_identities(
             "voice": settings["voice"],
             "normalizedRate": settings["normalizedRate"],
             "language": settings["language"],
-            "segmentationContractVersion": contract["contractVersion"],
-            "providerContractVersion": settings["providerContractVersion"],
+            "segmentationMode": contract["mode"],
+            "provider": {
+                "id": plan["provider"]["id"],
+                "protocol": plan["provider"]["protocol"],
+            },
             "providerOptions": plan["provider"].get("options", {}),
         }
         if plan["provider"]["id"] == "doubao":
@@ -1306,9 +1314,9 @@ class FakeProviderAdapter:
 __all__ = [
     "CancelledError",
     "DEFAULT_OUTPUT_FORMAT",
-    "DEFAULT_PROVIDER_CONTRACT_VERSION",
+    "DOUBAO_PROMPT_VOICE_ID",
     "FULL_TRACK_SEGMENTATION",
-    "FULL_TRACK_SEGMENTATION_CONTRACT_VERSION",
+    "FULL_TRACK_SEGMENTATION_MODE",
     "DEFAULT_SEGMENTATION",
     "EdgeTtsAdapter",
     "FakeProviderAdapter",
@@ -1318,7 +1326,7 @@ __all__ = [
     "RawAudioResult",
     "RetryableProviderError",
     "SAMPLE_STATUSES",
-    "SEGMENTATION_CONTRACT_VERSION",
+    "SEGMENTATION_MODE",
     "SEGMENT_STATUSES",
     "SUPPORTED_AUDIO_PROVIDERS",
     "SUPPORTED_PROVIDER_PROTOCOLS",

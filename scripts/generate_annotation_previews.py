@@ -25,8 +25,6 @@ try:
         execute_bounded,
     )
     from .agent_task_contract import (
-        ROLE_CONTRACT_VERSION,
-        TASK_CONTRACT_VERSION,
         TrustedTaskContext,
         ValidatedAgentTask,
         build_prepared_task_descriptor,
@@ -69,8 +67,6 @@ except ImportError:  # pragma: no cover - direct script execution
         execute_bounded,
     )
     from agent_task_contract import (
-        ROLE_CONTRACT_VERSION,
-        TASK_CONTRACT_VERSION,
         TrustedTaskContext,
         ValidatedAgentTask,
         build_prepared_task_descriptor,
@@ -107,8 +103,10 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-PREVIEW_BATCH_CONTRACT = "whiteboard-annotation-preview-batch-v1"
-PREVIEW_VALIDATOR_CONTRACT = "whiteboard-annotation-preview-png-validator-v1"
+PREVIEW_BATCH_SCHEMA_VERSION = 1
+PREVIEW_BATCH_PHASE = "annotation-preview"
+PREVIEW_VALIDATOR_ID = "annotation-preview-png-validator"
+PREVIEW_VALIDATOR_VERSION = 1
 EXPECTED_SIZE = (1920, 1080)
 REVIEW_POLICIES = frozenset({"user_first", "agent_first"})
 ANNOTATION_VISUAL_REVIEW_ROLE_CONTRACT = """# annotation preview visualReview frozen role contract
@@ -120,7 +118,7 @@ ANNOTATION_VISUAL_REVIEW_ROLE_CONTRACT = """# annotation preview visualReview fr
 - annotationDrafting 已完成；本 task 只做 post-generation 额外语义预审，不得修改
   annotation、preview、contact sheet、technical manifest 或任何正式项目文件。
 - 只写 findings.json；不得写 result.json。findings 仅供用户确认时参考，绝不代表批准，也不得写 annotation review approval；result 由 coordinator 确定性生成。
-- findings.json 顶层严格使用 whiteboard-visual-review-findings-v1：只含 contractVersion、sceneOrder、findings、approvalWritten=false；每条 finding 必须带冻结 sceneOrder 内的 sceneId 和 message/summary，同一幕最多一条并按 scene 顺序。
+- findings.json 顶层严格使用 schemaVersion=1：只含 schemaVersion、sceneOrder、findings、approvalWritten=false；每条 finding 必须带冻结 sceneOrder 内的 sceneId 和 message/summary，同一幕最多一条并按 scene 顺序。
 - 写完 findings.json 后立即以 candidate_ready 返回；不得搜索源码、测试、examples、其他 reference 或 CLI help，也不得自行运行 coordinator validator。
 """
 HOST_ANNOTATION_VISUAL_REVIEW_CAPABILITIES = (
@@ -239,11 +237,10 @@ def prepare_annotation_visual_review_dispatch(
     bindings = _annotation_review_bindings(project, context)
     findings = trusted.task_dir / "findings.json"
     task_data = {
-        "contractVersion": TASK_CONTRACT_VERSION,
+        "schemaVersion": 1,
         "taskId": trusted.task_id,
         "taskKind": "visualReview",
         "scopeKind": "project",
-        "roleContractVersion": ROLE_CONTRACT_VERSION,
         "roleContractSha256": agent_sha256_file(role_contract),
         "attempt": 1,
         "sequence": 1,
@@ -347,7 +344,8 @@ def _render_task(task: AnnotationPreviewTask) -> WorkerOutcome[AnnotationPreview
             candidate_bytes=byte_count,
             decoded=True,
             format="PNG",
-            validator_contract=PREVIEW_VALIDATOR_CONTRACT,
+            validator_id=PREVIEW_VALIDATOR_ID,
+            validator_version=PREVIEW_VALIDATOR_VERSION,
             ttl_seconds=600,
             evidence={"sceneId": task.scene_id, "stage": "annotation-preview"},
         )
@@ -372,7 +370,8 @@ def _publish_bytes_atomic(
             candidate,
             receipt,
             expected_format="PNG",
-            expected_validator_contract=PREVIEW_VALIDATOR_CONTRACT,
+            expected_validator_id=PREVIEW_VALIDATOR_ID,
+            expected_validator_version=PREVIEW_VALIDATOR_VERSION,
             require_expiry=True,
         )
     except ReceiptValidationError as exc:
@@ -403,7 +402,8 @@ def _publish_bytes_atomic(
                 target,
                 receipt,
                 expected_format="PNG",
-                expected_validator_contract=PREVIEW_VALIDATOR_CONTRACT,
+                expected_validator_id=PREVIEW_VALIDATOR_ID,
+                expected_validator_version=PREVIEW_VALIDATOR_VERSION,
                 require_expiry=True,
             )
         except ReceiptValidationError as exc:
@@ -621,7 +621,8 @@ def generate_annotation_preview_batch(
                 candidate_bytes=contact_candidate.stat().st_size,
                 decoded=True,
                 format="PNG",
-                validator_contract=PREVIEW_VALIDATOR_CONTRACT,
+                validator_id=PREVIEW_VALIDATOR_ID,
+                validator_version=PREVIEW_VALIDATOR_VERSION,
                 ttl_seconds=600,
                 evidence={"stage": "annotation-preview-contact-sheet"},
             )
@@ -675,7 +676,8 @@ def generate_annotation_preview_batch(
                 "error": contact_error,
             }
     return {
-        "contractVersion": PREVIEW_BATCH_CONTRACT,
+        "schemaVersion": PREVIEW_BATCH_SCHEMA_VERSION,
+        "phase": PREVIEW_BATCH_PHASE,
         "status": "PASS" if all_passed else "FAIL",
         "partialSuccess": bool(published_candidates and not all_passed),
         "configuredConcurrency": configured,
@@ -751,7 +753,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as exc:
         exit_code = _gate_exit_code(exc)
         summary = {
-            "contractVersion": PREVIEW_BATCH_CONTRACT,
+            "schemaVersion": PREVIEW_BATCH_SCHEMA_VERSION,
+            "phase": PREVIEW_BATCH_PHASE,
             "status": "FAIL",
             "error": _sanitize_error(exc),
             "configuredConcurrency": None,
@@ -785,7 +788,8 @@ if __name__ == "__main__":
 
 __all__ = [
     "AnnotationPreviewBatchError",
-    "PREVIEW_BATCH_CONTRACT",
+    "PREVIEW_BATCH_PHASE",
+    "PREVIEW_BATCH_SCHEMA_VERSION",
     "REVIEW_POLICIES",
     "annotation_binding_sha256",
     "build_annotation_preview_contact_sheet",

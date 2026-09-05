@@ -1,6 +1,6 @@
 # 恢复、identity、stale 与重试合同
 
-合同版本：`whiteboard-recovery-identity-v1`
+文档结构版本：`schemaVersion: 1`
 
 本文件是所有阶段共用的状态、身份绑定、stale 和 retry 唯一规范来源。图片、语音、字幕
 和渲染 reference 只说明本阶段如何调用它；出现冲突时以本文为准。本文不引入 receipt、
@@ -65,11 +65,11 @@ identity 是规范化业务输入与合同版本的 SHA-256，不包含创建时
 | topic/body/rewritePolicy/target/narration cue/scene mapping | content/source、voice plan、音频、timeline、SRT、图片/annotation/视频及批准 | 仅按新 identity 重新判定可复用段 |
 | 仅 `imagePrompt`/正式 `prompt` 改变，cue 与 scene boundary 不变 | generation plan、图片及视觉下游 | current 音频、timeline、narration SRT |
 | voice/rate/朗读文本/分段/provider synthesis contract | sample/full 批准、受影响音频、timeline、SRT、annotation、视频和最终批准 | identity 未变的其他 segment |
-| source 仅改时间或 narration WAV 改变 | 时长决定、full approval、timeline、SRT、annotation 与视频下游 | 未受影响的图片/合成段 |
+| source 仅改时间或 narration WAV 改变 | 时长决定、full approval、timeline、SRT、annotation 与视频下游；豆包 source timing 变化还使 scene 时间窗口 prompt 与整轨音频 stale | 未受影响的图片；Edge/MiniMax 可按 synthesis identity 保留合成段，豆包不复用旧音频 |
 | 仅 ASR/VAD 分段/局部语速 QA/对齐/语义切句合同或 narration SRT 改变，且 scene 全局边界逐项不变 | full approval、字幕烧录、captioned/final 与最终批准 | current canonical WAV、图片、annotation、scene bundle、clean master；按新 binding 重验 |
 | ASR/对齐修复使任一 scene 尾音边界改变 | full approval、timing plan、annotation 时序、scene bundle、clean master、字幕、final 与相关批准 | current canonical WAV、图片 generation plan/manifest |
 | timing plan、render profile、字幕源/样式/字体或编码 contract 改变 | 受影响 annotation、scene/video、subtitle/final 与批准 | 未绑定输入的上游候选，需重新 binding |
-| `backgroundMusic.enabled`、豆包导演式 prompt/provider-embedded 模式、内置 BGM 字节或固定混音参数改变 | final 与最终批准；豆包 prompt 变化同时使整轨音频、timeline、SRT 与声音批准 stale | 与变化无关的画面/字幕上游；固定混音模式下可保留 current 旁白 |
+| `backgroundMusic.enabled`、豆包纯文本音色/scene 时间窗口 prompt/provider-embedded 模式、内置 BGM 字节或固定混音参数改变 | final 与最终批准；豆包 prompt 变化同时使整轨音频、timeline、SRT 与声音批准 stale | 与变化无关的画面/字幕上游；固定混音模式下可保留 current 旁白 |
 | pending 预项目的 content identity、voice/rate 或 sample identity 改变 | 初始联合 choice、sample approval 及受影响下游 | 不受影响的历史候选仅作证据 |
 
 stale 文件可留作历史证据，但不得作为 current 输入；批准必须重新绑定新 identity。

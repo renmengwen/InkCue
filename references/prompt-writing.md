@@ -1,7 +1,5 @@
 # 提示词与视觉拓扑合同
 
-合同版本：`whiteboard-prompt-writing-v2`
-
 本文件是白板动画视觉拓扑和提示词写作的唯一规范来源。阶段 0 的
 `contentDrafting` 使用 `imagePrompt`，传统 SRT 分镜和正式图片计划使用
 `prompt`；`references/content-input.md`、`references/image-generation.md` 以及
@@ -54,7 +52,7 @@
 
 | 所处合同 | 字段 | 谁生成/修改 | 下游用途 |
 | --- | --- | --- | --- |
-| `whiteboard-content-draft-v1` | `scenes[].imagePrompt` | `contentDrafting` candidate | 阶段 0 审阅 |
+| `schemaVersion=1` content draft | `scenes[].imagePrompt` | `contentDrafting` candidate | 阶段 0 审阅 |
 | 传统 SRT storyboard candidate | `scenes[].prompt` | `storyboardPlanning` candidate | 正式 plan 候选 |
 | `planning/generation-plan.json` | `scenes[].prompt` | coordinator 确定性派生/发布 | provider 请求 |
 

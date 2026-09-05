@@ -38,10 +38,13 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-RENDER_CONTRACT_VERSION = "whiteboard-project-scene-render-v2"
+RENDER_SCHEMA_VERSION = 2
+RENDER_KIND = "project-scene-render"
 RENDER_MANIFEST_FILE = "manifests/render-manifest.json"
-FORMAL_CONTEXT_RECEIPT_CONTRACT_VERSION = "whiteboard-formal-validation-context-receipt-v1"
-FORMAL_CONTEXT_VALIDATOR_CONTRACT = "whiteboard-formal-validation-context-validator-v1"
+FORMAL_CONTEXT_RECEIPT_SCHEMA_VERSION = 1
+FORMAL_CONTEXT_RECEIPT_KIND = "formal-validation-context-receipt"
+FORMAL_CONTEXT_VALIDATOR_ID = "formal-validation-context-validator"
+FORMAL_CONTEXT_VALIDATOR_VERSION = 1
 FORMAL_CONTEXT_RECEIPT_TTL_SECONDS = 600
 FORMAL_CONTEXT_RECEIPT_MAX_TTL_SECONDS = 3600
 _FORMAL_RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -78,7 +81,6 @@ class FormalValidationContext:
     project_id: str = ""
     generation_plan_sha256: str = ""
     scene_order: tuple[str, ...] = ()
-    validator_contract: str = FORMAL_CONTEXT_VALIDATOR_CONTRACT
     annotation_bindings: tuple[tuple[str, str, int], ...] = ()
     receipt_run_id: str | None = None
     receipt_sha256: str | None = None
@@ -227,7 +229,6 @@ def _formal_context_bindings(
             {"sceneId": scene_id, "sha256": sha256, "bytes": byte_count}
             for scene_id, sha256, byte_count in context.annotation_bindings
         ],
-        "validatorContract": context.validator_contract,
     }
 
 
@@ -239,8 +240,6 @@ def validate_formal_context_current(
 ) -> None:
     """只做字节/binding current 核对，不再次调用语音 deep validator。"""
 
-    if context.validator_contract != FORMAL_CONTEXT_VALIDATOR_CONTRACT:
-        raise RenderTimingError("formal validator contract 已 stale")
     if context.receipt_sha256 is not None:
         if not all(
             (
@@ -277,8 +276,9 @@ def validate_formal_context_current(
             raise RenderTimingError("formal receipt 落盘证据不存在")
         persisted = _load_json(raw_path, "formal receipt")
         required_keys = {
-            "contractVersion",
-            "validatorContract",
+            "schemaVersion",
+            "kind",
+            "validator",
             "runId",
             "projectId",
             "createdAt",
@@ -289,12 +289,14 @@ def validate_formal_context_current(
         if set(persisted) != required_keys:
             raise RenderTimingError("formal receipt schema 不一致")
         if (
-            persisted.get("contractVersion")
-            != FORMAL_CONTEXT_RECEIPT_CONTRACT_VERSION
-            or persisted.get("validatorContract")
-            != FORMAL_CONTEXT_VALIDATOR_CONTRACT
+            persisted.get("schemaVersion") != FORMAL_CONTEXT_RECEIPT_SCHEMA_VERSION
+            or persisted.get("kind") != FORMAL_CONTEXT_RECEIPT_KIND
+            or persisted.get("validator") != {
+                "id": FORMAL_CONTEXT_VALIDATOR_ID,
+                "version": FORMAL_CONTEXT_VALIDATOR_VERSION,
+            }
         ):
-            raise RenderTimingError("formal receipt contract 已 stale 或属于旧格式")
+            raise RenderTimingError("formal receipt schema/validator 已 stale 或属于旧格式")
         if (
             persisted.get("runId") != context.receipt_run_id
             or persisted.get("projectId") != context.project_id
@@ -422,7 +424,6 @@ def _parse_formal_receipt_context(
         project_id=bindings.get("projectId", ""),
         generation_plan_sha256=required_hashes["generationPlanSha256"],
         scene_order=tuple(scene_order),
-        validator_contract=bindings.get("validatorContract", ""),
         annotation_bindings=tuple(annotation_bindings),
         receipt_run_id=receipt.get("runId"),
         receipt_sha256=receipt.get("receiptSha256"),
@@ -454,8 +455,9 @@ def load_formal_validation_context_receipt(
         raise RenderTimingError("formal receipt 必须位于同 run 的固定路径")
     receipt = _load_json(path, "formal receipt")
     required_keys = {
-        "contractVersion",
-        "validatorContract",
+        "schemaVersion",
+        "kind",
+        "validator",
         "runId",
         "projectId",
         "createdAt",
@@ -465,10 +467,16 @@ def load_formal_validation_context_receipt(
     }
     if set(receipt) != required_keys:
         raise RenderTimingError("formal receipt schema 不一致")
-    if receipt.get("contractVersion") != FORMAL_CONTEXT_RECEIPT_CONTRACT_VERSION:
-        raise RenderTimingError("formal receipt contract 已 stale 或属于旧格式")
-    if receipt.get("validatorContract") != FORMAL_CONTEXT_VALIDATOR_CONTRACT:
-        raise RenderTimingError("formal validator contract 已 stale")
+    if (
+        receipt.get("schemaVersion") != FORMAL_CONTEXT_RECEIPT_SCHEMA_VERSION
+        or receipt.get("kind") != FORMAL_CONTEXT_RECEIPT_KIND
+    ):
+        raise RenderTimingError("formal receipt schema/kind 已 stale 或属于旧格式")
+    if receipt.get("validator") != {
+        "id": FORMAL_CONTEXT_VALIDATOR_ID,
+        "version": FORMAL_CONTEXT_VALIDATOR_VERSION,
+    }:
+        raise RenderTimingError("formal validator 版本已 stale")
     if receipt.get("runId") != run_id:
         raise RenderTimingError("formal receipt 不能跨 run 复用")
     if receipt.get("projectId") != project.project_id:
@@ -546,8 +554,12 @@ def write_formal_validation_context_receipt(
         raise RenderTimingError("formal receipt now 必须带时区")
     expires = created + timedelta(seconds=ttl_seconds)
     receipt: dict[str, Any] = {
-        "contractVersion": FORMAL_CONTEXT_RECEIPT_CONTRACT_VERSION,
-        "validatorContract": FORMAL_CONTEXT_VALIDATOR_CONTRACT,
+        "schemaVersion": FORMAL_CONTEXT_RECEIPT_SCHEMA_VERSION,
+        "kind": FORMAL_CONTEXT_RECEIPT_KIND,
+        "validator": {
+            "id": FORMAL_CONTEXT_VALIDATOR_ID,
+            "version": FORMAL_CONTEXT_VALIDATOR_VERSION,
+        },
         "runId": run_id,
         "projectId": project.project_id,
         "createdAt": created.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -826,7 +838,8 @@ def render_identity(context: FormalSceneRender, *, render_options: Mapping[str, 
     }
     return sha256_json(
         {
-            "contractVersion": RENDER_CONTRACT_VERSION,
+            "schemaVersion": RENDER_SCHEMA_VERSION,
+            "kind": RENDER_KIND,
             "projectId": context.project.project_id,
             "sceneId": context.scene_id,
             "imageSha256": sha256_file(context.image_path),
@@ -855,12 +868,16 @@ def update_render_manifest(
     path = context.project.path(RENDER_MANIFEST_FILE)
     if path.is_file():
         manifest = _load_json(path, "render manifest")
-        if manifest.get("schemaVersion") != 1 or manifest.get("projectId") != context.project.project_id:
+        if (
+            manifest.get("schemaVersion") != RENDER_SCHEMA_VERSION
+            or manifest.get("kind") != RENDER_KIND
+            or manifest.get("projectId") != context.project.project_id
+        ):
             raise RenderTimingError("既有 render manifest 与 current project 不一致")
     else:
         manifest = {
-            "schemaVersion": 1,
-            "contractVersion": RENDER_CONTRACT_VERSION,
+            "schemaVersion": RENDER_SCHEMA_VERSION,
+            "kind": RENDER_KIND,
             "projectId": context.project.project_id,
             "scenes": {},
             "sceneReviewApproval": None,
@@ -868,7 +885,7 @@ def update_render_manifest(
     scene = context.timing_scene
     options = dict(render_options)
     identity = render_identity(context, render_options=options)
-    manifest["contractVersion"] = RENDER_CONTRACT_VERSION
+    manifest["kind"] = RENDER_KIND
     manifest["scenes"][context.scene_id] = {
         "renderIdentityHash": identity,
         "outputFile": context.output_path.relative_to(context.project.root).as_posix(),
@@ -907,9 +924,12 @@ def update_render_manifest(
 __all__ = [
     "FormalValidationContext",
     "FormalSceneRender",
-    "FORMAL_CONTEXT_RECEIPT_CONTRACT_VERSION",
-    "FORMAL_CONTEXT_VALIDATOR_CONTRACT",
-    "RENDER_CONTRACT_VERSION",
+    "FORMAL_CONTEXT_RECEIPT_KIND",
+    "FORMAL_CONTEXT_RECEIPT_SCHEMA_VERSION",
+    "FORMAL_CONTEXT_VALIDATOR_ID",
+    "FORMAL_CONTEXT_VALIDATOR_VERSION",
+    "RENDER_KIND",
+    "RENDER_SCHEMA_VERSION",
     "RENDER_MANIFEST_FILE",
     "RenderTimingError",
     "build_formal_validation_context",

@@ -40,11 +40,15 @@ try:
         write_json_atomic,
     )
     from .srt_timeline import parse_srt, serialize_srt
-    from .content_source import spoken_text_weight
+    from .content_source import (
+        DOUBAO_MAX_SPOKEN_CHARACTERS_PER_SECOND,
+        spoken_text_weight,
+    )
     from .voiceover import (
         CancelledError,
+        DOUBAO_PROMPT_VOICE_ID,
         FULL_TRACK_SEGMENTATION,
-        FULL_TRACK_SEGMENTATION_CONTRACT_VERSION,
+        FULL_TRACK_SEGMENTATION_MODE,
         PermanentProviderError,
         ProviderAdapter,
         RetryableProviderError,
@@ -62,18 +66,18 @@ try:
     )
     # edge_tts_adapter intentionally imports the protocol through the
     # top-level alias installed by scripts.voiceover.
-    from .edge_tts_adapter import EdgeTtsAdapter
+    from .edge_tts_adapter import EDGE_TTS_PACKAGE_VERSION, EdgeTtsAdapter
     from .doubao_adapter import (
         DoubaoAdapter,
         DoubaoEvidenceUnavailable,
         DOUBAO_ENDPOINT,
-        DOUBAO_PROVIDER_CONTRACT_VERSION,
+        DOUBAO_SUBTITLE_KIND,
+        DOUBAO_SUBTITLE_SCHEMA_VERSION,
         DOUBAO_SUBTITLE_TYPE,
         DOUBAO_TIMESTAMP_TOLERANCE_MS,
     )
     from .doubao_prompt import (
         DOUBAO_MAX_AUDIO_DURATION_SECONDS,
-        DOUBAO_SAMPLE_MAX_AUDIO_DURATION_SECONDS,
         DoubaoPromptError,
         build_doubao_prompt_spec,
         render_doubao_text_prompt,
@@ -82,7 +86,7 @@ try:
     )
     from .minimax_adapter import (
         MiniMaxAdapter,
-        MINIMAX_PROVIDER_CONTRACT_VERSION,
+        MINIMAX_ENDPOINT,
         MINIMAX_SUBTITLE_TYPE,
     )
     from .voice_provider_config import VoiceProviderConfigError, active_provider_id, load_voice_provider_config
@@ -97,18 +101,18 @@ except ImportError:  # pragma: no cover - direct script execution
         normalize_to_candidate,
         validate_canonical_wav,
     )
-    from edge_tts_adapter import EdgeTtsAdapter
+    from edge_tts_adapter import EDGE_TTS_PACKAGE_VERSION, EdgeTtsAdapter
     from doubao_adapter import (
         DoubaoAdapter,
         DoubaoEvidenceUnavailable,
         DOUBAO_ENDPOINT,
-        DOUBAO_PROVIDER_CONTRACT_VERSION,
+        DOUBAO_SUBTITLE_KIND,
+        DOUBAO_SUBTITLE_SCHEMA_VERSION,
         DOUBAO_SUBTITLE_TYPE,
         DOUBAO_TIMESTAMP_TOLERANCE_MS,
     )
     from doubao_prompt import (
         DOUBAO_MAX_AUDIO_DURATION_SECONDS,
-        DOUBAO_SAMPLE_MAX_AUDIO_DURATION_SECONDS,
         DoubaoPromptError,
         build_doubao_prompt_spec,
         render_doubao_text_prompt,
@@ -117,7 +121,7 @@ except ImportError:  # pragma: no cover - direct script execution
     )
     from minimax_adapter import (
         MiniMaxAdapter,
-        MINIMAX_PROVIDER_CONTRACT_VERSION,
+        MINIMAX_ENDPOINT,
         MINIMAX_SUBTITLE_TYPE,
     )
     from voice_provider_config import VoiceProviderConfigError, active_provider_id, load_voice_provider_config
@@ -134,11 +138,15 @@ except ImportError:  # pragma: no cover - direct script execution
         write_json_atomic,
     )
     from srt_timeline import parse_srt, serialize_srt
-    from content_source import spoken_text_weight
+    from content_source import (
+        DOUBAO_MAX_SPOKEN_CHARACTERS_PER_SECOND,
+        spoken_text_weight,
+    )
     from voiceover import (
         CancelledError,
+        DOUBAO_PROMPT_VOICE_ID,
         FULL_TRACK_SEGMENTATION,
-        FULL_TRACK_SEGMENTATION_CONTRACT_VERSION,
+        FULL_TRACK_SEGMENTATION_MODE,
         PermanentProviderError,
         ProviderAdapter,
         RetryableProviderError,
@@ -167,38 +175,51 @@ except ImportError:  # pragma: no cover - direct script execution / staged integ
 
 try:
     from .transcribe_narration import (
-        CONTRACT_VERSION as NARRATION_ASR_CONTRACT_VERSION,
+        ASR_PIPELINE_RECIPE as NARRATION_ASR_PIPELINE_RECIPE,
         MAX_VAD_SEGMENT_MS as NARRATION_ASR_MAX_VAD_SEGMENT_MS,
-        SEGMENT_RECONSTRUCTION_CONTRACT as NARRATION_ASR_RECONSTRUCTION_CONTRACT,
-        VAD_SEGMENTATION_CONTRACT as NARRATION_ASR_SEGMENTATION_CONTRACT,
+        SEGMENT_RECONSTRUCTION_RECIPE as NARRATION_ASR_RECONSTRUCTION_RECIPE,
         transcribe_narration,
     )
 except ImportError:  # pragma: no cover - direct script execution / staged integration
     try:
         from transcribe_narration import (  # type: ignore[no-redef]
-            CONTRACT_VERSION as NARRATION_ASR_CONTRACT_VERSION,
+            ASR_PIPELINE_RECIPE as NARRATION_ASR_PIPELINE_RECIPE,
             MAX_VAD_SEGMENT_MS as NARRATION_ASR_MAX_VAD_SEGMENT_MS,
-            SEGMENT_RECONSTRUCTION_CONTRACT as NARRATION_ASR_RECONSTRUCTION_CONTRACT,
-            VAD_SEGMENTATION_CONTRACT as NARRATION_ASR_SEGMENTATION_CONTRACT,
+            SEGMENT_RECONSTRUCTION_RECIPE as NARRATION_ASR_RECONSTRUCTION_RECIPE,
             transcribe_narration,
         )
     except ImportError:  # pragma: no cover - fail closed until the companion module is installed
-        NARRATION_ASR_CONTRACT_VERSION = "narration-funasr-vad-token-evidence-v5"
         NARRATION_ASR_MAX_VAD_SEGMENT_MS = 15_000
-        NARRATION_ASR_RECONSTRUCTION_CONTRACT = "funasr-vad-segment-token-reconstruction-v2"
-        NARRATION_ASR_SEGMENTATION_CONTRACT = "paraformer-vad-15s-rate-guard-v1"
+        NARRATION_ASR_PIPELINE_RECIPE = {
+            "algorithm": "funasr_vad_token_timestamps",
+            "version": 5,
+            "parameters": {
+                "sampleRate": 16_000,
+                "channels": 1,
+                "maxVadSegmentMs": 15_000,
+                "sentenceTimestamp": True,
+                "predTimestamp": True,
+            },
+        }
+        NARRATION_ASR_RECONSTRUCTION_RECIPE = {
+            "algorithm": "funasr_vad_segment_token_reconstruction",
+            "version": 2,
+            "parameters": {
+                "segmentation": "paraformer_vad",
+                "segmentationVersion": 1,
+                "maxVadSegmentMs": 15_000,
+            },
+        }
         transcribe_narration = None  # type: ignore[assignment]
 
 
 VOICE_TIMELINE_SCHEMA_VERSION = 3
-VOICE_TIMELINE_CONTRACT_VERSION = "audio-authoritative-timeline-v3"
-VOICE_CLI_CONTRACT_VERSION = "voiceover-cli-v2"
+VOICE_IDENTITY_SCHEMA_VERSION = 1
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 60.0
-LEGACY_CANONICAL_WAV_VALIDATOR_RECEIPT_VERSION = "canonical-wav-validator-receipt-v1"
-CANONICAL_WAV_VALIDATOR_RECEIPT_VERSION = validation_receipts.CANDIDATE_RECEIPT_CONTRACT_VERSION
-CANONICAL_WAV_VALIDATOR_CONTRACT_VERSION = "canonical-wav-validator-v2"
-MINIMAX_SUBTITLE_EVIDENCE_CONTRACT_VERSION = "minimax-native-word-subtitle-evidence-v1"
-DOUBAO_SUBTITLE_EVIDENCE_CONTRACT_VERSION = "doubao-native-word-subtitle-evidence-v1"
+CANONICAL_WAV_VALIDATOR_ID = "canonical_wav"
+CANONICAL_WAV_VALIDATOR_VERSION = 2
+NATIVE_SUBTITLE_EVIDENCE_SCHEMA_VERSION = 1
+NATIVE_SUBTITLE_EVIDENCE_KIND = "providerNativeWordSubtitleEvidence"
 
 
 class ApprovalGateError(RuntimeError):
@@ -273,16 +294,11 @@ def _build_plan_and_units(
         "minimax": "MiniMax",
         "doubao": "Doubao",
     }.get(provider_id, provider_id)
-    default_contract = {
-        "edge-tts": "edge-tts-python-7.2.8-v1",
-        "minimax": MINIMAX_PROVIDER_CONTRACT_VERSION,
-        "doubao": DOUBAO_PROVIDER_CONTRACT_VERSION,
-    }.get(provider_id, "")
-    contract = config.get("contractVersion") or default_contract
     provider_options = {
         key: config[key]
         for key in (
             "model",
+            "packageVersion",
             "emotion",
             "textNormalization",
             "stream",
@@ -291,7 +307,30 @@ def _build_plan_and_units(
         )
         if key in config
     }
+    if provider_id == "edge-tts":
+        provider_options.setdefault("packageVersion", EDGE_TTS_PACKAGE_VERSION)
+    elif provider_id == "minimax":
+        provider_options.setdefault("model", "speech-2.8-hd")
+        provider_options.setdefault("endpoint", MINIMAX_ENDPOINT)
     if provider_id == "doubao":
+        provider_options.setdefault("model", "seed-audio-1.0")
+        provider_options.setdefault("endpoint", DOUBAO_ENDPOINT)
+        target_seconds = cues[-1]["endMs"] / 1000.0
+        spoken_characters = sum(
+            1
+            for cue in cues
+            for character in str(cue["text"])
+            if character.isalnum()
+        )
+        maximum_characters = int(
+            target_seconds * DOUBAO_MAX_SPOKEN_CHARACTERS_PER_SECOND
+        )
+        if spoken_characters > maximum_characters:
+            raise VoiceoverStateError(
+                "豆包旁白超过 prompt 时间轴的自然朗读预算："
+                f"{spoken_characters} 个有效字符 > {maximum_characters}；"
+                "请回到阶段 0 压缩正文，外部请求尚未发起"
+            )
         provider_options["promptSpec"] = build_doubao_prompt_spec(
             cues,
             scenes,
@@ -300,6 +339,9 @@ def _build_plan_and_units(
         provider_options["maxTextPromptCharacters"] = 3000
         provider_options["maxAudioDurationSeconds"] = DOUBAO_MAX_AUDIO_DURATION_SECONDS
         provider_options["nativeWordSubtitlesRequired"] = True
+        provider_options["voiceControlMode"] = "text_prompt"
+        provider_options["timeControlMode"] = "scene_windows"
+        voice = DOUBAO_PROMPT_VOICE_ID
     plan = build_voice_plan(
         project_id=project.project_id,
         source_srt_sha256=project.metadata["source"]["sha256"],
@@ -313,7 +355,6 @@ def _build_plan_and_units(
         output_format=str(config.get("outputFormat", "audio-24khz-48kbitrate-mono-mp3")),
         provider_id=provider_id,
         protocol=protocol,
-        provider_contract_version=contract,
         provider_options=provider_options,
         segmentation=FULL_TRACK_SEGMENTATION,
     )
@@ -346,7 +387,6 @@ def _load_current_plan_units(project: Project) -> tuple[dict[str, Any], list[dic
         output_format=plan["selection"]["outputFormat"],
         provider_id=plan["provider"]["id"],
         protocol=plan["provider"]["protocol"],
-        provider_contract_version=plan["provider"]["contractVersion"],
         provider_options=plan["provider"].get("options", {}),
         source_file=plan["source"]["file"],
         segmentation=plan["segmentation"],
@@ -355,8 +395,7 @@ def _load_current_plan_units(project: Project) -> tuple[dict[str, Any], list[dic
         raise ApprovalGateError("voice plan identities 已 stale")
     planner = (
         plan_full_track_unit
-        if plan["segmentation"]["contractVersion"]
-        == FULL_TRACK_SEGMENTATION_CONTRACT_VERSION
+        if plan["segmentation"]["mode"] == FULL_TRACK_SEGMENTATION_MODE
         else plan_speech_units
     )
     units = _bind_current_synthesis_units(
@@ -371,7 +410,7 @@ def _doubao_text_prompt(
     *,
     background_music_enabled: bool,
     sample: bool,
-    target_duration_seconds: float,
+    target_duration_seconds: float | None,
 ) -> str:
     options = plan["provider"].get("options", {})
     prompt_spec = options.get("promptSpec") if isinstance(options, Mapping) else None
@@ -471,7 +510,6 @@ def _request(
         normalizedRate=settings["normalizedRate"],
         normalizedPitch=settings["normalizedPitch"],
         normalizedVolume=settings["normalizedVolume"],
-        providerContractVersion=settings["providerContractVersion"],
         timeoutSeconds=float(timeout_seconds),
         cancellationToken=None,
     )
@@ -534,7 +572,7 @@ def _media_dict(result: CanonicalAudioResult) -> dict[str, Any]:
         "bytes": result.bytes,
         "durationMs": result.durationMs,
         "sha256": result.sha256,
-        "contractVersion": result.contractVersion,
+        "recipe": copy.deepcopy(dict(result.recipe)),
     }
 
 
@@ -547,11 +585,12 @@ def _sample_identity(
 ) -> str:
     return sha256_json(
         {
-            "contractVersion": VOICE_CLI_CONTRACT_VERSION,
+            "schemaVersion": VOICE_IDENTITY_SCHEMA_VERSION,
+            "kind": "voiceSampleIdentity",
             "voicePlanAuditHash": voice_plan_audit_hash(plan),
             "text": text,
             "mediaSha256": media["sha256"],
-            "mediaContractVersion": media["contractVersion"],
+            "mediaRecipe": media["recipe"],
             "providerTextPromptSha256": provider_text_prompt_sha256,
         }
     )
@@ -605,13 +644,15 @@ def _publish_sample_review_artifacts(
 
     selection = plan["selection"]
     provider = plan["provider"]
+    prompt_voice = provider["id"] == "doubao"
     audit = {
         "schemaVersion": 1,
-        "contractVersion": "sample-request-audit-v1",
+        "kind": "sampleRequestAudit",
         "provider": provider["id"],
         "model": provider.get("options", {}).get("model"),
         "request": {
-            "voiceId": selection["voice"],
+            "voiceId": None if prompt_voice else selection["voice"],
+            "voiceControlMode": "text_prompt" if prompt_voice else "speaker_id",
             "rate": selection["rate"],
             "volume": selection["volume"],
             "pitch": selection["pitch"],
@@ -700,7 +741,7 @@ def _fresh_manifest_with_reuse(
         if prior is None:
             continue
         for field in (
-            "status", "audioMime", "audioCodec", "contractVersion", "sampleRate", "channels",
+            "status", "audioMime", "audioCodec", "recipe", "sampleRate", "channels",
             "bytes", "durationMs", "sha256", "attempts", "createdAt", "updatedAt",
             "errorStage", "errorSummary", "currentAttempt", "providerSubtitles",
         ):
@@ -740,7 +781,7 @@ def _sample(
             text,
             background_music_enabled=False,
             sample=True,
-            target_duration_seconds=DOUBAO_SAMPLE_MAX_AUDIO_DURATION_SECONDS,
+            target_duration_seconds=None,
         )
         provider_prompt_sha = text_prompt_sha256(provider_text_prompt)
         old_sample = old.get("sample") if isinstance(old, Mapping) else None
@@ -893,10 +934,10 @@ def _canonical_validator_receipt(result: CanonicalAudioResult) -> dict[str, Any]
         candidate_bytes=result.bytes,
         decoded=True,
         format="WAV",
-        validator_contract=CANONICAL_WAV_VALIDATOR_CONTRACT_VERSION,
+        validator_id=CANONICAL_WAV_VALIDATOR_ID,
+        validator_version=CANONICAL_WAV_VALIDATOR_VERSION,
         evidence={
-            "legacyContractVersion": LEGACY_CANONICAL_WAV_VALIDATOR_RECEIPT_VERSION,
-            "mediaContractVersion": result.contractVersion,
+            "mediaRecipe": copy.deepcopy(dict(result.recipe)),
             "audioCodec": result.codec,
             "sampleRate": result.sampleRate,
             "channels": result.channels,
@@ -934,23 +975,31 @@ def _canonical_result_from_binding(
     candidate_receipt = receipt_read.receipt
     # 先用 receipt 自带合同校验其签名和 current bytes；合法的旧 validator
     # contract 才能触发 deep，篡改或 bytes 不匹配必须 fail-closed。
-    receipt_contract = candidate_receipt.get("validatorContract")
-    if not isinstance(receipt_contract, str):
-        raise ApprovalGateError("WAV candidate receipt validator contract 无效")
+    receipt_validator = candidate_receipt.get("validator")
+    if not isinstance(receipt_validator, Mapping):
+        raise ApprovalGateError("WAV candidate receipt validator 无效")
+    validator_id = receipt_validator.get("id")
+    validator_version = receipt_validator.get("version")
+    if not isinstance(validator_id, str) or not isinstance(validator_version, int):
+        raise ApprovalGateError("WAV candidate receipt validator 无效")
     try:
         validation_receipts.bind_candidate_receipt(
             path,
             candidate_receipt,
             expected_format="WAV",
-            expected_validator_contract=receipt_contract,
+            expected_validator_id=validator_id,
+            expected_validator_version=validator_version,
         )
     except validation_receipts.ReceiptValidationError as exc:
         raise ApprovalGateError(str(exc)) from exc
-    if receipt_contract != CANONICAL_WAV_VALIDATOR_CONTRACT_VERSION:
+    if (
+        validator_id != CANONICAL_WAV_VALIDATOR_ID
+        or validator_version != CANONICAL_WAV_VALIDATOR_VERSION
+    ):
         return None
     evidence = _canonical_receipt_evidence(candidate_receipt)
     expected = {
-        "mediaContractVersion": media.get("contractVersion"),
+        "mediaRecipe": media.get("recipe"),
         "audioCodec": media.get("audioCodec"),
         "sampleRate": media.get("sampleRate"),
         "channels": media.get("channels"),
@@ -960,7 +1009,7 @@ def _canonical_result_from_binding(
         raise ApprovalGateError("WAV candidate receipt 与 current media binding 不一致")
     return CanonicalAudioResult(
         path=path.resolve(),
-        contractVersion=str(expected["mediaContractVersion"]),
+        recipe=copy.deepcopy(dict(expected["mediaRecipe"])),
         codec=str(expected["audioCodec"]),
         sampleRate=int(expected["sampleRate"]),
         channels=int(expected["channels"]),
@@ -981,7 +1030,7 @@ def _validate_media_ref(project: Project, ref: Mapping[str, Any], *, expected_fi
         "bytes": result.bytes,
         "durationMs": result.durationMs,
         "sha256": result.sha256,
-        "contractVersion": result.contractVersion,
+        "recipe": copy.deepcopy(dict(result.recipe)),
     }
     for key, value in expected.items():
         if ref.get(key) != value:
@@ -1004,7 +1053,7 @@ def _validate_current_sample(project: Project, plan: Mapping[str, Any], manifest
             str(sample.get("text", "")),
             background_music_enabled=False,
             sample=True,
-            target_duration_seconds=DOUBAO_SAMPLE_MAX_AUDIO_DURATION_SECONDS,
+            target_duration_seconds=None,
         )
         expected_prompt_sha = text_prompt_sha256(sample_prompt)
         if provider_prompt_sha != expected_prompt_sha:
@@ -1119,7 +1168,9 @@ def _minimax_subtitle_receipt(path: Path) -> dict[str, Any]:
     if not payload or not isinstance(value, (list, dict)):
         raise VoiceoverStateError("MiniMax 原生字幕 JSON 顶层结构无效")
     return {
-        "contractVersion": MINIMAX_SUBTITLE_EVIDENCE_CONTRACT_VERSION,
+        "schemaVersion": NATIVE_SUBTITLE_EVIDENCE_SCHEMA_VERSION,
+        "kind": NATIVE_SUBTITLE_EVIDENCE_KIND,
+        "provider": "minimax",
         "subtitleType": MINIMAX_SUBTITLE_TYPE,
         "bytes": len(payload),
         "sha256": hashlib.sha256(payload).hexdigest(),
@@ -1154,8 +1205,10 @@ def _doubao_subtitle_receipt(path: Path) -> dict[str, Any]:
     subtitle = value.get("subtitle")
     sentences = subtitle.get("sentences") if isinstance(subtitle, Mapping) else None
     if (
-        value.get("contractVersion") != DOUBAO_SUBTITLE_TYPE
-        or value.get("providerContractVersion") != DOUBAO_PROVIDER_CONTRACT_VERSION
+        value.get("schemaVersion") != DOUBAO_SUBTITLE_SCHEMA_VERSION
+        or value.get("kind") != DOUBAO_SUBTITLE_KIND
+        or value.get("provider") != "doubao"
+        or value.get("model") != "seed-audio-1.0"
         or not isinstance(value.get("textPromptSha256"), str)
         or not re.fullmatch(r"[0-9a-f]{64}", value["textPromptSha256"])
         or isinstance(value.get("durationMs"), bool)
@@ -1241,8 +1294,10 @@ def _doubao_subtitle_receipt(path: Path) -> dict[str, Any]:
     ):
         raise VoiceoverStateError("豆包原生字幕 subtitle.text 与 sentences 不一致")
     return {
-        "contractVersion": DOUBAO_SUBTITLE_EVIDENCE_CONTRACT_VERSION,
-        "providerContractVersion": DOUBAO_PROVIDER_CONTRACT_VERSION,
+        "schemaVersion": NATIVE_SUBTITLE_EVIDENCE_SCHEMA_VERSION,
+        "kind": NATIVE_SUBTITLE_EVIDENCE_KIND,
+        "provider": "doubao",
+        "model": value["model"],
         "subtitleType": DOUBAO_SUBTITLE_TYPE,
         "textPromptSha256": value["textPromptSha256"],
         "durationMs": value["durationMs"],
@@ -1372,7 +1427,7 @@ def _validate_attempt_candidate(
     receipt = attempt.get("validatorReceipt")
     receipt_evidence = _canonical_receipt_evidence(receipt)
     media = {
-        "contractVersion": receipt_evidence.get("mediaContractVersion"),
+        "recipe": receipt_evidence.get("mediaRecipe"),
         "audioCodec": receipt_evidence.get("audioCodec"),
         "sampleRate": receipt_evidence.get("sampleRate"),
         "channels": receipt_evidence.get("channels"),
@@ -1481,7 +1536,7 @@ def _apply_candidate_media(project: Project, segment: dict[str, Any]) -> None:
         {
             "audioMime": "audio/wav",
             "audioCodec": evidence["audioCodec"],
-            "contractVersion": evidence["mediaContractVersion"],
+            "recipe": copy.deepcopy(evidence["mediaRecipe"]),
             "sampleRate": evidence["sampleRate"],
             "channels": evidence["channels"],
             "bytes": receipt["candidateBytes"],
@@ -1605,7 +1660,7 @@ def _segment_is_reusable(
         result = validate_canonical_wav(path)
         if persist_deep:
             if isinstance(segment, dict):
-                segment["contractVersion"] = result.contractVersion
+                segment["recipe"] = copy.deepcopy(dict(result.recipe))
             if isinstance(attempt, dict):
                 attempt["validatorReceipt"] = _canonical_validator_receipt(result)
     expected = {
@@ -1634,11 +1689,13 @@ def _segment_is_reusable(
         if provider_subtitles.get("relativePath") != relative_path:
             raise ApprovalGateError("provider 原生字幕正式路径已 stale")
         receipt_keys = (
-            ("contractVersion", "subtitleType", "bytes", "sha256")
+            ("schemaVersion", "kind", "provider", "subtitleType", "bytes", "sha256")
             if kind == "minimax"
             else (
-                "contractVersion",
-                "providerContractVersion",
+                "schemaVersion",
+                "kind",
+                "provider",
+                "model",
                 "subtitleType",
                 "textPromptSha256",
                 "durationMs",
@@ -1795,7 +1852,7 @@ def _merge_segments(project: Project, segments: Sequence[Mapping[str, Any]], run
         raise AudioValidationError("narration.wav 发布后 SHA/bytes binding 失败")
     return CanonicalAudioResult(
         path=destination.resolve(),
-        contractVersion=validated.contractVersion,
+        recipe=validated.recipe,
         codec=validated.codec,
         sampleRate=validated.sampleRate,
         channels=validated.channels,
@@ -1878,7 +1935,6 @@ def _build_timeline(
     narration_srt = serialize_srt(srt_cues)
     base = {
         "schemaVersion": VOICE_TIMELINE_SCHEMA_VERSION,
-        "contractVersion": VOICE_TIMELINE_CONTRACT_VERSION,
         "projectId": project.project_id,
         "sourceSrt": {"file": "source/source.srt", "sha256": plan["source"]["sha256"]},
         "voicePlanAuditHash": voice_plan_audit_hash(plan),
@@ -1887,7 +1943,7 @@ def _build_timeline(
             "sha256": composite.sha256,
             "durationMs": composite.durationMs,
             "bytes": composite.bytes,
-            "contractVersion": composite.contractVersion,
+            "recipe": copy.deepcopy(dict(composite.recipe)),
         },
         "renderProfileSha256": sha256_json(project.render_profile),
         "units": timeline_units,
@@ -1913,7 +1969,8 @@ def _full_identity(
 ) -> str:
     return sha256_json(
         {
-            "contractVersion": VOICE_CLI_CONTRACT_VERSION,
+            "schemaVersion": VOICE_IDENTITY_SCHEMA_VERSION,
+            "kind": "fullVoiceIdentity",
             "voicePlanAuditHash": voice_plan_audit_hash(plan),
             "audioSha256": composite["sha256"],
             "timelineSha256": timeline["sha256"],
@@ -1927,7 +1984,8 @@ def _full_audio_identity(plan: Mapping[str, Any], composite: Mapping[str, Any]) 
 
     return sha256_json(
         {
-            "contractVersion": "full-track-audio-v1",
+            "schemaVersion": VOICE_IDENTITY_SCHEMA_VERSION,
+            "kind": "fullTrackAudioIdentity",
             "voicePlanAuditHash": voice_plan_audit_hash(plan),
             "audioSha256": composite["sha256"],
         }
@@ -1972,8 +2030,7 @@ def _full(
 ) -> str:
     plan, units = _load_current_plan_units(project)
     if (
-        plan["segmentation"]["contractVersion"]
-        != FULL_TRACK_SEGMENTATION_CONTRACT_VERSION
+        plan["segmentation"]["mode"] != FULL_TRACK_SEGMENTATION_MODE
         or len(units) != 1
     ):
         raise ApprovalGateError("旧逐句 voice plan 已 stale；请重新生成并批准 full-track 样音")
@@ -2454,8 +2511,8 @@ def _build_aligned_timeline(
                 "timingValidationProfile": diagnostics.get(
                     "timingValidationProfile"
                 ),
-                "captionSegmentationContract": diagnostics.get(
-                    "captionSegmentationContract"
+                "captionSegmentationRecipe": diagnostics.get(
+                    "captionSegmentationRecipe"
                 ),
                 "subtitleGaps": copy.deepcopy(diagnostics.get("subtitleGaps")),
                 "localAcousticRate": copy.deepcopy(
@@ -2471,7 +2528,6 @@ def _build_aligned_timeline(
         )
     timeline = {
         "schemaVersion": VOICE_TIMELINE_SCHEMA_VERSION,
-        "contractVersion": VOICE_TIMELINE_CONTRACT_VERSION,
         "projectId": project.project_id,
         "sourceSrt": {"file": "source/source.srt", "sha256": plan["source"]["sha256"]},
         "voicePlanAuditHash": voice_plan_audit_hash(plan),
@@ -2480,11 +2536,12 @@ def _build_aligned_timeline(
             "sha256": composite.sha256,
             "durationMs": composite.durationMs,
             "bytes": composite.bytes,
-            "contractVersion": composite.contractVersion,
+            "recipe": copy.deepcopy(dict(composite.recipe)),
         },
         "renderProfileSha256": sha256_json(project.render_profile),
         "alignment": {
-            "contractVersion": f"reference-audio-alignment-schema-{alignment.get('schemaVersion', 1)}",
+            "schemaVersion": alignment.get("schemaVersion", 1),
+            "kind": "referenceAudioAlignment",
             "source": alignment_source,
             "asrSrtSha256": asr_srt_sha256,
             "diagnostics": diagnostics_summary,
@@ -2654,16 +2711,18 @@ def _load_asr_acoustic_evidence(asr_srt_path: Path) -> dict[str, Any]:
     receipt_evidence = receipt.get("segmentEvidence")
     timing = receipt.get("timingValidation")
     if (
-        raw_json.get("contractVersion") != NARRATION_ASR_CONTRACT_VERSION
-        or receipt.get("contractVersion") != NARRATION_ASR_CONTRACT_VERSION
+        raw_json.get("schemaVersion") != 1
+        or raw_json.get("kind") != "narrationAsrEvidence"
+        or raw_json.get("pipelineRecipe") != NARRATION_ASR_PIPELINE_RECIPE
+        or receipt.get("schemaVersion") != 1
+        or receipt.get("kind") != "narrationAsrReceipt"
+        or receipt.get("pipelineRecipe") != NARRATION_ASR_PIPELINE_RECIPE
         or not isinstance(segment_evidence, Mapping)
         or segment_evidence.get("validated") is not True
-        or segment_evidence.get("contractVersion")
-        != NARRATION_ASR_RECONSTRUCTION_CONTRACT
+        or segment_evidence.get("recipe")
+        != NARRATION_ASR_RECONSTRUCTION_RECIPE
         or segment_evidence.get("maxVadSegmentMs")
         != NARRATION_ASR_MAX_VAD_SEGMENT_MS
-        or segment_evidence.get("segmentationContract")
-        != NARRATION_ASR_SEGMENTATION_CONTRACT
         or segment_evidence.get("reconstructionMatchesTopLevel") is not True
         or not isinstance(segment_evidence.get("segmentCount"), int)
         or segment_evidence.get("segmentCount", 0) <= 0
@@ -2671,12 +2730,9 @@ def _load_asr_acoustic_evidence(asr_srt_path: Path) -> dict[str, Any]:
         or segment_evidence.get("tokenCount", 0) <= 0
         or not isinstance(receipt_evidence, Mapping)
         or receipt_evidence.get("validated") is not True
-        or receipt_evidence.get("contractVersion")
-        != segment_evidence.get("contractVersion")
+        or receipt_evidence.get("recipe") != segment_evidence.get("recipe")
         or receipt_evidence.get("maxVadSegmentMs")
         != NARRATION_ASR_MAX_VAD_SEGMENT_MS
-        or receipt_evidence.get("segmentationContract")
-        != segment_evidence.get("segmentationContract")
         or receipt_evidence.get("reconstructedSequenceSha256")
         != segment_evidence.get("reconstructedSequenceSha256")
         or receipt_evidence.get("topLevelSequenceSha256")
@@ -2687,12 +2743,13 @@ def _load_asr_acoustic_evidence(asr_srt_path: Path) -> dict[str, Any]:
     ):
         raise VoiceoverStateError("ASR 分段 token/timestamp 证据未通过 v5 fail-closed 合同")
     return {
-        "asrContractVersion": NARRATION_ASR_CONTRACT_VERSION,
-        "contractVersion": segment_evidence.get("contractVersion"),
+        "pipelineRecipe": copy.deepcopy(NARRATION_ASR_PIPELINE_RECIPE),
+        "reconstructionRecipe": copy.deepcopy(
+            NARRATION_ASR_RECONSTRUCTION_RECIPE
+        ),
         "validated": True,
         "evidenceKind": "vad_segment_token_timestamp",
         "maxVadSegmentMs": NARRATION_ASR_MAX_VAD_SEGMENT_MS,
-        "segmentationContract": segment_evidence.get("segmentationContract"),
         "segmentCount": segment_evidence["segmentCount"],
         "tokenCount": segment_evidence["tokenCount"],
         "reconstructionMatchesTopLevel": True,
@@ -2738,7 +2795,7 @@ def _commit_alignment(
         "relativePath": "audio/timeline.json",
         "sha256": timeline_sha,
         "durationMs": composite.durationMs,
-        "contractVersion": VOICE_TIMELINE_CONTRACT_VERSION,
+        "schemaVersion": VOICE_TIMELINE_SCHEMA_VERSION,
     }
     manifest["narrationSrt"] = {
         "status": "validated",
@@ -2750,7 +2807,7 @@ def _commit_alignment(
         "status": "validated",
         "source": alignment_source,
         "evidenceSha256": evidence_sha256,
-        "contractVersion": timeline["alignment"]["contractVersion"],
+        "schemaVersion": timeline["alignment"]["schemaVersion"],
     }
     manifest["fullIdentityHash"] = _full_identity(
         plan, manifest["composite"], manifest["timeline"], manifest["narrationSrt"]
@@ -2789,7 +2846,7 @@ def _publish_alignment(
         raise VoiceoverStateError("reference audio alignment 模块尚未安装")
     plan, units = _load_current_plan_units(project)
     if (
-        plan["segmentation"]["contractVersion"] != FULL_TRACK_SEGMENTATION_CONTRACT_VERSION
+        plan["segmentation"]["mode"] != FULL_TRACK_SEGMENTATION_MODE
         or len(units) != 1
     ):
         raise VoiceoverStateError("publish-alignment 只支持 full-track voice plan")
@@ -2854,10 +2911,8 @@ def _publish_minimax_alignment(project: Project) -> str:
     plan, units = _load_current_plan_units(project)
     if (
         plan["provider"]["id"] != "minimax"
-        or plan["provider"]["contractVersion"]
-        != MINIMAX_PROVIDER_CONTRACT_VERSION
-        or plan["segmentation"]["contractVersion"]
-        != FULL_TRACK_SEGMENTATION_CONTRACT_VERSION
+        or plan["provider"].get("options", {}).get("endpoint") != MINIMAX_ENDPOINT
+        or plan["segmentation"]["mode"] != FULL_TRACK_SEGMENTATION_MODE
         or len(units) != 1
     ):
         raise ApprovalGateError("MiniMax voice plan 尚未启用 current 原生 word 字幕合同")
@@ -3005,13 +3060,13 @@ def _publish_doubao_alignment(project: Project) -> str:
     plan, units = _load_current_plan_units(project)
     if (
         plan["provider"]["id"] != "doubao"
-        or plan["provider"]["contractVersion"]
-        != DOUBAO_PROVIDER_CONTRACT_VERSION
-        or plan["segmentation"]["contractVersion"]
-        != FULL_TRACK_SEGMENTATION_CONTRACT_VERSION
+        or plan["provider"].get("options", {}).get("model") != "seed-audio-1.0"
+        or plan["segmentation"]["mode"] != FULL_TRACK_SEGMENTATION_MODE
         or len(units) != 1
     ):
-        raise ApprovalGateError("豆包 voice plan 不符合 current v2 原生 word 字幕合同")
+        raise ApprovalGateError(
+            "豆包 voice plan 不符合 current prompt-only v3 原生 word 字幕合同"
+        )
     paths = _voice_paths(project)
     manifest = validate_voice_manifest(
         _read_json(paths["manifest"], "voice manifest"),
@@ -3035,7 +3090,9 @@ def _publish_doubao_alignment(project: Project) -> str:
         or not isinstance(segment.get("providerSubtitles"), Mapping)
         or not _segment_is_reusable(project, segment, units[0])
     ):
-        raise VoiceoverStateError("豆包整轨 synthesis segment 尚未按 v2 validated")
+        raise VoiceoverStateError(
+            "豆包整轨 synthesis segment 尚未按 prompt-only v3 validated"
+        )
     composite_ref = manifest.get("composite")
     if not isinstance(composite_ref, Mapping) or composite_ref.get("status") != "validated":
         raise VoiceoverStateError("audio/narration.wav 尚未 validated")
@@ -3120,7 +3177,9 @@ def _run_local_asr(project: Project, narration_path: Path) -> Path:
     token_count = payload.get("tokenCount")
     timing = payload.get("timingValidation")
     if (
-        payload.get("contractVersion") != NARRATION_ASR_CONTRACT_VERSION
+        payload.get("schemaVersion") != 1
+        or payload.get("kind") != "narrationAsrResult"
+        or payload.get("pipelineRecipe") != NARRATION_ASR_PIPELINE_RECIPE
         or payload.get("evidenceKind") != "vad_segment_token_timestamp"
         or payload.get("segmentEvidenceValidated") is not True
         or isinstance(payload.get("segmentCount"), bool)
@@ -3229,11 +3288,8 @@ def validate_current_voiceover(
         raise ApprovalGateError("audio timeline 未绑定 current narration.srt")
     if timeline.get("narrationSrt", {}).get("file") != "audio/narration.srt":
         raise VoiceoverStateError("audio timeline narrationSrt.file 无效")
-    if (
-        timeline.get("schemaVersion") != VOICE_TIMELINE_SCHEMA_VERSION
-        or timeline.get("contractVersion") != VOICE_TIMELINE_CONTRACT_VERSION
-    ):
-        raise ApprovalGateError("audio timeline 合同版本已 stale，必须重新执行 token 对齐")
+    if timeline.get("schemaVersion") != VOICE_TIMELINE_SCHEMA_VERSION:
+        raise ApprovalGateError("audio timeline schemaVersion 已 stale，必须重新执行 token 对齐")
     alignment_diagnostics = timeline.get("alignment", {}).get("diagnostics", {})
     acoustic_evidence = (
         alignment_diagnostics.get("acousticEvidence")
@@ -3249,8 +3305,12 @@ def validate_current_voiceover(
         not isinstance(alignment_diagnostics, Mapping)
         or alignment_diagnostics.get("tokenTimingUsed") is not True
         or alignment_diagnostics.get("qualityGatePassed") is not True
-        or alignment_diagnostics.get("captionSegmentationContract")
-        != "reference-punctuation-caption-v1"
+        or alignment_diagnostics.get("captionSegmentationRecipe")
+        != {
+            "algorithm": "reference_punctuation_caption",
+            "version": 1,
+            "parameters": {},
+        }
     )
     if project.voiceover_mode == "minimax":
         native_evidence = (
@@ -3267,8 +3327,10 @@ def validate_current_voiceover(
             != "minimax-provider-native-word"
             or not isinstance(native_evidence, Mapping)
             or native_evidence.get("validated") is not True
-            or native_evidence.get("contractVersion")
-            != MINIMAX_SUBTITLE_EVIDENCE_CONTRACT_VERSION
+            or native_evidence.get("schemaVersion")
+            != NATIVE_SUBTITLE_EVIDENCE_SCHEMA_VERSION
+            or native_evidence.get("kind") != NATIVE_SUBTITLE_EVIDENCE_KIND
+            or native_evidence.get("provider") != "minimax"
             or native_evidence.get("evidenceKind")
             != "provider_native_word_timestamp"
             or native_evidence.get("subtitleType") != MINIMAX_SUBTITLE_TYPE
@@ -3299,10 +3361,11 @@ def validate_current_voiceover(
             != "doubao-provider-native-word"
             or not isinstance(native_evidence, Mapping)
             or native_evidence.get("validated") is not True
-            or native_evidence.get("contractVersion")
-            != DOUBAO_SUBTITLE_EVIDENCE_CONTRACT_VERSION
-            or native_evidence.get("providerContractVersion")
-            != DOUBAO_PROVIDER_CONTRACT_VERSION
+            or native_evidence.get("schemaVersion")
+            != NATIVE_SUBTITLE_EVIDENCE_SCHEMA_VERSION
+            or native_evidence.get("kind") != NATIVE_SUBTITLE_EVIDENCE_KIND
+            or native_evidence.get("provider") != "doubao"
+            or native_evidence.get("model") != "seed-audio-1.0"
             or native_evidence.get("evidenceKind")
             != "provider_native_word_timestamp"
             or native_evidence.get("subtitleType") != DOUBAO_SUBTITLE_TYPE
@@ -3322,14 +3385,12 @@ def validate_current_voiceover(
         common_alignment_invalid
         or not isinstance(acoustic_evidence, Mapping)
         or acoustic_evidence.get("validated") is not True
-        or acoustic_evidence.get("asrContractVersion")
-        != NARRATION_ASR_CONTRACT_VERSION
-        or acoustic_evidence.get("contractVersion")
-        != NARRATION_ASR_RECONSTRUCTION_CONTRACT
+        or acoustic_evidence.get("pipelineRecipe")
+        != NARRATION_ASR_PIPELINE_RECIPE
+        or acoustic_evidence.get("reconstructionRecipe")
+        != NARRATION_ASR_RECONSTRUCTION_RECIPE
         or acoustic_evidence.get("maxVadSegmentMs")
         != NARRATION_ASR_MAX_VAD_SEGMENT_MS
-        or acoustic_evidence.get("segmentationContract")
-        != NARRATION_ASR_SEGMENTATION_CONTRACT
         or acoustic_evidence.get("evidenceKind")
         != "vad_segment_token_timestamp"
         or acoustic_evidence.get("reconstructionMatchesTopLevel") is not True
@@ -3436,7 +3497,14 @@ def validate_current_voiceover(
             "timelineSha256": manifest["timeline"]["sha256"],
             "audioSha256": composite.sha256,
             "narrationSrtSha256": narration["sha256"],
-            "providerContractVersion": plan["provider"]["contractVersion"],
+            "provider": {
+                "id": plan["provider"]["id"],
+                **{
+                    key: plan["provider"].get("options", {}).get(key)
+                    for key in ("packageVersion", "model", "endpoint")
+                    if plan["provider"].get("options", {}).get(key) is not None
+                },
+            },
             "fullAudioIdentityHash": manifest.get("fullAudioIdentityHash"),
         }
     )
@@ -3653,7 +3721,10 @@ def _parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     sample = sub.add_parser("sample", help="生成 canonical 样音，但不自动批准")
     sample.add_argument("--project", required=True, type=Path)
-    sample.add_argument("--voice")
+    sample.add_argument(
+        "--voice",
+        help="仅 Edge/MiniMax 可用；豆包 prompt-only 模式禁止指定 speaker",
+    )
     sample.add_argument("--rate", type=int)
     sample.add_argument(
         "--doubao-performance-brief",
@@ -3735,7 +3806,16 @@ def main(
             if provider_id == "disabled":
                 raise VoiceoverStateError("disabled 项目不能生成旁白样音")
             provider_config = load_voice_provider_config(provider_id=provider_id)
-            voice = args.voice or str(provider_config.get("voice", "zh-CN-YunjianNeural"))
+            if provider_id == "doubao":
+                if args.voice is not None:
+                    raise VoiceoverStateError(
+                        "豆包 prompt-only 模式禁止 --voice；音色只由 text_prompt 定义"
+                    )
+                voice = DOUBAO_PROMPT_VOICE_ID
+            else:
+                voice = args.voice or str(
+                    provider_config.get("voice", "zh-CN-YunjianNeural")
+                )
             rate = args.rate if args.rate is not None else provider_config.get("rate", 0)
             if provider_id != project.voiceover_mode:
                 raise VoiceoverStateError(
@@ -3789,7 +3869,10 @@ def main(
             print(f"SAMPLE_AUDIO={audio}")
             print(f"SAMPLE_REVIEW_AUDIO={review_audio}")
             print(f"SAMPLE_REQUEST_AUDIT={request_audit}")
-            print(f"SAMPLE_VOICE_ID={voice}")
+            if provider_id == "doubao":
+                print("SAMPLE_VOICE_CONTROL=text_prompt")
+            else:
+                print(f"SAMPLE_VOICE_ID={voice}")
             print(f"SAMPLE_AUDIO_SHA256={audio_sha256}")
             print(f"SAMPLE_IDENTITY={identity}")
             estimate = _read_json(

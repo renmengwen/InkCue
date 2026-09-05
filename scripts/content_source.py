@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""确定性校验 content-draft-v1，并派生 provisional SRT 与生图计划。"""
+"""确定性校验 content draft，并派生 provisional SRT 与生图计划。"""
 from __future__ import annotations
 
 import hashlib
@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from project_workspace import (
-    DEFAULT_GLOBAL_PROMPT,
     FIXED_CANVAS,
     ProjectValidationError,
     safe_project_path,
@@ -27,25 +26,19 @@ from visual_style_presets import (
 )
 
 
-CONTENT_DRAFT_CONTRACT_VERSION = "whiteboard-content-draft-v1"
-SOURCE_PACKAGE_CONTRACT_VERSION = "whiteboard-source-package-v1"
-PROVISIONAL_TIMING_VERSION = "provisional-cumulative-ms-v1"
-PREPARE_SOURCE_TOOL_VERSION = "prepare-source-v3"
-LEGACY_PREPARE_SOURCE_TOOL_VERSION_V2 = "prepare-source-v2"
-LEGACY_PREPARE_SOURCE_TOOL_VERSION = "prepare-source-v1"
-LEGACY_DEFAULT_GLOBAL_PROMPT = (
-    "暖米黄纸张背景上的简洁白板手绘线稿，统一黑色墨线、少量柔和强调色、"
-    "清晰留白与横向构图；画面不得包含任何文字、字母、数字、水印或标志。"
-)
+PROVISIONAL_TIMING_ALGORITHM = "provisionalCumulativeMilliseconds"
+PROVISIONAL_TIMING_ALGORITHM_VERSION = 1
 MIN_TARGET_SECONDS = 15
 MAX_TARGET_SECONDS = 600
 MAX_TOPIC_CHARACTERS = 200
 MAX_BODY_UTF8_BYTES = 128 * 1024
 MIN_CUE_DURATION_MS = 400
+SPOKEN_CHARACTER_WEIGHT = 100
+SENTENCE_PAUSE_WEIGHT = 20
+DOUBAO_MAX_SPOKEN_CHARACTERS_PER_SECOND = 3.2
 
 _TOP_LEVEL_FIELDS = {
     "schemaVersion",
-    "contractVersion",
     "inputMode",
     "topic",
     "body",
@@ -211,7 +204,7 @@ def _semantic_skeleton(text: str) -> str:
 
 
 def validate_content_draft(value: Any) -> dict[str, Any]:
-    """返回规范化且完全脱离输入对象的 content-draft-v1。"""
+    """返回规范化且完全脱离输入对象的 schemaVersion=1 content draft。"""
     structure_errors = _collect_content_draft_structure_errors(value)
     if structure_errors:
         raise ContentSourceError(
@@ -219,10 +212,6 @@ def validate_content_draft(value: Any) -> dict[str, Any]:
         )
     if value.get("schemaVersion") != 1:
         raise ContentSourceError("content draft schemaVersion 必须为 1")
-    if value.get("contractVersion") != CONTENT_DRAFT_CONTRACT_VERSION:
-        raise ContentSourceError(
-            f"content draft contractVersion 必须为 {CONTENT_DRAFT_CONTRACT_VERSION}"
-        )
 
     input_mode = value.get("inputMode")
     rewrite_policy = value.get("rewritePolicy")
@@ -311,14 +300,31 @@ def validate_content_draft(value: Any) -> dict[str, Any]:
         if _semantic_skeleton(body or "") != _semantic_skeleton("".join(c["text"] for c in cues)):
             raise ContentSourceError("text+preserve 的 cue 必须保留正文中的文字、数字与顺序")
 
+    target_seconds = _normalise_target_seconds(value.get("targetDurationSeconds"))
+    if value.get("voiceoverMode") == "doubao":
+        spoken_characters = sum(
+            1
+            for cue in cues
+            for character in cue["text"]
+            if unicodedata.category(character)[0] in {"L", "N"}
+        )
+        maximum_characters = math.floor(
+            float(target_seconds) * DOUBAO_MAX_SPOKEN_CHARACTERS_PER_SECOND
+        )
+        if spoken_characters > maximum_characters:
+            raise ContentSourceError(
+                "豆包旁白超过 prompt 时间轴的自然朗读预算："
+                f"{spoken_characters} 个有效字符 > {maximum_characters}；"
+                "请在阶段 0 压缩正文后重新生成 candidate"
+            )
+
     return {
         "schemaVersion": 1,
-        "contractVersion": CONTENT_DRAFT_CONTRACT_VERSION,
         "inputMode": input_mode,
         "topic": topic,
         "body": body,
         "rewritePolicy": rewrite_policy,
-        "targetDurationSeconds": _normalise_target_seconds(value.get("targetDurationSeconds")),
+        "targetDurationSeconds": target_seconds,
         "voiceoverMode": value["voiceoverMode"],
         "visualStylePreset": visual_style_preset.id,
         "narrationCues": cues,
@@ -334,11 +340,14 @@ def content_draft_identity(draft: Mapping[str, Any]) -> str:
 
 
 def spoken_text_weight(text: str) -> int:
-    """Return the deterministic v1 readable-text weight used for timing estimates."""
+    """Return the deterministic readable-text weight used for timing estimates."""
 
     spoken = sum(1 for ch in text if unicodedata.category(ch)[0] in {"L", "N"})
     pause = len(_SENTENCE_PAUSE_RE.findall(text))
-    return max(1, spoken * 100 + pause * 20)
+    return max(
+        1,
+        spoken * SPOKEN_CHARACTER_WEIGHT + pause * SENTENCE_PAUSE_WEIGHT,
+    )
 
 
 def _cue_weight(text: str) -> int:
@@ -479,25 +488,15 @@ def build_source_package(
     *,
     forbid_text: bool = False,
     global_prompt: str | None = None,
-    tool_version: str = PREPARE_SOURCE_TOOL_VERSION,
 ) -> tuple[dict[str, Any], str, dict[str, Any], dict[str, Any]]:
     normalised = validate_content_draft(draft)
-    include_visual_style_snapshot = tool_version == PREPARE_SOURCE_TOOL_VERSION
-    if tool_version not in {
-        PREPARE_SOURCE_TOOL_VERSION,
-        LEGACY_PREPARE_SOURCE_TOOL_VERSION_V2,
-        LEGACY_PREPARE_SOURCE_TOOL_VERSION,
-    }:
-        raise ContentSourceError("source 准备包 toolVersion 无效")
     persisted_draft = dict(normalised)
-    if not include_visual_style_snapshot:
-        persisted_draft.pop("visualStylePreset", None)
     source_srt = build_provisional_srt(normalised)
     generation_plan = build_generation_plan(
         normalised,
         forbid_text=forbid_text,
         global_prompt=global_prompt,
-        include_visual_style_snapshot=include_visual_style_snapshot,
+        include_visual_style_snapshot=True,
     )
     input_bytes = _json_file_bytes(persisted_draft)
     srt_bytes = source_srt.encode("utf-8")
@@ -508,8 +507,6 @@ def build_source_package(
     ]
     manifest_core: dict[str, Any] = {
         "schemaVersion": 1,
-        "contractVersion": SOURCE_PACKAGE_CONTRACT_VERSION,
-        "contentDraftContractVersion": CONTENT_DRAFT_CONTRACT_VERSION,
         # 视觉模板只影响 generation plan 与图片链；content identity 继续绑定
         # 文案/cue/scene 边界，避免纯模板切换误伤音频与真实时间轴。
         "contentDraftIdentitySha256": sha256_json(
@@ -520,23 +517,29 @@ def build_source_package(
         "rewritePolicy": normalised["rewritePolicy"],
         "targetDurationSeconds": normalised["targetDurationSeconds"],
         "voiceoverMode": normalised["voiceoverMode"],
-        "timingAlgorithmVersion": PROVISIONAL_TIMING_VERSION,
-        "toolVersion": tool_version,
+        "timingAlgorithm": {
+            "algorithm": PROVISIONAL_TIMING_ALGORITHM,
+            "version": PROVISIONAL_TIMING_ALGORITHM_VERSION,
+            "parameters": {
+                "minimumCueDurationMs": MIN_CUE_DURATION_MS,
+                "spokenCharacterWeight": SPOKEN_CHARACTER_WEIGHT,
+                "sentencePauseWeight": SENTENCE_PAUSE_WEIGHT,
+            },
+        },
         "files": {
             "input.json": {"sha256": _sha256_bytes(input_bytes)},
             "source.srt": {"sha256": _sha256_bytes(srt_bytes)},
             "generation-plan.json": {"sha256": _sha256_bytes(plan_bytes)},
         },
     }
-    if include_visual_style_snapshot:
-        manifest_core.update(
-            {
-                "visualStylePreset": normalised["visualStylePreset"],
-                "visualStylePromptRecipeSha256": generation_plan[
-                    "visualStylePromptRecipeSha256"
-                ],
-            }
-        )
+    manifest_core.update(
+        {
+            "visualStylePreset": normalised["visualStylePreset"],
+            "visualStylePromptRecipeSha256": generation_plan[
+                "visualStylePromptRecipeSha256"
+            ],
+        }
+    )
     manifest_core["sourcePackageIdentitySha256"] = sha256_json(manifest_core)
     return persisted_draft, source_srt, generation_plan, manifest_core
 
@@ -571,24 +574,10 @@ def validate_source_package(
         and isinstance(raw_constraints.get("forbidText"), bool)
         else False
     )
-    raw_tool_version = raw_manifest.get("toolVersion")
-    if raw_tool_version not in {
-        PREPARE_SOURCE_TOOL_VERSION,
-        LEGACY_PREPARE_SOURCE_TOOL_VERSION_V2,
-        LEGACY_PREPARE_SOURCE_TOOL_VERSION,
-    }:
-        raise ContentSourceError("source 准备包 toolVersion 无效")
     expected_draft, expected_srt, expected_plan, expected_manifest = build_source_package(
         raw_draft,
         forbid_text=raw_forbid_text,
-        global_prompt=(
-            LEGACY_DEFAULT_GLOBAL_PROMPT
-            if raw_tool_version == LEGACY_PREPARE_SOURCE_TOOL_VERSION
-            else DEFAULT_GLOBAL_PROMPT
-            if raw_tool_version == LEGACY_PREPARE_SOURCE_TOOL_VERSION_V2
-            else None
-        ),
-        tool_version=raw_tool_version,
+        global_prompt=None,
     )
     if paths[0].read_bytes() != _json_file_bytes(expected_draft):
         raise ContentSourceError("input.json 字节不是规范化确定性输出")
@@ -644,24 +633,10 @@ def validate_project_source_binding(
         and isinstance(raw_constraints.get("forbidText"), bool)
         else False
     )
-    raw_tool_version = raw_manifest.get("toolVersion")
-    if raw_tool_version not in {
-        PREPARE_SOURCE_TOOL_VERSION,
-        LEGACY_PREPARE_SOURCE_TOOL_VERSION_V2,
-        LEGACY_PREPARE_SOURCE_TOOL_VERSION,
-    }:
-        raise ContentSourceError("正式项目 source manifest toolVersion 无效")
     expected_draft, expected_srt, expected_plan, expected_manifest = build_source_package(
         raw_draft,
         forbid_text=raw_forbid_text,
-        global_prompt=(
-            LEGACY_DEFAULT_GLOBAL_PROMPT
-            if raw_tool_version == LEGACY_PREPARE_SOURCE_TOOL_VERSION
-            else DEFAULT_GLOBAL_PROMPT
-            if raw_tool_version == LEGACY_PREPARE_SOURCE_TOOL_VERSION_V2
-            else None
-        ),
-        tool_version=raw_tool_version,
+        global_prompt=None,
     )
     if raw_draft != expected_draft or raw_manifest != expected_manifest or raw_srt != expected_srt:
         raise ContentSourceError("正式项目 content source 输入、manifest 或 SRT 已失配")
@@ -690,9 +665,9 @@ def validate_project_source_binding(
 
 
 __all__ = [
-    "CONTENT_DRAFT_CONTRACT_VERSION",
-    "SOURCE_PACKAGE_CONTRACT_VERSION",
-    "PROVISIONAL_TIMING_VERSION",
+    "DOUBAO_MAX_SPOKEN_CHARACTERS_PER_SECOND",
+    "PROVISIONAL_TIMING_ALGORITHM",
+    "PROVISIONAL_TIMING_ALGORITHM_VERSION",
     "ContentSourceError",
     "SourcePackage",
     "build_generation_plan",

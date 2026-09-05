@@ -17,7 +17,7 @@ try:
         write_json_atomic,
     )
     from .scene_review import (
-        SCENE_REVIEW_CONTRACT_VERSION,
+        SCENE_REVIEW_SCHEMA_VERSION,
         SceneReviewGateError,
         SceneReviewStaleError,
         build_scene_review_bundle,
@@ -32,7 +32,7 @@ except ImportError:  # pragma: no cover - direct script execution
         write_json_atomic,
     )
     from scene_review import (
-        SCENE_REVIEW_CONTRACT_VERSION,
+        SCENE_REVIEW_SCHEMA_VERSION,
         SceneReviewGateError,
         SceneReviewStaleError,
         build_scene_review_bundle,
@@ -51,7 +51,8 @@ def approve_scene_review(project_root: str, identity_hash: str) -> dict[str, Any
     manifest_path, manifest = load_render_manifest(project)
     approval = {
         "approved": True,
-        "contractVersion": SCENE_REVIEW_CONTRACT_VERSION,
+        "schemaVersion": SCENE_REVIEW_SCHEMA_VERSION,
+        "reviewKind": "scene-review",
         "identityHash": identity_hash,
         "sceneCount": len(bundle["scenes"]),
         "approvedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),

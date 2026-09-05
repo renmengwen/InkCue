@@ -26,7 +26,10 @@ import render_stream_whiteboard  # noqa: E402
 import render_timing  # noqa: E402
 
 
-CONTRACT_VERSION = "whiteboard-video-mosaic-scene-v1"
+MOSAIC_SCHEMA_VERSION = 1
+MOSAIC_KIND = "video-mosaic-scene"
+MOSAIC_RENDER_ALGORITHM = "videoMosaic"
+MOSAIC_RENDER_ALGORITHM_VERSION = 1
 
 
 class MosaicRenderError(ValueError):
@@ -56,7 +59,7 @@ def _load_config(project: project_workspace.Project, relative: str) -> tuple[Pat
     value = dict(_mapping(raw, "mosaic config"))
     required = {
         "schemaVersion",
-        "contractVersion",
+        "kind",
         "sceneId",
         "marginPx",
         "horizontalGapPx",
@@ -66,8 +69,8 @@ def _load_config(project: project_workspace.Project, relative: str) -> tuple[Pat
     }
     if set(value) != required:
         raise MosaicRenderError("mosaic config 字段必须与合同完全一致")
-    if value["schemaVersion"] != 1 or value["contractVersion"] != CONTRACT_VERSION:
-        raise MosaicRenderError("mosaic config 合同版本无效")
+    if value["schemaVersion"] != MOSAIC_SCHEMA_VERSION or value["kind"] != MOSAIC_KIND:
+        raise MosaicRenderError("mosaic config schema/kind 无效")
     if not isinstance(value["sceneId"], str) or not value["sceneId"]:
         raise MosaicRenderError("sceneId 必须是非空字符串")
     for key in ("marginPx", "horizontalGapPx", "verticalGapPx"):
@@ -195,19 +198,23 @@ def validate_current_render_options(
 ) -> None:
     """Fail closed when a persisted mosaic config or source clip has changed."""
 
-    if render_options.get("renderMode") != CONTRACT_VERSION:
+    recipe = render_options.get("renderRecipe")
+    if not isinstance(recipe, Mapping) or recipe.get("algorithm") != MOSAIC_RENDER_ALGORITHM:
         return
-    config_relative = render_options.get("mosaicConfig")
+    if recipe.get("version") != MOSAIC_RENDER_ALGORITHM_VERSION:
+        raise MosaicRenderError("mosaic render recipe version 已 stale")
+    parameters = _mapping(recipe.get("parameters"), "mosaic render recipe parameters")
+    config_relative = parameters.get("mosaicConfig")
     if not isinstance(config_relative, str):
         raise MosaicRenderError("mosaic renderOptions 缺少 config")
     config_path, config = _load_config(project, config_relative)
-    if project_workspace.sha256_file(config_path) != render_options.get("mosaicConfigSha256"):
+    if project_workspace.sha256_file(config_path) != parameters.get("mosaicConfigSha256"):
         raise MosaicRenderError("mosaic config bytes stale")
-    if config.get("sources") != render_options.get("sources"):
+    if config.get("sources") != parameters.get("sources"):
         raise MosaicRenderError("mosaic source binding stale")
-    if _cell_layout(project.render_profile, config) != render_options.get("layout"):
+    if _cell_layout(project.render_profile, config) != parameters.get("layout"):
         raise MosaicRenderError("mosaic layout binding stale")
-    if config.get("backgroundHex") != render_options.get("backgroundHex"):
+    if config.get("backgroundHex") != parameters.get("backgroundHex"):
         raise MosaicRenderError("mosaic background binding stale")
 
 
@@ -262,14 +269,19 @@ def render(project_root: str, scene_id: str, config_file: str) -> dict[str, Any]
         deep_receipt=render_stream_whiteboard._deep_receipt(candidate_media),
     )
     render_options = {
-        "renderMode": CONTRACT_VERSION,
-        "mosaicConfig": config_path.relative_to(project.root).as_posix(),
-        "mosaicConfigSha256": config_sha256,
-        "sources": source_bindings,
-        "layout": dict(layout),
-        "backgroundHex": config["backgroundHex"],
-        "cleanFirstFrame": "fade-from-paper-0.4s",
-        "audioStreams": 0,
+        "renderRecipe": {
+            "algorithm": MOSAIC_RENDER_ALGORITHM,
+            "version": MOSAIC_RENDER_ALGORITHM_VERSION,
+            "parameters": {
+                "mosaicConfig": config_path.relative_to(project.root).as_posix(),
+                "mosaicConfigSha256": config_sha256,
+                "sources": source_bindings,
+                "layout": dict(layout),
+                "backgroundHex": config["backgroundHex"],
+                "fadeInSeconds": 0.4,
+                "audioStreams": 0,
+            },
+        },
     }
     manifest = render_timing.update_render_manifest(
         context,
@@ -281,7 +293,8 @@ def render(project_root: str, scene_id: str, config_file: str) -> dict[str, Any]
     except OSError:
         pass
     return {
-        "contractVersion": CONTRACT_VERSION,
+        "schemaVersion": MOSAIC_SCHEMA_VERSION,
+        "kind": MOSAIC_KIND,
         "status": "PASS",
         "projectId": project.project_id,
         "sceneId": scene_id,

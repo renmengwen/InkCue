@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""豆包 Seed Audio 单人白板旁白的 authored performance brief 合同。"""
+"""豆包 Seed Audio 单人白板旁白的 authored performance brief。"""
 from __future__ import annotations
 
 import hashlib
@@ -7,15 +7,17 @@ import re
 from typing import Any, Mapping, Sequence
 
 
-DOUBAO_PROMPT_SPEC_VERSION = "doubao-whiteboard-authored-performance-v3"
-DOUBAO_PERFORMANCE_BRIEF_VERSION = "doubao-performance-brief-v1"
+DOUBAO_PROMPT_SCHEMA_VERSION = 1
+DOUBAO_PERFORMANCE_BRIEF_KIND = "performanceBrief"
+DOUBAO_PROMPT_SPEC_KIND = "textPromptPlan"
 DOUBAO_TEXT_PROMPT_MAX_CHARACTERS = 3000
 DOUBAO_MAX_AUDIO_DURATION_SECONDS = 120
 DOUBAO_SAMPLE_MAX_AUDIO_DURATION_SECONDS = 30
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _TOP_LEVEL_FIELDS = {
-    "contractVersion",
+    "schemaVersion",
+    "kind",
     "referenceSha256",
     "narratorDirection",
     "music",
@@ -56,15 +58,30 @@ def _scene_sources(
 ) -> list[dict[str, Any]]:
     if not cues or not scenes:
         raise DoubaoPromptError("豆包 performance brief 需要非空 cue 与 scene")
-    cue_text: dict[int, str] = {}
+    cue_data: dict[int, dict[str, Any]] = {}
     for cue in cues:
         ordinal = cue.get("sourceOrdinal")
         text = cue.get("text")
+        start_ms = cue.get("startMs")
+        end_ms = cue.get("endMs")
         if isinstance(ordinal, bool) or not isinstance(ordinal, int):
             raise DoubaoPromptError("豆包 prompt cue sourceOrdinal 无效")
         if not isinstance(text, str) or not text.strip():
             raise DoubaoPromptError("豆包 prompt cue 文本不能为空")
-        cue_text[ordinal] = text
+        if (
+            isinstance(start_ms, bool)
+            or not isinstance(start_ms, int)
+            or isinstance(end_ms, bool)
+            or not isinstance(end_ms, int)
+            or start_ms < 0
+            or end_ms <= start_ms
+        ):
+            raise DoubaoPromptError("豆包 prompt cue 时间窗口无效")
+        cue_data[ordinal] = {
+            "text": text,
+            "startMs": start_ms,
+            "endMs": end_ms,
+        }
 
     sources: list[dict[str, Any]] = []
     for scene in scenes:
@@ -84,16 +101,25 @@ def _scene_sources(
             raise DoubaoPromptError("豆包 prompt scene 结构无效")
         first, last = int(cue_range[0]), int(cue_range[1])
         if first > last or any(
-            ordinal not in cue_text for ordinal in range(first, last + 1)
+            ordinal not in cue_data for ordinal in range(first, last + 1)
         ):
             raise DoubaoPromptError("豆包 prompt scene cueRange 未完整覆盖原稿")
         sources.append(
             {
                 "sceneId": scene_id,
                 "sourceCueRange": [first, last],
+                "startMs": cue_data[first]["startMs"],
+                "endMs": cue_data[last]["endMs"],
             }
         )
     return sources
+
+
+def _format_seconds(milliseconds: int) -> str:
+    seconds = milliseconds / 1000
+    if milliseconds % 1000 == 0:
+        return f"{int(seconds)}.0"
+    return f"{seconds:.3f}".rstrip("0").rstrip(".")
 
 
 def build_doubao_prompt_spec(
@@ -112,10 +138,13 @@ def build_doubao_prompt_spec(
     brief = dict(performance_brief)
     if set(brief) != _TOP_LEVEL_FIELDS:
         raise DoubaoPromptError(
-            "豆包 performance brief 顶层字段必须严格匹配 current 合同"
+            "豆包 performance brief 顶层字段必须严格匹配 current schema"
         )
-    if brief.get("contractVersion") != DOUBAO_PERFORMANCE_BRIEF_VERSION:
-        raise DoubaoPromptError("豆包 performance brief contractVersion 不匹配")
+    if (
+        brief.get("schemaVersion") != DOUBAO_PROMPT_SCHEMA_VERSION
+        or brief.get("kind") != DOUBAO_PERFORMANCE_BRIEF_KIND
+    ):
+        raise DoubaoPromptError("豆包 performance brief schema/kind 不匹配")
     reference_sha = brief.get("referenceSha256")
     if not isinstance(reference_sha, str) or not _SHA256_RE.fullmatch(reference_sha):
         raise DoubaoPromptError("豆包 performance brief referenceSha256 无效")
@@ -159,7 +188,8 @@ def build_doubao_prompt_spec(
         )
 
     return {
-        "contractVersion": DOUBAO_PROMPT_SPEC_VERSION,
+        "schemaVersion": DOUBAO_PROMPT_SCHEMA_VERSION,
+        "kind": DOUBAO_PROMPT_SPEC_KIND,
         "referenceSha256": reference_sha,
         "narratorDirection": _direction(
             brief.get("narratorDirection"),
@@ -195,7 +225,8 @@ def validate_doubao_prompt_spec(
                 }
             )
     brief = {
-        "contractVersion": DOUBAO_PERFORMANCE_BRIEF_VERSION,
+        "schemaVersion": DOUBAO_PROMPT_SCHEMA_VERSION,
+        "kind": DOUBAO_PERFORMANCE_BRIEF_KIND,
         "referenceSha256": raw.get("referenceSha256"),
         "narratorDirection": raw.get("narratorDirection"),
         "music": raw.get("music"),
@@ -221,8 +252,11 @@ def render_doubao_text_prompt(
 ) -> str:
     """渲染唯一请求 prompt；创意来自 brief，正文由程序逐字装配。"""
 
-    if prompt_spec.get("contractVersion") != DOUBAO_PROMPT_SPEC_VERSION:
-        raise DoubaoPromptError("豆包 promptSpec 合同版本不匹配")
+    if (
+        prompt_spec.get("schemaVersion") != DOUBAO_PROMPT_SCHEMA_VERSION
+        or prompt_spec.get("kind") != DOUBAO_PROMPT_SPEC_KIND
+    ):
+        raise DoubaoPromptError("豆包 promptSpec schema/kind 不匹配")
     if not isinstance(speech_text, str) or not speech_text.strip():
         raise DoubaoPromptError("豆包 text_prompt 的已确认原稿不能为空")
     if not isinstance(background_music_enabled, bool):
@@ -248,13 +282,23 @@ def render_doubao_text_prompt(
         lines.extend(
             [
                 (
-                    "样音只由这位旁白朗读「」内原稿，不增删改写，不朗读引号外说明；"
+                    "样音只使用上述自然语言定义的旁白音色，只朗读「」内原稿，"
+                    "不增删改写，不朗读引号外说明；"
                     "不生成音乐、环境音、拟音或额外人声。"
                 ),
                 f"旁白自然朗读：「{speech_text}」",
             ]
         )
     else:
+        if target_duration_seconds is None:
+            raise DoubaoPromptError("豆包整轨 text_prompt 缺少目标总时长")
+        target_duration_ms = round(float(target_duration_seconds) * 1000)
+        lines.append(
+            "整段音频总时长控制在约 "
+            f"{_format_seconds(target_duration_ms)} 秒；请尽量准确遵守每段标注的"
+            "人声开始和结束时间，段落之间保留自然停顿。只使用上述自然语言定义的"
+            "旁白音色，不使用预设或参考 speaker 音色。"
+        )
         if background_music_enabled:
             lines.append(
                 _direction(
@@ -275,11 +319,25 @@ def render_doubao_text_prompt(
         scene_texts = speech_text.split("\n\n")
         if not isinstance(passages, list) or len(scene_texts) != len(passages):
             raise DoubaoPromptError("豆包整轨原稿段落数与 authored passages 不一致")
+        previous_end_ms = -1
         for index, (scene_text, passage) in enumerate(
             zip(scene_texts, passages), start=1
         ):
             if not isinstance(passage, Mapping):
                 raise DoubaoPromptError(f"豆包 passage[{index}] 结构无效")
+            start_ms = passage.get("startMs")
+            end_ms = passage.get("endMs")
+            if (
+                isinstance(start_ms, bool)
+                or not isinstance(start_ms, int)
+                or isinstance(end_ms, bool)
+                or not isinstance(end_ms, int)
+                or start_ms < previous_end_ms
+                or end_ms <= start_ms
+            ):
+                raise DoubaoPromptError(
+                    f"豆包 passage[{index}] 人声时间窗口无效"
+                )
             if background_music_enabled:
                 transition = _direction(
                     passage.get("enabledMusicBefore"),
@@ -292,7 +350,16 @@ def render_doubao_text_prompt(
                 passage.get("voiceDirection"),
                 label=f"promptSpec passage[{index}].voiceDirection",
             )
-            lines.append(f"{voice_direction}：「{scene_text}」")
+            lines.append(
+                f"{voice_direction}："
+                f"[{_format_seconds(start_ms)}s:{_format_seconds(end_ms)}s]"
+                f"「{scene_text}」"
+            )
+            previous_end_ms = end_ms
+        if previous_end_ms != target_duration_ms:
+            raise DoubaoPromptError(
+                "豆包最后一段人声时间窗口必须收口到整轨目标时长"
+            )
         if background_music_enabled:
             lines.append(
                 _direction(
@@ -317,8 +384,9 @@ def text_prompt_sha256(prompt: str) -> str:
 
 __all__ = [
     "DOUBAO_MAX_AUDIO_DURATION_SECONDS",
-    "DOUBAO_PERFORMANCE_BRIEF_VERSION",
-    "DOUBAO_PROMPT_SPEC_VERSION",
+    "DOUBAO_PERFORMANCE_BRIEF_KIND",
+    "DOUBAO_PROMPT_SCHEMA_VERSION",
+    "DOUBAO_PROMPT_SPEC_KIND",
     "DOUBAO_SAMPLE_MAX_AUDIO_DURATION_SECONDS",
     "DOUBAO_TEXT_PROMPT_MAX_CHARACTERS",
     "DoubaoPromptError",

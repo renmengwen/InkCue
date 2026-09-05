@@ -22,7 +22,6 @@ except ImportError:  # pragma: no cover
     from voiceover import CancelledError, PermanentProviderError, RawAudioResult, RetryableProviderError, SynthesisRequest
 
 
-MINIMAX_PROVIDER_CONTRACT_VERSION = "minimax-t2a-v2-native-word-subtitles-v2"
 MINIMAX_ENDPOINT = "https://api.minimaxi.com/v1/t2a_v2"
 MINIMAX_SUBTITLE_TYPE = "word"
 MAX_SUBTITLE_BYTES = 8 * 1024 * 1024
@@ -208,8 +207,6 @@ class MiniMaxAdapter:
     def _payload(self, request: SynthesisRequest) -> bytes:
         if not request.text.strip():
             raise PermanentProviderError("MiniMax 朗读文本不能为空")
-        if request.providerContractVersion != MINIMAX_PROVIDER_CONTRACT_VERSION:
-            raise PermanentProviderError("MiniMax provider contractVersion 不匹配")
         payload = {
             "model": self.model,
             "text": request.text,
@@ -348,7 +345,6 @@ class MiniMaxAdapter:
 
 __all__ = [
     "MINIMAX_ENDPOINT",
-    "MINIMAX_PROVIDER_CONTRACT_VERSION",
     "MINIMAX_SUBTITLE_TYPE",
     "MiniMaxAdapter",
     "sanitize_provider_request_id",

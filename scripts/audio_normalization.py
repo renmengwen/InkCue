@@ -16,10 +16,19 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
-CANONICAL_AUDIO_CONTRACT_VERSION = "canonical-wav-pcm-s16le-mono-24000-v1"
 CANONICAL_CODEC = "pcm_s16le"
 CANONICAL_SAMPLE_RATE = 24000
 CANONICAL_CHANNELS = 1
+CANONICAL_AUDIO_RECIPE = {
+    "algorithm": "canonical_wav",
+    "version": 1,
+    "parameters": {
+        "codec": CANONICAL_CODEC,
+        "sampleRate": CANONICAL_SAMPLE_RATE,
+        "channels": CANONICAL_CHANNELS,
+        "sampleWidthBits": 16,
+    },
+}
 DEFAULT_TOOL_TIMEOUT_SECONDS = 60.0
 
 
@@ -46,7 +55,7 @@ class AtomicAudioPublishError(AudioNormalizationError):
 @dataclass(frozen=True)
 class CanonicalAudioResult:
     path: Path
-    contractVersion: str
+    recipe: Mapping[str, Any]
     codec: str
     sampleRate: int
     channels: int
@@ -58,7 +67,7 @@ class CanonicalAudioResult:
         """返回不含绝对路径、可直接写入 manifest 的媒体字段。"""
 
         return {
-            "contractVersion": self.contractVersion,
+            "recipe": dict(self.recipe),
             "codec": self.codec,
             "sampleRate": self.sampleRate,
             "channels": self.channels,
@@ -254,7 +263,7 @@ def validate_canonical_wav(
     duration_ms = _positive_decimal_ms(duration_value, label="canonical WAV duration")
     return CanonicalAudioResult(
         path=wav,
-        contractVersion=CANONICAL_AUDIO_CONTRACT_VERSION,
+        recipe=CANONICAL_AUDIO_RECIPE,
         codec=CANONICAL_CODEC,
         sampleRate=sample_rate,
         channels=channels,
@@ -426,7 +435,7 @@ def normalize_to_candidate(
         published_path = atomic_publish_wav(normalized, candidate_path)
         return CanonicalAudioResult(
             path=published_path,
-            contractVersion=validated.contractVersion,
+            recipe=validated.recipe,
             codec=validated.codec,
             sampleRate=validated.sampleRate,
             channels=validated.channels,
@@ -485,7 +494,7 @@ def normalize_and_publish(
         published_path = atomic_publish_wav(candidate, destination_path)
         return CanonicalAudioResult(
             path=published_path,
-            contractVersion=validated.contractVersion,
+            recipe=validated.recipe,
             codec=validated.codec,
             sampleRate=validated.sampleRate,
             channels=validated.channels,
@@ -503,7 +512,7 @@ __all__ = [
     "AudioToolNotFoundError",
     "AudioToolTimeoutError",
     "AudioValidationError",
-    "CANONICAL_AUDIO_CONTRACT_VERSION",
+    "CANONICAL_AUDIO_RECIPE",
     "CANONICAL_CHANNELS",
     "CANONICAL_CODEC",
     "CANONICAL_SAMPLE_RATE",

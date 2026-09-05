@@ -2,7 +2,7 @@
 """Candidate validation receipt 的规范化、时效与 current binding 校验。
 
 本模块只描述技术验证证据。它不写正式 manifest、identity、stale、checkpoint
-或人工批准，也不能把旧 validator 的证据提升为当前 contract 的 PASS。
+或人工批准，也不能把旧 validator 的证据提升为当前 schema 的 PASS。
 """
 from __future__ import annotations
 
@@ -18,18 +18,20 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-CANDIDATE_RECEIPT_CONTRACT_VERSION = "candidate-validation-receipt-v1"
+CANDIDATE_RECEIPT_SCHEMA_VERSION = 1
+CANDIDATE_RECEIPT_KIND = "candidate-validation-receipt"
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _FORMAT_RE = re.compile(r"[A-Z][A-Z0-9._+-]{0,31}")
 _RECEIPT_KEYS = frozenset(
     {
-        "contractVersion",
+        "schemaVersion",
+        "kind",
         "candidateSha256",
         "candidateBytes",
         "decoded",
         "format",
-        "validatorContract",
+        "validator",
         "validatedAt",
         "expiresAt",
         "evidence",
@@ -37,6 +39,7 @@ _RECEIPT_KEYS = frozenset(
     }
 )
 _WRAPPER_FIELDS = (
+    "receipt",
     "candidateReceipt",
     "validationReceipt",
     "validatorReceipt",
@@ -165,12 +168,32 @@ def _require_format(value: Any, *, label: str = "format") -> str:
     return value
 
 
-def _require_validator_contract(value: Any, *, label: str = "validatorContract") -> str:
-    if not isinstance(value, str) or not value.strip() or len(value) > 200:
-        raise ReceiptValidationError(f"{label} 必须为 1 到 200 字符的非空字符串")
-    if value != value.strip():
-        raise ReceiptValidationError(f"{label} 不得包含首尾空白")
-    return value
+def _require_validator(
+    validator_id: Any,
+    validator_version: Any,
+    *,
+    label: str = "validator",
+) -> dict[str, Any]:
+    if (
+        not isinstance(validator_id, str)
+        or not validator_id.strip()
+        or len(validator_id) > 120
+        or validator_id != validator_id.strip()
+    ):
+        raise ReceiptValidationError(f"{label}.id 必须为 1 到 120 字符的非空字符串")
+    if (
+        isinstance(validator_version, bool)
+        or not isinstance(validator_version, int)
+        or validator_version <= 0
+    ):
+        raise ReceiptValidationError(f"{label}.version 必须为正整数")
+    return {"id": validator_id, "version": validator_version}
+
+
+def _read_validator(value: Any, *, label: str = "validator") -> dict[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != {"id", "version"}:
+        raise ReceiptValidationError(f"{label} 必须只包含 id/version")
+    return _require_validator(value.get("id"), value.get("version"), label=label)
 
 
 def build_candidate_receipt(
@@ -179,7 +202,8 @@ def build_candidate_receipt(
     candidate_bytes: int,
     decoded: bool,
     format: str,
-    validator_contract: str,
+    validator_id: str,
+    validator_version: int,
     validated_at: str | datetime | None = None,
     expires_at: str | datetime | None = None,
     ttl_seconds: int | None = None,
@@ -195,7 +219,7 @@ def build_candidate_receipt(
     if not isinstance(decoded, bool):
         raise ReceiptValidationError("decoded 必须为布尔值")
     format_name = _require_format(format)
-    contract = _require_validator_contract(validator_contract)
+    validator = _require_validator(validator_id, validator_version)
 
     validated_value = _utc_now() if validated_at is None else validated_at
     validated_dt = _as_utc_datetime(validated_value, label="validatedAt")
@@ -218,12 +242,13 @@ def build_candidate_receipt(
     evidence_value = {} if evidence is None else copy.deepcopy(dict(evidence))
     canonical_json_bytes(evidence_value)
     receipt: dict[str, Any] = {
-        "contractVersion": CANDIDATE_RECEIPT_CONTRACT_VERSION,
+        "schemaVersion": CANDIDATE_RECEIPT_SCHEMA_VERSION,
+        "kind": CANDIDATE_RECEIPT_KIND,
         "candidateSha256": sha256,
         "candidateBytes": byte_count,
         "decoded": decoded,
         "format": format_name,
-        "validatorContract": contract,
+        "validator": validator,
         "validatedAt": _isoformat_utc(validated_dt, label="validatedAt"),
         "expiresAt": expires_text,
         "evidence": evidence_value,
@@ -238,11 +263,12 @@ def validate_candidate_receipt(
     expected_candidate_sha256: str | None = None,
     expected_candidate_bytes: int | None = None,
     expected_format: str | None = None,
-    expected_validator_contract: str,
+    expected_validator_id: str,
+    expected_validator_version: int,
     now: str | datetime | None = None,
     require_expiry: bool = False,
 ) -> dict[str, Any]:
-    """严格校验 current contract receipt；旧证据和 binding 差异均 fail-closed。"""
+    """严格校验 current schema receipt；旧证据和 binding 差异均 fail-closed。"""
     if not isinstance(receipt, Mapping):
         raise ReceiptValidationError("candidate receipt 必须为对象")
     candidate = copy.deepcopy(dict(receipt))
@@ -252,19 +278,24 @@ def validate_candidate_receipt(
         raise ReceiptValidationError(
             f"candidate receipt schema 不一致: missing={missing}, unexpected={unexpected}"
         )
-    if candidate.get("contractVersion") != CANDIDATE_RECEIPT_CONTRACT_VERSION:
-        raise ReceiptValidationError("candidate receipt contract 已 stale 或属于旧格式")
+    if (
+        candidate.get("schemaVersion") != CANDIDATE_RECEIPT_SCHEMA_VERSION
+        or candidate.get("kind") != CANDIDATE_RECEIPT_KIND
+    ):
+        raise ReceiptValidationError("candidate receipt schema 已 stale 或属于旧格式")
     actual_sha = _require_sha256(candidate.get("candidateSha256"), label="candidateSha256")
     actual_bytes = _require_candidate_bytes(candidate.get("candidateBytes"))
     if candidate.get("decoded") is not True:
         raise ReceiptValidationError("candidate receipt 缺少完整解码 PASS")
     actual_format = _require_format(candidate.get("format"))
-    actual_contract = _require_validator_contract(candidate.get("validatorContract"))
-    expected_contract = _require_validator_contract(
-        expected_validator_contract, label="expected_validator_contract"
+    actual_validator = _read_validator(candidate.get("validator"))
+    expected_validator = _require_validator(
+        expected_validator_id,
+        expected_validator_version,
+        label="expected_validator",
     )
-    if actual_contract != expected_contract:
-        raise ReceiptValidationError("validator contract 已 stale")
+    if actual_validator != expected_validator:
+        raise ReceiptValidationError("validator 版本已 stale")
     if expected_candidate_sha256 is not None:
         expected_sha = _require_sha256(
             expected_candidate_sha256, label="expected_candidate_sha256"
@@ -318,7 +349,8 @@ def bind_candidate_receipt(
     receipt: Mapping[str, Any],
     *,
     expected_format: str,
-    expected_validator_contract: str,
+    expected_validator_id: str,
+    expected_validator_version: int,
     now: str | datetime | None = None,
     require_expiry: bool = False,
 ) -> dict[str, Any]:
@@ -332,14 +364,15 @@ def bind_candidate_receipt(
         expected_candidate_sha256=sha256,
         expected_candidate_bytes=byte_count,
         expected_format=expected_format,
-        expected_validator_contract=expected_validator_contract,
+        expected_validator_id=expected_validator_id,
+        expected_validator_version=expected_validator_version,
         now=now,
         require_expiry=require_expiry,
     )
 
 
 def read_candidate_receipt(value: Mapping[str, Any]) -> CandidateReceiptRead:
-    """兼容读取 direct/wrapped receipt，但不把旧 contract 标为 current。"""
+    """读取 direct/wrapped receipt；旧 schema 不会被标为 current。"""
     if not isinstance(value, Mapping):
         raise ReceiptValidationError("receipt evidence 必须为对象")
     raw: Mapping[str, Any] = value
@@ -361,14 +394,16 @@ def read_candidate_receipt(value: Mapping[str, Any]) -> CandidateReceiptRead:
     return CandidateReceiptRead(
         receipt=receipt,
         current_contract=(
-            receipt.get("contractVersion") == CANDIDATE_RECEIPT_CONTRACT_VERSION
+            receipt.get("schemaVersion") == CANDIDATE_RECEIPT_SCHEMA_VERSION
+            and receipt.get("kind") == CANDIDATE_RECEIPT_KIND
         ),
         source=source,
     )
 
 
 __all__ = [
-    "CANDIDATE_RECEIPT_CONTRACT_VERSION",
+    "CANDIDATE_RECEIPT_KIND",
+    "CANDIDATE_RECEIPT_SCHEMA_VERSION",
     "CandidateReceiptRead",
     "ReceiptValidationError",
     "bind_candidate_receipt",

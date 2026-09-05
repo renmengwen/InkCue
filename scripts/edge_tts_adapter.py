@@ -30,7 +30,6 @@ from voiceover import (
 
 
 EDGE_TTS_PACKAGE_VERSION = "7.2.8"
-EDGE_TTS_PROVIDER_CONTRACT_VERSION = "edge-tts-python-7.2.8-v1"
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_QUEUE_INTERVAL_SECONDS = 0.5
 
@@ -165,8 +164,6 @@ def _validate_request(request: SynthesisRequest) -> None:
         raise PermanentProviderError("Edge TTS 朗读文本不能为空")
     if not isinstance(request.voice, str) or not request.voice.strip():
         raise PermanentProviderError("Edge TTS voice 不能为空")
-    if request.providerContractVersion != EDGE_TTS_PROVIDER_CONTRACT_VERSION:
-        raise PermanentProviderError("Edge TTS provider contractVersion 不匹配")
     _edge_sdk_timeout_seconds(request.timeoutSeconds)
     if not _RATE_RE.fullmatch(request.normalizedRate):
         raise PermanentProviderError("Edge TTS normalizedRate 格式无效")
@@ -368,7 +365,6 @@ __all__ = [
     "DEFAULT_MAX_ATTEMPTS",
     "DEFAULT_QUEUE_INTERVAL_SECONDS",
     "EDGE_TTS_PACKAGE_VERSION",
-    "EDGE_TTS_PROVIDER_CONTRACT_VERSION",
     "EdgeTtsAdapter",
     "sanitize_provider_request_id",
 ]

@@ -26,7 +26,6 @@ try:
         write_json_atomic,
     )
     from .subtitle_delivery import (
-        BURN_CONTRACT_VERSION,
         DEFAULT_FONT_PATH,
         SubtitleDeliveryError,
         SubtitleStaleError,
@@ -38,7 +37,7 @@ try:
     from .voiceover import VoiceoverValidationError
     from .cover_frame import attach_cover_manifest, attach_cover_review_manifest, cover_record
     from .background_music import (
-        BGM_MIX_CONTRACT_VERSION,
+        BGM_MIX_RECIPE,
         BGM_ASSET_FILE,
         BGM_ASSET_PATH,
         FIXED_ASSET_RENDER_MODE,
@@ -59,7 +58,6 @@ except ImportError:  # pragma: no cover - direct script execution
         write_json_atomic,
     )
     from subtitle_delivery import (
-        BURN_CONTRACT_VERSION,
         DEFAULT_FONT_PATH,
         SubtitleDeliveryError,
         SubtitleStaleError,
@@ -71,7 +69,7 @@ except ImportError:  # pragma: no cover - direct script execution
     from voiceover import VoiceoverValidationError
     from cover_frame import attach_cover_manifest, attach_cover_review_manifest, cover_record
     from background_music import (
-        BGM_MIX_CONTRACT_VERSION,
+        BGM_MIX_RECIPE,
         BGM_ASSET_FILE,
         BGM_ASSET_PATH,
         FIXED_ASSET_RENDER_MODE,
@@ -81,15 +79,44 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-EDGE_MUX_CONTRACT_VERSION = "edge-aac-mux-v1"
-FINAL_AUDIO_MIX_CONTRACT_VERSION = "final-audio-mix-v1"
-DOUBAO_PROVIDER_EMBEDDED_BGM_MUX_CONTRACT_VERSION = (
-    "doubao-provider-embedded-bgm-aac-mux-v1"
-)
 AAC_CODEC = "aac"
 AAC_BITRATE = "192k"
 AAC_SAMPLE_RATE = 24000
 AAC_CHANNELS = 1
+NARRATION_MUX_RECIPE = {
+    "algorithm": "aac_mux",
+    "version": 1,
+    "parameters": {
+        "codec": AAC_CODEC,
+        "bitrate": AAC_BITRATE,
+        "sampleRate": AAC_SAMPLE_RATE,
+        "channels": AAC_CHANNELS,
+        "backgroundMusicMode": "disabled",
+    },
+}
+FIXED_BGM_MUX_RECIPE = {
+    "algorithm": "aac_mux",
+    "version": 1,
+    "parameters": {
+        "codec": AAC_CODEC,
+        "bitrate": AAC_BITRATE,
+        "sampleRate": AAC_SAMPLE_RATE,
+        "channels": AAC_CHANNELS,
+        "backgroundMusicMode": FIXED_ASSET_RENDER_MODE,
+        "backgroundMusicRecipe": BGM_MIX_RECIPE,
+    },
+}
+PROVIDER_EMBEDDED_MUX_RECIPE = {
+    "algorithm": "aac_mux",
+    "version": 1,
+    "parameters": {
+        "codec": AAC_CODEC,
+        "bitrate": AAC_BITRATE,
+        "sampleRate": AAC_SAMPLE_RATE,
+        "channels": AAC_CHANNELS,
+        "backgroundMusicMode": PROVIDER_EMBEDDED_RENDER_MODE,
+    },
+}
 DELIVERY_MANIFEST_KEYS = {
     "schemaVersion",
     "projectId",
@@ -173,7 +200,7 @@ def _background_music_reuse_binding(plan: Mapping[str, Any]) -> dict[str, Any]:
             "enabled": True,
             "renderMode": PROVIDER_EMBEDDED_RENDER_MODE,
             "provider": plan["provider"],
-            "providerContractVersion": plan["providerContractVersion"],
+            "model": plan["model"],
         }
     return {
         "enabled": True,
@@ -187,7 +214,7 @@ def _background_music_reuse_binding(plan: Mapping[str, Any]) -> dict[str, Any]:
         "fadeInMs": plan["fadeInMs"],
         "fadeOutMs": plan["fadeOutMs"],
         "loop": plan["loop"],
-        "mixContractVersion": BGM_MIX_CONTRACT_VERSION,
+        "mixRecipe": BGM_MIX_RECIPE,
     }
 
 
@@ -264,7 +291,7 @@ def _assert_current_voice(project: Project, timeline_sha: str) -> tuple[dict[str
     audio = validate_canonical_wav(project.path("audio/narration.wav"))
     composite = _mapping(manifest.get("composite"), "voice manifest composite")
     expected_media = {
-        "contractVersion": audio.contractVersion,
+        "recipe": dict(audio.recipe),
         "audioMime": "audio/wav",
         "audioCodec": audio.codec,
         "sampleRate": audio.sampleRate,
@@ -309,7 +336,7 @@ def validate_edge_mux_media(
     canonical_duration_ms: int,
     deep_receipt: Mapping[str, Any] | None = None,
     force_deep: bool = False,
-    mux_contract_version: str = EDGE_MUX_CONTRACT_VERSION,
+    mux_recipe: Mapping[str, Any] = NARRATION_MUX_RECIPE,
 ) -> dict[str, Any]:
     """验证含最终音轨的 final；视频帧合同保持严格。"""
     probe = validate_video(
@@ -355,7 +382,7 @@ def validate_edge_mux_media(
     result = dict(probe)
     result["validation"] = {
         **probe["validation"],
-        "edgeMuxContractVersion": mux_contract_version,
+        "muxRecipe": dict(mux_recipe),
         "validated": True,
         "expectedFrameCount": expected_frame_count,
         "canonicalDurationMs": canonical_duration_ms,
@@ -445,8 +472,8 @@ def mux_project(
         raise MuxStaleError("captioned video 未绑定 current clean video")
     if captioned.get("subtitleIdentitySha256") != subtitles.get("subtitleIdentitySha256"):
         raise MuxStaleError("captioned video 未绑定 current subtitle identity")
-    if captioned.get("burnContractVersion") != BURN_CONTRACT_VERSION:
-        raise MuxStaleError("captioned video burn contract stale")
+    if not isinstance(captioned.get("burnRecipeSha256"), str):
+        raise MuxStaleError("captioned video burn recipe stale")
 
     timeline_audio = _mapping(timeline.get("audio"), "audio timeline.audio")
     if (
@@ -457,11 +484,11 @@ def mux_project(
         raise MuxStaleError("audio timeline 未绑定 current canonical WAV")
 
     if background_music.get("renderMode") == PROVIDER_EMBEDDED_RENDER_MODE:
-        mux_contract_version = DOUBAO_PROVIDER_EMBEDDED_BGM_MUX_CONTRACT_VERSION
+        mux_recipe = PROVIDER_EMBEDDED_MUX_RECIPE
     elif background_music.get("renderMode") == FIXED_ASSET_RENDER_MODE:
-        mux_contract_version = FINAL_AUDIO_MIX_CONTRACT_VERSION
+        mux_recipe = FIXED_BGM_MUX_RECIPE
     else:
-        mux_contract_version = EDGE_MUX_CONTRACT_VERSION
+        mux_recipe = NARRATION_MUX_RECIPE
 
     run_dir = project.path(f".work/mux-{run_id or uuid.uuid4().hex}")
     if run_dir.exists():
@@ -511,7 +538,7 @@ def mux_project(
             candidate,
             expected_frame_count=expected_frames,
             canonical_duration_ms=canonical.durationMs,
-            mux_contract_version=mux_contract_version,
+            mux_recipe=mux_recipe,
         )
         final_path = project.path("output/final.mp4")
         atomic_publish(candidate, final_path)
@@ -521,7 +548,7 @@ def mux_project(
             expected_frame_count=expected_frames,
             canonical_duration_ms=canonical.durationMs,
             deep_receipt=final_media["validation"],
-            mux_contract_version=mux_contract_version,
+            mux_recipe=mux_recipe,
         )
         published = True
 
@@ -533,11 +560,11 @@ def mux_project(
             audio_sha256=canonical.sha256,
             timeline_sha256=selection.timeline_sha256,
             authoritative_subtitle_sha256=selection.sha256,
-            subtitle_style_contract_sha256=str(style.get("contractSha256") or ""),
+            subtitle_style_recipe_sha256=str(style.get("recipeSha256") or ""),
             font_sha256=str(font.get("sha256") or ""),
             render_profile_sha256=project.timing_plan["renderProfileSha256"],
             timing_plan_sha256=_timing_plan_sha(project),
-            mux_contract_version=mux_contract_version,
+            mux_recipe=mux_recipe,
             final_media_sha256=final_media["sha256"],
         )
         voice_manifest = _read_json(project.path("manifests/voice-manifest.json"), "voice manifest")
@@ -557,7 +584,7 @@ def mux_project(
                 "timeline": {
                     "file": "audio/timeline.json",
                     "sha256": timeline_sha,
-                    "contractVersion": timeline.get("contractVersion"),
+                    "schemaVersion": timeline.get("schemaVersion"),
                     "durationMs": canonical.durationMs,
                 },
                 "narrationSrt": {
@@ -578,7 +605,7 @@ def mux_project(
                     "sampleRate": AAC_SAMPLE_RATE,
                     "channels": AAC_CHANNELS,
                 },
-                "muxContractVersion": mux_contract_version,
+                "muxRecipe": mux_recipe,
             },
         }
         if background_music.get("renderMode") == FIXED_ASSET_RENDER_MODE:
@@ -594,7 +621,7 @@ def mux_project(
                 "fadeInMs": background_music["fadeInMs"],
                 "fadeOutMs": background_music["fadeOutMs"],
                 "loop": background_music["loop"],
-                "mixContractVersion": BGM_MIX_CONTRACT_VERSION,
+                "mixRecipe": BGM_MIX_RECIPE,
             }
         elif background_music.get("renderMode") == PROVIDER_EMBEDDED_RENDER_MODE:
             prompt_sha = current_voice.get("providerTextPromptSha256")
@@ -613,9 +640,7 @@ def mux_project(
                 "projectField": "project.json#backgroundMusic.enabled",
                 "renderMode": PROVIDER_EMBEDDED_RENDER_MODE,
                 "provider": "doubao",
-                "providerContractVersion": background_music[
-                    "providerContractVersion"
-                ],
+                "model": background_music["model"],
                 "textPromptSha256": prompt_sha,
                 "voiceSynthesisIdentityHash": synthesis_identity,
                 "fullAudioIdentityHash": full_audio_identity,

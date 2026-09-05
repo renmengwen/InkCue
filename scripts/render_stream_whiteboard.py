@@ -618,7 +618,7 @@ def _formal_context(args):
 
 def _deep_receipt(media: dict) -> dict:
     validation = media.get("validation")
-    receipt = validation.get("deepReceipt") if isinstance(validation, dict) else None
+    receipt = validation.get("receipt") if isinstance(validation, dict) else None
     if not isinstance(receipt, dict):
         raise media_validation.MediaValidationError("候选媒体缺少 current deep receipt")
     return receipt
@@ -757,7 +757,8 @@ def validate_scene_media_batch(
         raise render_timing.RenderTimingError("无法读取 current render manifest") from exc
     if (
         not isinstance(manifest, dict)
-        or manifest.get("schemaVersion") != 1
+        or manifest.get("schemaVersion") != render_timing.RENDER_SCHEMA_VERSION
+        or manifest.get("kind") != render_timing.RENDER_KIND
         or manifest.get("projectId") != project.project_id
         or not isinstance(manifest.get("scenes"), dict)
     ):
@@ -782,7 +783,7 @@ def validate_scene_media_batch(
         if isinstance(previous_media, dict):
             validation = previous_media.get("validation")
             if isinstance(validation, dict):
-                receipt = validation.get("deepReceipt")
+                receipt = validation.get("receipt")
         tasks.append(
             {
                 "sceneId": context.scene_id,
@@ -866,25 +867,38 @@ def _formal_render_options(
         "brushRadius": cfg.brush_radius,
         "bareTip": bool(args.bare_tip),
         "cleanFirstFrame": "when-first-element-has-at-least-2-frames",
-        "paperBackground": "paper-content-mask-v3",
-        "inkOrderingContract": "annotation-directional-bands-v1",
         "canvasHex": cfg.canvas_hex,
-        "paperMask": {
-            "grayCut": cfg.paper_gray_cut,
-            "saturationCut": cfg.paper_saturation_cut,
-            "diffCut": cfg.paper_diff_cut,
-            "minComponentArea": cfg.paper_min_component_area,
-            "edgeBandRatio": cfg.paper_edge_band_ratio,
-            "edgeGrayCut": cfg.paper_edge_gray_cut,
-        } if cfg.match_bg else None,
+        "recipes": {
+            "paperBackground": {
+                "algorithm": "paperContentMask",
+                "version": 3,
+                "parameters": {
+                    "enabled": cfg.match_bg,
+                    "grayCut": cfg.paper_gray_cut,
+                    "saturationCut": cfg.paper_saturation_cut,
+                    "diffCut": cfg.paper_diff_cut,
+                    "minComponentArea": cfg.paper_min_component_area,
+                    "edgeBandRatio": cfg.paper_edge_band_ratio,
+                    "edgeGrayCut": cfg.paper_edge_gray_cut,
+                },
+            },
+            "inkOrdering": {
+                "algorithm": "annotationDirectionalBands",
+                "version": 1,
+                "parameters": {},
+            },
+        },
         "handSha256": hand_sha256,
         "sceneEncoding": {
-            "contractVersion": "scene-libx264-v1",
-            "codec": "libx264",
-            "preset": scene_preset,
-            "encoderThreads": scene_encoder_threads,
-            "crf": 18,
-            "pixelFormat": "yuv420p",
+            "algorithm": "libx264SceneEncoding",
+            "version": 1,
+            "parameters": {
+                "codec": "libx264",
+                "preset": scene_preset,
+                "encoderThreads": scene_encoder_threads,
+                "crf": 18,
+                "pixelFormat": "yuv420p",
+            },
         },
     }
 
@@ -1010,7 +1024,7 @@ def _render_formal_candidate_worker(task: dict) -> dict:
         result.update(
             {
                 "status": "succeeded",
-                "deepReceipt": _deep_receipt(candidate_media),
+                "validationReceipt": _deep_receipt(candidate_media),
                 "candidateBytes": candidate.stat().st_size,
             }
         )
@@ -1328,7 +1342,8 @@ def _run_formal_batch(args) -> dict:
                 }
             )
         summary = {
-            "contractVersion": "whiteboard-scene-render-batch-v2",
+            "schemaVersion": 2,
+            "phase": "scene-render",
             "status": "PASS",
             "partialSuccess": False,
             "projectId": project.project_id,
@@ -1468,7 +1483,7 @@ def _run_formal_batch(args) -> dict:
                 context.output_path,
                 render_profile=project.render_profile,
                 expected_frame_count=context.timing_scene["frameCount"],
-                deep_receipt=worker_result["deepReceipt"],
+                deep_receipt=worker_result["validationReceipt"],
             )
             manifest = render_timing.update_render_manifest(
                 context,
@@ -1504,7 +1519,8 @@ def _run_formal_batch(args) -> dict:
     failure_count = len(results) - success_count
     coordinator_publish_ms = _elapsed_ms(coordinator_publish_started_ns)
     summary = {
-        "contractVersion": "whiteboard-scene-render-batch-v2",
+        "schemaVersion": 2,
+        "phase": "scene-render",
         "status": "PASS" if failure_count == 0 else "FAIL",
         "partialSuccess": success_count > 0 and failure_count > 0,
         "projectId": project.project_id,

@@ -20,21 +20,24 @@ from typing import Any, Callable, Iterable, Mapping
 
 try:
     from .annotation_contract import (
-        SUPPORTED_VISUAL_ELEMENTS_CONTRACTS,
+        VISUAL_ELEMENTS_KIND,
+        VISUAL_ELEMENTS_SCHEMA_VERSION,
         validate_visual_elements,
     )
 except ImportError:  # pragma: no cover - direct script execution
     from annotation_contract import (  # type: ignore
-        SUPPORTED_VISUAL_ELEMENTS_CONTRACTS,
+        VISUAL_ELEMENTS_KIND,
+        VISUAL_ELEMENTS_SCHEMA_VERSION,
         validate_visual_elements,
     )
 
 
-DISPATCH_MANIFEST_CONTRACT = "whiteboard-annotation-dispatch-v3"
+DISPATCH_MANIFEST_SCHEMA_VERSION = 3
+DISPATCH_MANIFEST_KIND = "annotation-dispatch"
 # Normal execution is unit-complete: one child writes and locally lints every
 # candidate in its frozen contiguous unit, then returns once.  The artifact
 # watchdog below remains available for abnormal observation/recovery only.
-DISPATCH_PROTOCOL = "annotation-unit-complete-v1"
+DISPATCH_PROTOCOL = "unit-complete"
 DEFAULT_TAIL_GRACE_SECONDS = 30.0
 
 
@@ -128,11 +131,12 @@ def _validate_visual_candidate(path: Path) -> None:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError("annotation candidate 顶层必须是对象")
-    contract = value.get("contractVersion")
-    if contract not in (None, *SUPPORTED_VISUAL_ELEMENTS_CONTRACTS):
-        raise ValueError("annotation candidate contractVersion 不支持")
-    if contract is not None and set(value) != {"contractVersion", "elements"}:
-        raise ValueError("annotation candidate 字段不符合 visual-elements allowlist")
+    if (
+        value.get("schemaVersion") != VISUAL_ELEMENTS_SCHEMA_VERSION
+        or value.get("kind") != VISUAL_ELEMENTS_KIND
+        or set(value) != {"schemaVersion", "kind", "elements"}
+    ):
+        raise ValueError("annotation candidate schema/kind 不支持")
     validate_visual_elements(value.get("elements"))
 
 
@@ -205,7 +209,7 @@ class DispatchAudit:
         self._started = time.monotonic()
         self._last_mark = self._started
         self.data: dict[str, Any] = {
-            "auditContractVersion": "whiteboard-annotation-dispatch-audit-v1",
+            "kind": "annotation-dispatch-audit",
             "configuredConcurrency": int(configured_concurrency),
             "effectiveConcurrency": 0,
             "peakChildAgents": 0,
@@ -264,7 +268,8 @@ def build_dispatch_manifest(
     elif effective_concurrency is not None and effective_concurrency != configured_concurrency:
         raise ValueError("effective_concurrency compatibility value must match configured_concurrency")
     return {
-        "contractVersion": DISPATCH_MANIFEST_CONTRACT,
+        "schemaVersion": DISPATCH_MANIFEST_SCHEMA_VERSION,
+        "kind": DISPATCH_MANIFEST_KIND,
         "runId": run_id,
         "candidateRoot": str(candidate_root.resolve(strict=False)),
         "protocol": DISPATCH_PROTOCOL,
@@ -311,8 +316,12 @@ def observe_dispatch_manifest(
         raise ValueError("dispatch manifest 不能是符号链接")
     path = manifest_path.resolve(strict=True)
     raw = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(raw, dict) or raw.get("contractVersion") != DISPATCH_MANIFEST_CONTRACT:
-        raise ValueError("dispatch manifest contract 无效")
+    if (
+        not isinstance(raw, dict)
+        or raw.get("schemaVersion") != DISPATCH_MANIFEST_SCHEMA_VERSION
+        or raw.get("kind") != DISPATCH_MANIFEST_KIND
+    ):
+        raise ValueError("dispatch manifest schema/kind 无效")
     candidate_root_value = raw.get("candidateRoot")
     if not isinstance(candidate_root_value, str):
         raise ValueError("dispatch manifest candidateRoot 无效")
@@ -431,7 +440,8 @@ def observe_dispatch_manifest(
     }
     _write_json_atomic(path, raw)
     return {
-        "contractVersion": "whiteboard-annotation-dispatch-observation-v1",
+        "schemaVersion": 1,
+        "kind": "annotation-dispatch-observation",
         "status": observation.status,
         "taskId": task_id,
         "candidateSha256": observation.sha256,
@@ -483,7 +493,8 @@ def main(argv: list[str] | None = None) -> int:
         code = 0 if summary["status"] in {"ready", "missing"} else 2
     except Exception as exc:
         summary = {
-            "contractVersion": "whiteboard-annotation-dispatch-observation-v1",
+            "schemaVersion": 1,
+            "kind": "annotation-dispatch-observation",
             "status": "FAIL",
             "error": str(exc),
             "formalWritesPerformed": False,
@@ -498,7 +509,8 @@ __all__ = [
     "ArtifactFirstWatchdog",
     "CandidateObservation",
     "DEFAULT_TAIL_GRACE_SECONDS",
-    "DISPATCH_MANIFEST_CONTRACT",
+    "DISPATCH_MANIFEST_KIND",
+    "DISPATCH_MANIFEST_SCHEMA_VERSION",
     "DISPATCH_PROTOCOL",
     "DispatchAudit",
     "build_dispatch_manifest",

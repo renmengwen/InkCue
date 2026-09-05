@@ -60,8 +60,8 @@ ATTEMPT_STATUSES = frozenset(
         "unknown_external_outcome",
     }
 )
-CANDIDATE_RECEIPT_VERSION = "whiteboard-image-candidate-receipt-v1"
-IMAGE_VALIDATOR_CONTRACT_VERSION = "whiteboard-image-candidate-validator-v2"
+IMAGE_VALIDATOR_ID = "image-candidate-validator"
+IMAGE_VALIDATOR_VERSION = 2
 IMAGE_SOURCES = frozenset({"b64_json", "url", "host_tool"})
 
 
@@ -203,7 +203,8 @@ def image_input_identity(
         raise ValueError("provider 与 backend 必须且只能提供一个")
     if provider is not None:
         payload: dict[str, Any] = {
-            "contractVersion": "whiteboard-image-input-v1",
+            "schemaVersion": 1,
+            "kind": "image-generation-input",
             "sceneId": scene_id,
             "promptSha256": sha256_bytes(prompt.encode("utf-8")),
             "provider": provider.name,
@@ -215,14 +216,26 @@ def image_input_identity(
         }
     else:
         assert backend is not None
-        required = {"provider", "protocol", "model", "toolContractVersion"}
+        required = {"provider", "protocol", "model", "tool"}
         if set(backend) != required or any(
             not isinstance(backend.get(field), str) or not backend[field]
-            for field in required
+            for field in ("provider", "protocol", "model")
         ):
             raise ValueError("宿主图片 backend identity 无效")
+        tool = backend.get("tool")
+        if (
+            not isinstance(tool, Mapping)
+            or set(tool) != {"id", "version"}
+            or not isinstance(tool.get("id"), str)
+            or not tool["id"]
+            or isinstance(tool.get("version"), bool)
+            or not isinstance(tool.get("version"), int)
+            or tool["version"] <= 0
+        ):
+            raise ValueError("宿主图片 backend tool identity 无效")
         payload = {
-            "contractVersion": "whiteboard-image-input-v1",
+            "schemaVersion": 1,
+            "kind": "image-generation-input",
             "sceneId": scene_id,
             "promptSha256": sha256_bytes(prompt.encode("utf-8")),
             **dict(backend),
@@ -716,7 +729,6 @@ def normalize_image_candidate(
         os.replace(normalized_part, target)
         candidate_bytes = target.stat().st_size
         receipt_evidence: dict[str, Any] = {
-            "legacyContractVersion": CANDIDATE_RECEIPT_VERSION,
             "attemptId": attempt_id,
             "sceneId": scene_id,
             "inputIdentitySha256": input_identity_sha256,
@@ -737,7 +749,8 @@ def normalize_image_candidate(
             candidate_bytes=candidate_bytes,
             decoded=True,
             format="PNG",
-            validator_contract=IMAGE_VALIDATOR_CONTRACT_VERSION,
+            validator_id=IMAGE_VALIDATOR_ID,
+            validator_version=IMAGE_VALIDATOR_VERSION,
             evidence=receipt_evidence,
         )
         with receipt_part.open("x", encoding="utf-8", newline="\n") as handle:
@@ -822,60 +835,26 @@ def load_image_candidate(
         receipt_read = validation_receipts.read_candidate_receipt(receipt)
     except validation_receipts.ReceiptValidationError as exc:
         raise ImageValidationError(str(exc)) from exc
-    needs_deep = not receipt_read.current_contract
-    if receipt_read.current_contract:
-        receipt_contract = receipt_read.receipt.get("validatorContract")
-        if not isinstance(receipt_contract, str):
-            raise ImageValidationError("candidate receipt validator contract 无效")
-        try:
-            current_receipt = validation_receipts.bind_candidate_receipt(
-                path,
-                receipt_read.receipt,
-                expected_format="PNG",
-                expected_validator_contract=receipt_contract,
-            )
-        except validation_receipts.ReceiptValidationError as exc:
-            raise ImageValidationError(str(exc)) from exc
-        evidence = current_receipt.get("evidence")
-        if not isinstance(evidence, Mapping):
-            raise ImageValidationError("candidate receipt evidence 无效")
-        needs_deep = receipt_contract != IMAGE_VALIDATOR_CONTRACT_VERSION
-    if needs_deep:
-        # 旧 receipt 只作为深验所需的兼容元数据，绝不能直接成为 current PASS。
-        if not receipt_read.current_contract:
-            if receipt.get("contractVersion") != CANDIDATE_RECEIPT_VERSION:
-                raise ImageValidationError("candidate receipt contract 无效")
-            evidence = receipt
-        Image, UnidentifiedImageError = _load_pillow()
-        try:
-            with Image.open(path) as image:
-                image.load()
-                if image.format != "PNG" or image.mode != "RGB" or image.size != CANVAS_SIZE:
-                    raise ImageValidationError("candidate PNG 格式、模式或尺寸不正确")
-        except ImageValidationError:
-            raise
-        except (UnidentifiedImageError, OSError, ValueError) as exc:
-            raise ImageValidationError("candidate PNG 无法完整解码") from exc
-        actual_hash = sha256_file(path)
-        actual_bytes = path.stat().st_size
-        receipt = validation_receipts.build_candidate_receipt(
-            candidate_sha256=actual_hash,
-            candidate_bytes=actual_bytes,
-            decoded=True,
-            format="PNG",
-            validator_contract=IMAGE_VALIDATOR_CONTRACT_VERSION,
-            evidence={"legacyContractVersion": CANDIDATE_RECEIPT_VERSION, **dict(evidence)},
+    if not receipt_read.current_contract:
+        raise ImageValidationError("candidate receipt schema 已 stale 或属于旧格式")
+    if receipt_read.receipt.get("validator") != {
+        "id": IMAGE_VALIDATOR_ID,
+        "version": IMAGE_VALIDATOR_VERSION,
+    }:
+        raise ImageValidationError("candidate receipt validator 版本已 stale")
+    try:
+        current_receipt = validation_receipts.bind_candidate_receipt(
+            path,
+            receipt_read.receipt,
+            expected_format="PNG",
+            expected_validator_id=IMAGE_VALIDATOR_ID,
+            expected_validator_version=IMAGE_VALIDATOR_VERSION,
         )
-        receipt_part = receipt_path.with_name(f".{receipt_path.name}.{uuid.uuid4().hex}.part")
-        try:
-            with receipt_part.open("x", encoding="utf-8", newline="\n") as handle:
-                handle.write(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(receipt_part, receipt_path)
-        finally:
-            receipt_part.unlink(missing_ok=True)
-        current_receipt = receipt
+    except validation_receipts.ReceiptValidationError as exc:
+        raise ImageValidationError(str(exc)) from exc
+    evidence = current_receipt.get("evidence")
+    if not isinstance(evidence, Mapping):
+        raise ImageValidationError("candidate receipt evidence 无效")
     if evidence.get("sceneId") != expected_scene_id:
         raise ImageValidationError("candidate receipt scene identity 不匹配")
     if evidence.get("attemptId") != expected_attempt_id:
@@ -925,7 +904,8 @@ def bind_image_candidate(candidate: ImageCandidate, path: str | Path) -> None:
             path,
             candidate.validator_receipt,
             expected_format="PNG",
-            expected_validator_contract=IMAGE_VALIDATOR_CONTRACT_VERSION,
+            expected_validator_id=IMAGE_VALIDATOR_ID,
+            expected_validator_version=IMAGE_VALIDATOR_VERSION,
         )
     except validation_receipts.ReceiptValidationError as exc:
         raise ImageValidationError(str(exc)) from exc

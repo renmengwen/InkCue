@@ -5,7 +5,6 @@
     "edge-tts": {
       "protocol": "edge-tts",
       "packageVersion": "7.2.8",
-      "contractVersion": "edge-tts-python-7.2.8-v1",
       "voice": "zh-CN-YunjianNeural",
       "language": "zh-CN",
       "rate": "+0%",
@@ -18,7 +17,6 @@
     },
     "MiniMax": {
       "protocol": "MiniMax",
-      "contractVersion": "minimax-t2a-v2-v1",
       "voice": "male-qn-jingying",
       "language": "zh-CN",
       "rate": "+10%",
@@ -37,8 +35,7 @@
     },
     "doubao": {
       "protocol": "Doubao",
-      "contractVersion": "doubao-seed-audio-expressive-native-word-v2",
-      "voice": "YOUR_DOUBAO_SPEAKER_ID",
+      "voiceControlMode": "text_prompt",
       "language": "zh-CN",
       "rate": "+0%",
       "pitch": "+0Hz",

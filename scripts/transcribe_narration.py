@@ -34,8 +34,6 @@ except ImportError:  # Direct ``scripts/transcribe_narration.py`` execution.
     from srt_timeline import serialize_srt
 
 
-CONTRACT_VERSION = "narration-funasr-vad-token-evidence-v5"
-MODEL_CONTRACT = "narration-asr-models-v1"
 ASR_SAMPLE_RATE = 16_000
 ASR_CHANNELS = 1
 ASR_SAMPLE_WIDTH_BYTES = 2
@@ -45,8 +43,6 @@ DEFAULT_TIMEOUT_SECONDS = 180.0
 # 单靠缩短块长保证正确；reference_audio_alignment 的双向局部语速 Gate 必须
 # 同时通过。这里固定为 15 秒并写入 v5 evidence，禁止调用点临时覆盖。
 MAX_VAD_SEGMENT_MS = 15_000
-VAD_SEGMENTATION_CONTRACT = "paraformer-vad-15s-rate-guard-v1"
-SEGMENT_RECONSTRUCTION_CONTRACT = "funasr-vad-segment-token-reconstruction-v2"
 # FunASR timestamps are quantised to acoustic-frame boundaries.  Only the
 # final token may be clamped, and only inside the same 80 ms tolerance used
 # by the final media duration contract.  Intermediate timestamps remain strict.
@@ -56,6 +52,36 @@ MODEL_IDS = {
     "paraformer-zh": "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
     "fsmn-vad": "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch",
     "ct-punc": "iic/punc_ct-transformer_zh-cn-common-vocab272727-pytorch",
+}
+ASR_PIPELINE_RECIPE = {
+    "algorithm": "funasr_vad_token_timestamps",
+    "version": 5,
+    "parameters": {
+        "sampleRate": ASR_SAMPLE_RATE,
+        "channels": ASR_CHANNELS,
+        "maxVadSegmentMs": MAX_VAD_SEGMENT_MS,
+        "sentenceTimestamp": True,
+        "predTimestamp": True,
+    },
+}
+SEGMENT_RECONSTRUCTION_RECIPE = {
+    "algorithm": "funasr_vad_segment_token_reconstruction",
+    "version": 2,
+    "parameters": {
+        "segmentation": "paraformer_vad",
+        "segmentationVersion": 1,
+        "maxVadSegmentMs": MAX_VAD_SEGMENT_MS,
+    },
+}
+MODEL_RECIPE = {
+    "algorithm": "funasr.AutoModel",
+    "version": 1,
+    "parameters": {
+        "modelIds": MODEL_IDS,
+        "requestedRevision": "master",
+        "device": "cpu",
+        "disableUpdate": True,
+    },
 }
 _SEMANTIC_TEXT_RE = re.compile(r"[\w\u3400-\u9fff]", re.UNICODE)
 
@@ -580,10 +606,9 @@ def _rebuild_vad_segment_tokens(
         )
 
     evidence = {
-        "contractVersion": SEGMENT_RECONSTRUCTION_CONTRACT,
+        "recipe": copy.deepcopy(SEGMENT_RECONSTRUCTION_RECIPE),
         "validated": True,
         "maxVadSegmentMs": MAX_VAD_SEGMENT_MS,
-        "segmentationContract": VAD_SEGMENTATION_CONTRACT,
         "segmentCount": len(segment_evidence),
         "tokenCount": len(reconstructed),
         "topLevelTokenCount": len(top_tokens),
@@ -845,7 +870,9 @@ def transcribe_narration(
     _atomic_write_json(
         raw_json_path,
         {
-            "contractVersion": CONTRACT_VERSION,
+            "schemaVersion": 1,
+            "kind": "narrationAsrEvidence",
+            "pipelineRecipe": copy.deepcopy(ASR_PIPELINE_RECIPE),
             "sentenceInfo": sentences,
             "text": "".join(sentence["text"] for sentence in sentences),
             "timingValidation": timing,
@@ -860,7 +887,8 @@ def transcribe_narration(
     )
     receipt = {
         "schemaVersion": 1,
-        "contractVersion": CONTRACT_VERSION,
+        "kind": "narrationAsrReceipt",
+        "pipelineRecipe": copy.deepcopy(ASR_PIPELINE_RECIPE),
         "createdAt": datetime.now(timezone.utc).isoformat(),
         "sourceAudio": prepared.source.manifest_media(),
         "asrInput": {
@@ -874,12 +902,8 @@ def transcribe_narration(
         },
         "model": {
             "engine": "funasr.AutoModel",
-            "modelContract": MODEL_CONTRACT,
-            "modelIds": MODEL_IDS,
-            "requestedRevision": "master",
+            "recipe": copy.deepcopy(MODEL_RECIPE),
             "modelReceiptSha256": receipt_sha,
-            "device": "cpu",
-            "disableUpdate": True,
         },
         "inference": {
             "batchSize": 1,
@@ -887,7 +911,7 @@ def transcribe_narration(
             "predTimestamp": True,
             "returnRawText": True,
             "maxVadSegmentMs": MAX_VAD_SEGMENT_MS,
-            "segmentationContract": VAD_SEGMENTATION_CONTRACT,
+            "segmentationRecipe": copy.deepcopy(SEGMENT_RECONSTRUCTION_RECIPE),
         },
         "sentenceCount": len(sentences),
         "tokenCount": len(sentences),
@@ -897,10 +921,9 @@ def transcribe_narration(
             {
                 key: segment_evidence[key]
                 for key in (
-                    "contractVersion",
+                    "recipe",
                     "validated",
                     "maxVadSegmentMs",
-                    "segmentationContract",
                     "segmentCount",
                     "tokenCount",
                     "topLevelTokenCount",
@@ -920,7 +943,9 @@ def transcribe_narration(
     _atomic_write_json(receipt_path, receipt)
     return {
         "ok": True,
-        "contractVersion": CONTRACT_VERSION,
+        "schemaVersion": 1,
+        "kind": "narrationAsrResult",
+        "pipelineRecipe": copy.deepcopy(ASR_PIPELINE_RECIPE),
         "outputDirectory": str(work_dir),
         "sourceAudioPath": str(source_path),
         "audioInputPath": str(prepared.asr_path),
@@ -985,12 +1010,11 @@ if __name__ == "__main__":
 
 
 __all__ = [
-    "CONTRACT_VERSION",
+    "ASR_PIPELINE_RECIPE",
     "MAX_VAD_SEGMENT_MS",
-    "MODEL_CONTRACT",
+    "MODEL_RECIPE",
     "MODEL_IDS",
     "NarrationTranscriptionError",
-    "SEGMENT_RECONSTRUCTION_CONTRACT",
-    "VAD_SEGMENTATION_CONTRACT",
+    "SEGMENT_RECONSTRUCTION_RECIPE",
     "transcribe_narration",
 ]

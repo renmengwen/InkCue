@@ -13,8 +13,6 @@ from typing import Any, Mapping, Sequence
 try:
     from .cover_review import CoverReviewError, load_cover_review
     from .agent_task_contract import (
-        ROLE_CONTRACT_VERSION,
-        TASK_CONTRACT_VERSION,
         AgentContractError,
         TrustedTaskContext,
         build_prepared_task_descriptor,
@@ -33,7 +31,9 @@ try:
         write_json_atomic,
     )
     from .render_timing import (
+        RENDER_KIND,
         RENDER_MANIFEST_FILE,
+        RENDER_SCHEMA_VERSION,
         RenderTimingError,
         build_formal_validation_context,
         render_identity,
@@ -46,8 +46,6 @@ try:
 except ImportError:  # pragma: no cover - direct script execution
     from cover_review import CoverReviewError, load_cover_review
     from agent_task_contract import (
-        ROLE_CONTRACT_VERSION,
-        TASK_CONTRACT_VERSION,
         AgentContractError,
         TrustedTaskContext,
         build_prepared_task_descriptor,
@@ -66,7 +64,9 @@ except ImportError:  # pragma: no cover - direct script execution
         write_json_atomic,
     )
     from render_timing import (
+        RENDER_KIND,
         RENDER_MANIFEST_FILE,
+        RENDER_SCHEMA_VERSION,
         RenderTimingError,
         build_formal_validation_context,
         render_identity,
@@ -78,14 +78,15 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-SCENE_REVIEW_CONTRACT_VERSION = "whiteboard-scene-review-bundle-v1"
+SCENE_REVIEW_SCHEMA_VERSION = 1
+SCENE_REVIEW_KIND = "scene-review-bundle"
 SCENE_REVIEW_POLICIES = frozenset({"user_first", "agent_first"})
 SCENE_VISUAL_REVIEW_ROLE_CONTRACT = """# scene visualReview frozen role contract
 
 - 只读 task.json 列出的 current scene review bundle、timing/render bindings 与单幕视频。
 - 对每幕只抽取首帧、中段、完成帧等少量关键帧，检查落墨顺序、完成状态和跨幕一致性。
 - 只写 findings.json；不得写 result.json。findings 仅为辅助信息，不得批准 scene review、修改 manifest 或合并视频；result 由 coordinator 确定性生成。
-- findings.json 顶层严格使用 whiteboard-visual-review-findings-v1：只含 contractVersion、sceneOrder、findings、approvalWritten=false；每条 finding 必须带冻结 sceneOrder 内的 sceneId 和 message/summary，同一幕最多一条并按 scene 顺序。
+- findings.json 顶层严格使用 schemaVersion=1：只含 schemaVersion、sceneOrder、findings、approvalWritten=false；每条 finding 必须带冻结 sceneOrder 内的 sceneId 和 message/summary，同一幕最多一条并按 scene 顺序。
 - 写完 findings.json 后立即以 candidate_ready 返回；不得搜索源码、测试、examples、其他 reference 或 CLI help，也不得自行运行 coordinator validator。
 - 必须按冻结 bundle 的 sceneOrder 报告；不得重复抽取或审阅每幕之外的媒体。
 """
@@ -123,7 +124,11 @@ def load_render_manifest(project: Project) -> tuple[Path, dict[str, Any]]:
         raise SceneReviewStaleError(f"无法读取 current render manifest: {exc}") from exc
     if not isinstance(manifest, dict):
         raise SceneReviewStaleError("render manifest 顶层必须是对象")
-    if manifest.get("schemaVersion") != 1 or manifest.get("projectId") != project.project_id:
+    if (
+        manifest.get("schemaVersion") != RENDER_SCHEMA_VERSION
+        or manifest.get("kind") != RENDER_KIND
+        or manifest.get("projectId") != project.project_id
+    ):
         raise SceneReviewStaleError("render manifest 与 current project 不一致")
     if not isinstance(manifest.get("scenes"), dict):
         raise SceneReviewStaleError("render manifest.scenes 缺失或不是对象")
@@ -146,7 +151,7 @@ def _current_timing_plan(project: Project) -> tuple[str | None, str]:
 def _deep_receipt(scene_record: Mapping[str, Any]) -> Mapping[str, Any]:
     media = _mapping(scene_record.get("media"), "render manifest scene.media")
     validation = _mapping(media.get("validation"), "render manifest scene.media.validation")
-    return _mapping(validation.get("deepReceipt"), "render manifest scene deep receipt")
+    return _mapping(validation.get("receipt"), "render manifest scene validation receipt")
 
 
 def _expected_output(project: Project, generation_scene: Mapping[str, Any]) -> Path:
@@ -285,7 +290,8 @@ def build_scene_review_bundle(
             )
 
     identity_payload = {
-        "contractVersion": SCENE_REVIEW_CONTRACT_VERSION,
+        "schemaVersion": SCENE_REVIEW_SCHEMA_VERSION,
+        "kind": SCENE_REVIEW_KIND,
         "projectId": project.project_id,
         "generationPlanSha256": _current_generation_plan_sha256(project),
         "sceneOrder": scene_ids,
@@ -350,11 +356,10 @@ def _prepare_scene_visual_review_task(
         "renderProfileSha256": bundle["renderProfileSha256"],
     }
     task_data = {
-        "contractVersion": TASK_CONTRACT_VERSION,
+        "schemaVersion": 1,
         "taskId": context.task_id,
         "taskKind": "visualReview",
         "scopeKind": "project",
-        "roleContractVersion": ROLE_CONTRACT_VERSION,
         "roleContractSha256": agent_sha256_file(role_contract),
         "attempt": 1,
         "sequence": 1,
@@ -398,7 +403,8 @@ def inspect_scene_review(
         isinstance(approval, Mapping)
         and approval.get("approved") is True
         and approval.get("identityHash") == bundle["identityHash"]
-        and approval.get("contractVersion") == SCENE_REVIEW_CONTRACT_VERSION
+        and approval.get("schemaVersion") == SCENE_REVIEW_SCHEMA_VERSION
+        and approval.get("reviewKind") == "scene-review"
     )
     if review_policy == "user_first":
         semantic_review: dict[str, Any] = {
@@ -450,7 +456,8 @@ def assert_current_scene_review_approval(
     if not isinstance(approval, Mapping) or approval.get("approved") is not True:
         raise SceneReviewGateError("缺少 current scene review 人工批准")
     if (
-        approval.get("contractVersion") != SCENE_REVIEW_CONTRACT_VERSION
+        approval.get("schemaVersion") != SCENE_REVIEW_SCHEMA_VERSION
+        or approval.get("reviewKind") != "scene-review"
         or approval.get("identityHash") != bundle["identityHash"]
     ):
         raise SceneReviewGateError("scene review approval stale 或 identity 不匹配")

@@ -18,9 +18,6 @@ from PIL import Image, UnidentifiedImageError
 
 try:
     from .agent_task_contract import (
-        RESULT_CONTRACT_VERSION,
-        ROLE_CONTRACT_VERSION,
-        TASK_CONTRACT_VERSION,
         AgentContractError,
         StaleAgentTaskError,
         TrustedTaskContext,
@@ -39,13 +36,15 @@ try:
         execute_bounded,
     )
     from .annotation_dispatch import (
-        DISPATCH_MANIFEST_CONTRACT,
+        DISPATCH_MANIFEST_KIND,
+        DISPATCH_MANIFEST_SCHEMA_VERSION,
         build_dispatch_manifest,
         utc_now,
     )
     from .annotation_contract import (
         AnnotationContractError,
-        SUPPORTED_VISUAL_ELEMENTS_CONTRACTS,
+        VISUAL_ELEMENTS_KIND,
+        VISUAL_ELEMENTS_SCHEMA_VERSION,
         validate_visual_elements,
     )
     from .project_workspace import (
@@ -66,9 +65,6 @@ try:
     )
 except ImportError:  # pragma: no cover - direct script execution
     from agent_task_contract import (
-        RESULT_CONTRACT_VERSION,
-        ROLE_CONTRACT_VERSION,
-        TASK_CONTRACT_VERSION,
         AgentContractError,
         StaleAgentTaskError,
         TrustedTaskContext,
@@ -87,13 +83,15 @@ except ImportError:  # pragma: no cover - direct script execution
         execute_bounded,
     )
     from annotation_dispatch import (  # type: ignore
-        DISPATCH_MANIFEST_CONTRACT,
+        DISPATCH_MANIFEST_KIND,
+        DISPATCH_MANIFEST_SCHEMA_VERSION,
         build_dispatch_manifest,
         utc_now,
     )
     from annotation_contract import (
         AnnotationContractError,
-        SUPPORTED_VISUAL_ELEMENTS_CONTRACTS,
+        VISUAL_ELEMENTS_KIND,
+        VISUAL_ELEMENTS_SCHEMA_VERSION,
         validate_visual_elements,
     )
     from project_workspace import (
@@ -114,11 +112,12 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-ANNOTATION_BATCH_CONTRACT = "whiteboard-annotation-batch-v1"
-ANNOTATION_PREPARE_CONTRACT = "whiteboard-annotation-prepare-v3"
-ANNOTATION_LINT_CONTRACT = "whiteboard-annotation-candidate-lint-v1"
-ANNOTATION_UNIT_MATERIALIZE_CONTRACT = "whiteboard-annotation-unit-materialize-v1"
-ANNOTATION_DISPATCH_BUNDLE_CONTRACT = "whiteboard-agent-task-unit-v1"
+ANNOTATION_SCHEMA_VERSION = 1
+ANNOTATION_BATCH_KIND = "annotation-batch"
+ANNOTATION_PREPARE_KIND = "annotation-prepare"
+ANNOTATION_LINT_KIND = "annotation-candidate-lint"
+ANNOTATION_UNIT_MATERIALIZE_KIND = "annotation-unit-materialize"
+ANNOTATION_DISPATCH_BUNDLE_KIND = "agent-task-unit"
 ANNOTATION_MAX_TASKS_PER_DISPATCH_UNIT = 3
 _ATTEMPT_RE = re.compile(r"^attempt-([0-9]{4})$")
 _REFERENCE = Path(__file__).resolve().parents[1] / "references" / "annotation-drafting-role.md"
@@ -267,7 +266,8 @@ def prepare_annotation_drafting_tasks(
             if key in scene
         }
         brief = {
-            "contractVersion": "whiteboard-annotation-scene-brief-v1",
+            "schemaVersion": 1,
+            "kind": "annotation-scene-brief",
             "scene": generation_brief,
             "timingScene": timing[scene_id],
             "image": {
@@ -276,9 +276,10 @@ def prepare_annotation_drafting_tasks(
             },
             "currentBindings": bindings,
             "authoringContract": {
-                "mode": "visual-elements-only-v1",
+                "mode": "visual-elements-only",
                 "preferredCandidate": {
-                    "contractVersion": "whiteboard-annotation-visual-elements-v1",
+                    "schemaVersion": VISUAL_ELEMENTS_SCHEMA_VERSION,
+                    "kind": VISUAL_ELEMENTS_KIND,
                     "elements": "由 child 根据原图与本幕语义填写的非空数组",
                 },
                 "coordinatorMaterializes": [
@@ -296,11 +297,10 @@ def prepare_annotation_drafting_tasks(
         input_paths = (image_path, brief_path, role_contract)
         candidate = trusted.task_dir / "candidate.annotation.json"
         task_data = {
-            "contractVersion": TASK_CONTRACT_VERSION,
+            "schemaVersion": 1,
             "taskId": task_id,
             "taskKind": "annotationDrafting",
             "scopeKind": "project",
-            "roleContractVersion": ROLE_CONTRACT_VERSION,
             "roleContractSha256": agent_sha256_file(role_contract),
             "attempt": attempt,
             "sequence": sequence,
@@ -384,11 +384,12 @@ def _load_visual_elements_candidate(path: Path) -> list[Any]:
         raise AnnotationBatchError("annotation 视觉候选不是可读 UTF-8 JSON") from exc
     if not isinstance(raw, dict):
         raise AnnotationBatchError("annotation 视觉候选顶层必须是对象")
-    contract = raw.get("contractVersion")
-    if contract not in (None, *SUPPORTED_VISUAL_ELEMENTS_CONTRACTS):
-        raise AnnotationBatchError("annotation 视觉候选 contractVersion 不支持")
-    if contract is not None and set(raw) != {"contractVersion", "elements"}:
-        raise AnnotationBatchError(f"{contract} 只允许 contractVersion/elements")
+    if (
+        raw.get("schemaVersion") != VISUAL_ELEMENTS_SCHEMA_VERSION
+        or raw.get("kind") != VISUAL_ELEMENTS_KIND
+        or set(raw) != {"schemaVersion", "kind", "elements"}
+    ):
+        raise AnnotationBatchError("annotation 视觉候选 schema/kind 不支持")
     try:
         return validate_visual_elements(raw.get("elements"))
     except AnnotationContractError as exc:
@@ -460,13 +461,12 @@ def _materialize_coordinator_result(
     _load_visual_elements_candidate(candidate)
     task = drafting.task
     result = {
-        "contractVersion": RESULT_CONTRACT_VERSION,
+        "schemaVersion": 1,
         "taskId": task.data["taskId"],
         "taskKind": task.data["taskKind"],
         "scopeKind": task.data["scopeKind"],
         "attempt": task.data["attempt"],
         "taskSha256": task.task_sha256,
-        "roleContractVersion": task.data["roleContractVersion"],
         "roleContractSha256": task.data["roleContractSha256"],
         "sequence": task.data["sequence"],
         "status": "completed",
@@ -700,7 +700,8 @@ def validate_and_publish_annotation_batch(
     all_technical_current = not required_failures
     all_passed = failures == 0 and all_technical_current
     return {
-        "contractVersion": ANNOTATION_BATCH_CONTRACT,
+        "schemaVersion": ANNOTATION_SCHEMA_VERSION,
+        "kind": ANNOTATION_BATCH_KIND,
         "status": "PASS" if all_passed else "FAIL",
         "partialSuccess": bool(published and not all_passed),
         "configuredConcurrency": configured_concurrency,
@@ -877,7 +878,8 @@ def build_annotation_prepare_summary(
         dispatch_unit_id = f"annotation-unit-{unit_number:02d}"
         dispatch_units.append(
             {
-                "contractVersion": ANNOTATION_DISPATCH_BUNDLE_CONTRACT,
+                "schemaVersion": ANNOTATION_SCHEMA_VERSION,
+                "kind": ANNOTATION_DISPATCH_BUNDLE_KIND,
                 "dispatchUnitId": dispatch_unit_id,
                 "taskCount": len(unit_tasks),
                 "taskIds": [drafting.task.data["taskId"] for drafting in unit_tasks],
@@ -936,7 +938,7 @@ def build_annotation_prepare_summary(
     dispatch_audit["tasksPerDispatchUnit"] = [
         unit["taskCount"] for unit in dispatch_units
     ]
-    dispatch_audit.setdefault("auditContractVersion", "whiteboard-annotation-preparation-audit-v1")
+    dispatch_audit.setdefault("kind", "annotation-preparation-audit")
     timestamps = dispatch_audit.setdefault("timestamps", {})
     timestamps.setdefault("dispatchStartedAt", audit.get("prepareStartedAt"))
     timestamps.setdefault("prepareStartedAt", audit.get("prepareStartedAt"))
@@ -963,7 +965,8 @@ def build_annotation_prepare_summary(
     )
     write_json_atomic(dispatch_manifest_path, dispatch_manifest)
     return {
-        "contractVersion": ANNOTATION_PREPARE_CONTRACT,
+        "schemaVersion": ANNOTATION_SCHEMA_VERSION,
+        "kind": ANNOTATION_PREPARE_KIND,
         "operation": "prepare",
         "status": "PASS",
         "runId": run_id,
@@ -976,7 +979,7 @@ def build_annotation_prepare_summary(
         "preparationAudit": dispatch_audit,
         "dispatchPlan": {
             "coordinatorDispatchRequired": True,
-            "granularity": "contiguous-bundle-v1",
+            "granularity": "contiguous-bundle",
             "completionProtocol": "return_after_unit_complete_v1",
             "childReturnGranularity": "dispatch_unit",
             "maxTasksPerDispatchUnit": unit_size,
@@ -1010,7 +1013,8 @@ def _load_current_dispatch_manifest(
     manifest_root = manifest.get("candidateRoot") if isinstance(manifest, dict) else None
     if (
         not isinstance(manifest, dict)
-        or manifest.get("contractVersion") != DISPATCH_MANIFEST_CONTRACT
+        or manifest.get("schemaVersion") != DISPATCH_MANIFEST_SCHEMA_VERSION
+        or manifest.get("kind") != DISPATCH_MANIFEST_KIND
         or not isinstance(manifest_root, str)
         or Path(manifest_root).resolve(strict=True) != root
     ):
@@ -1041,7 +1045,8 @@ def _resolve_dispatch_unit_tasks(
     unit = matches[0]
     task_ids = unit.get("taskIds")
     if (
-        unit.get("contractVersion") != ANNOTATION_DISPATCH_BUNDLE_CONTRACT
+        unit.get("schemaVersion") != ANNOTATION_SCHEMA_VERSION
+        or unit.get("kind") != ANNOTATION_DISPATCH_BUNDLE_KIND
         or not isinstance(task_ids, list)
         or not task_ids
         or len(task_ids) > ANNOTATION_MAX_TASKS_PER_DISPATCH_UNIT
@@ -1337,7 +1342,8 @@ def _materialize_unit_main(argv: Sequence[str]) -> int:
         audit.setdefault("durationsMs", {})["resultMaterialize"] = duration_ms
         write_json_atomic(dispatch_manifest_path, dispatch_manifest)
         summary = {
-            "contractVersion": ANNOTATION_UNIT_MATERIALIZE_CONTRACT,
+            "schemaVersion": ANNOTATION_SCHEMA_VERSION,
+            "kind": ANNOTATION_UNIT_MATERIALIZE_KIND,
             "operation": "materialize-unit",
             "status": "PASS",
             "dispatchUnitId": args.dispatch_unit_id,
@@ -1352,7 +1358,8 @@ def _materialize_unit_main(argv: Sequence[str]) -> int:
         code = 0
     except Exception as exc:
         summary = {
-            "contractVersion": ANNOTATION_UNIT_MATERIALIZE_CONTRACT,
+            "schemaVersion": ANNOTATION_SCHEMA_VERSION,
+            "kind": ANNOTATION_UNIT_MATERIALIZE_KIND,
             "operation": "materialize-unit",
             "status": "FAIL",
             "dispatchUnitId": args.dispatch_unit_id,
@@ -1393,7 +1400,8 @@ def _materialize_main(argv: Sequence[str]) -> int:
         dispatch_manifest = json.loads(dispatch_manifest_path.read_text(encoding="utf-8"))
         if (
             not isinstance(dispatch_manifest, dict)
-            or dispatch_manifest.get("contractVersion") != DISPATCH_MANIFEST_CONTRACT
+            or dispatch_manifest.get("schemaVersion") != DISPATCH_MANIFEST_SCHEMA_VERSION
+            or dispatch_manifest.get("kind") != DISPATCH_MANIFEST_KIND
             or Path(str(dispatch_manifest.get("candidateRoot"))).resolve(strict=True)
             != candidate_root
         ):
@@ -1427,7 +1435,8 @@ def _materialize_main(argv: Sequence[str]) -> int:
         observation["resultSha256"] = materialized["resultSha256"]
         write_json_atomic(dispatch_manifest_path, dispatch_manifest)
         summary = {
-            "contractVersion": "whiteboard-annotation-result-materialize-v1",
+            "schemaVersion": ANNOTATION_SCHEMA_VERSION,
+            "kind": "annotation-result-materialize",
             "operation": "materialize",
             "status": "PASS",
             "taskId": args.task_id,
@@ -1443,7 +1452,8 @@ def _materialize_main(argv: Sequence[str]) -> int:
         code = 0
     except Exception as exc:
         summary = {
-            "contractVersion": "whiteboard-annotation-result-materialize-v1",
+            "schemaVersion": ANNOTATION_SCHEMA_VERSION,
+            "kind": "annotation-result-materialize",
             "operation": "materialize",
             "status": "FAIL",
             "error": str(exc),
@@ -1460,7 +1470,8 @@ def _lint_main(argv: Sequence[str]) -> int:
     try:
         elements = _load_visual_elements_candidate(args.candidate)
         summary = {
-            "contractVersion": ANNOTATION_LINT_CONTRACT,
+            "schemaVersion": ANNOTATION_SCHEMA_VERSION,
+            "kind": ANNOTATION_LINT_KIND,
             "status": "PASS",
             "candidate": str(args.candidate.resolve(strict=True)),
             "elementCount": len(elements),
@@ -1469,7 +1480,8 @@ def _lint_main(argv: Sequence[str]) -> int:
         code = 0
     except Exception as exc:
         summary = {
-            "contractVersion": ANNOTATION_LINT_CONTRACT,
+            "schemaVersion": ANNOTATION_SCHEMA_VERSION,
+            "kind": ANNOTATION_LINT_KIND,
             "status": "FAIL",
             "candidate": str(args.candidate.resolve(strict=False)),
             "error": str(exc),
@@ -1531,7 +1543,8 @@ def _prepare_main(argv: Sequence[str]) -> int:
     except Exception as exc:
         failure = _prepare_failure(exc)
         summary = {
-            "contractVersion": ANNOTATION_PREPARE_CONTRACT,
+            "schemaVersion": ANNOTATION_SCHEMA_VERSION,
+            "kind": ANNOTATION_PREPARE_KIND,
             "operation": "prepare",
             "status": "FAIL",
             "error": {"code": failure.code, "message": str(failure)},
@@ -1566,7 +1579,8 @@ def _validate_main(argv: Sequence[str]) -> int:
         )
     except Exception as exc:
         summary = {
-            "contractVersion": ANNOTATION_BATCH_CONTRACT,
+            "schemaVersion": ANNOTATION_SCHEMA_VERSION,
+            "kind": ANNOTATION_BATCH_KIND,
             "status": "FAIL",
             "error": str(exc),
             "globalAnnotationConfirmationWritten": False,
@@ -1603,10 +1617,11 @@ if __name__ == "__main__":
 
 
 __all__ = [
-    "ANNOTATION_BATCH_CONTRACT",
-    "ANNOTATION_LINT_CONTRACT",
-    "ANNOTATION_PREPARE_CONTRACT",
-    "ANNOTATION_UNIT_MATERIALIZE_CONTRACT",
+    "ANNOTATION_BATCH_KIND",
+    "ANNOTATION_LINT_KIND",
+    "ANNOTATION_PREPARE_KIND",
+    "ANNOTATION_SCHEMA_VERSION",
+    "ANNOTATION_UNIT_MATERIALIZE_KIND",
     "AnnotationBatchError",
     "AnnotationDraftingTask",
     "FormalValidationContext",

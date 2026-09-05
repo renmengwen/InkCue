@@ -63,7 +63,6 @@ PROJECT_PATHS = PROJECT_PATHS_V2
 AUDIO_VOICEOVER_MODES = {"edge-tts", "minimax", "doubao"}
 VOICEOVER_MODES = {"disabled", *AUDIO_VOICEOVER_MODES}
 CONTENT_SOURCE_FIELDS = {
-    "contractVersion",
     "inputFile",
     "inputSha256",
     "inputIdentitySha256",
@@ -1320,8 +1319,6 @@ def validate_project_metadata_data(root: Path, metadata: Any) -> dict[str, Any]:
             raise ProjectValidationError("contentSource 仅允许 schema v2 的音频旁白项目")
         if not isinstance(content_source, dict) or set(content_source) != CONTENT_SOURCE_FIELDS:
             raise ProjectValidationError("project.json contentSource 字段集合无效")
-        if content_source.get("contractVersion") != "whiteboard-source-package-v1":
-            raise ProjectValidationError("project.json contentSource.contractVersion 无效")
         if content_source.get("inputFile") != "source/input.json":
             raise ProjectValidationError("project.json contentSource.inputFile 必须为 source/input.json")
         if content_source.get("manifestFile") != "source/source-manifest.json":
@@ -1855,7 +1852,6 @@ class ProjectWorkspace:
             )
         if source_package is not None:
             metadata["contentSource"] = {
-                "contractVersion": source_package.manifest["contractVersion"],
                 "inputFile": "source/input.json",
                 "inputSha256": sha256_file(source_input),
                 "inputIdentitySha256": source_package.manifest[

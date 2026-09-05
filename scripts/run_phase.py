@@ -38,7 +38,6 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-RUNNER_CONTRACT = "phase-runner-v3"
 PHASE_REGISTRY: dict[str, Callable[..., Mapping[str, Any]]] = {
     "annotation-preview": run_annotation_preview,
     "final-delivery": run_final_delivery,
@@ -91,7 +90,7 @@ def _base_summary(
     run_id: str | None = None,
 ) -> dict[str, Any]:
     return {
-        "contractVersion": RUNNER_CONTRACT,
+        "schemaVersion": 1,
         "phase": phase,
         "status": "FAIL",
         "technicalStatus": "FAIL",
@@ -201,8 +200,8 @@ def _projected_summary(
                 if field in value
                 and bounded_scalar(value[field], limit=1000) is not None
             }
-    # Adapters may use their own contract version; the outer contract is fixed.
-    result["contractVersion"] = RUNNER_CONTRACT
+    # 所有 phase 结果共享数字结构版本，具体用途由 phase 区分。
+    result["schemaVersion"] = 1
     result["phase"] = phase
     result["projectId"] = project.project_id
     raw_run_id = raw.get("runId")
@@ -429,7 +428,6 @@ __all__ = [
     "EXIT_STALE_BINDING",
     "EXIT_UNKNOWN_EXTERNAL_OUTCOME",
     "PHASE_REGISTRY",
-    "RUNNER_CONTRACT",
     "main",
     "phase_registry",
     "run_phase",

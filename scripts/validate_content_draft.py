@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""只读校验 content-draft-v1，不持久化草案或任何派生产物。"""
+"""只读校验 content draft，不持久化草案或任何派生产物。"""
 from __future__ import annotations
 
 import argparse
@@ -24,6 +24,8 @@ def _emit(value: dict[str, Any], *, stream: Any = sys.stdout) -> None:
 
 def _invalid_result() -> dict[str, Any]:
     return {
+        "schemaVersion": 1,
+        "operation": "validateContentDraft",
         "error": "content_draft_invalid",
         "valid": False,
         "writesPerformed": False,
@@ -40,7 +42,7 @@ class _ArgumentParser(argparse.ArgumentParser):
 def _parser() -> argparse.ArgumentParser:
     parser = _ArgumentParser(
         description=(
-            "只在内存中校验 content-draft-v1 并计算确定性 identity；"
+            "只在内存中校验 schemaVersion=1 content draft 并计算确定性 identity；"
             "不准备 source 包、不创建项目、不写批准。"
         )
     )
@@ -79,8 +81,9 @@ def main(argv: list[str] | None = None) -> int:
 
     _emit(
         {
+            "schemaVersion": 1,
+            "operation": "validateContentDraft",
             "contentDraftIdentitySha256": manifest["contentDraftIdentitySha256"],
-            "contractVersion": normalised["contractVersion"],
             "cueCount": len(normalised["narrationCues"]),
             "inputMode": normalised["inputMode"],
             "rewritePolicy": normalised["rewritePolicy"],

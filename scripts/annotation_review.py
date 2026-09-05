@@ -41,7 +41,8 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-ANNOTATION_REVIEW_CONTRACT = "whiteboard-annotation-review-v2"
+ANNOTATION_REVIEW_SCHEMA_VERSION = 2
+ANNOTATION_REVIEW_KIND = "annotation-review"
 TECHNICAL_MANIFEST_FILE = "manifests/annotation-review-manifest.json"
 APPROVAL_FILE = "manifests/annotation-review-approval.json"
 CONTACT_SHEET_FILE = "previews/annotation-preview-contact-sheet.png"
@@ -104,7 +105,8 @@ def _identity_payload(
     if not contact.is_file():
         raise AnnotationReviewError("缺少 annotation preview contact sheet")
     return {
-        "contractVersion": ANNOTATION_REVIEW_CONTRACT,
+        "schemaVersion": ANNOTATION_REVIEW_SCHEMA_VERSION,
+        "kind": ANNOTATION_REVIEW_KIND,
         "projectId": project.project_id,
         "voiceoverMode": project.voiceover_mode,
         "generationPlanSha256": sha256_file(project.plan_path),
@@ -129,7 +131,8 @@ def write_annotation_review_technical(
     payload = _identity_payload(project, formals, context)
     identity = sha256_json(payload)
     manifest = {
-        "contractVersion": ANNOTATION_REVIEW_CONTRACT,
+        "schemaVersion": ANNOTATION_REVIEW_SCHEMA_VERSION,
+        "kind": ANNOTATION_REVIEW_KIND,
         "status": "current_technical",
         "identityHash": identity,
         "identityPayload": payload,
@@ -159,7 +162,8 @@ def inspect_current_annotation_review(
         project.path(TECHNICAL_MANIFEST_FILE), "annotation review technical manifest"
     )
     if (
-        technical.get("contractVersion") != ANNOTATION_REVIEW_CONTRACT
+        technical.get("schemaVersion") != ANNOTATION_REVIEW_SCHEMA_VERSION
+        or technical.get("kind") != ANNOTATION_REVIEW_KIND
         or technical.get("status") != "current_technical"
         or technical.get("identityHash") != identity
         or technical.get("identityPayload") != payload
@@ -188,7 +192,8 @@ def approve_current_annotation_review(
             "提交的 annotation review identity 与 current review 不一致"
         )
     approval = {
-        "contractVersion": ANNOTATION_REVIEW_CONTRACT,
+        "schemaVersion": ANNOTATION_REVIEW_SCHEMA_VERSION,
+        "reviewKind": ANNOTATION_REVIEW_KIND,
         "approved": True,
         "identityHash": identity_hash,
         "approvedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -223,7 +228,8 @@ def require_current_annotation_review_approval(
     except AnnotationReviewError as exc:
         raise AnnotationReviewApprovalRequired("缺少 annotation review 人工批准") from exc
     if (
-        approval.get("contractVersion") != ANNOTATION_REVIEW_CONTRACT
+        approval.get("schemaVersion") != ANNOTATION_REVIEW_SCHEMA_VERSION
+        or approval.get("reviewKind") != ANNOTATION_REVIEW_KIND
         or approval.get("approved") is not True
         or approval.get("identityHash") != inspection["identityHash"]
     ):
@@ -236,7 +242,8 @@ def require_current_annotation_review_approval(
 
 
 __all__ = [
-    "ANNOTATION_REVIEW_CONTRACT",
+    "ANNOTATION_REVIEW_KIND",
+    "ANNOTATION_REVIEW_SCHEMA_VERSION",
     "APPROVAL_FILE",
     "AnnotationReviewApprovalRequired",
     "AnnotationReviewError",

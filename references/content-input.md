@@ -1,6 +1,6 @@
 # 主题 / 正文内容入口合同
 
-本文说明阶段 0 的 `topic | text` 首版入口、`whiteboard-content-draft-v1`、artifact-first 审阅与修订、内容与制作方案联合确认、确定性 source package、正式项目 provenance、stale/恢复与验收边界。传统 `inputMode=srt` 路径保持一次独立的模式/语义分镜确认；其 `voiceoverMode=disabled | edge-tts | minimax | doubao`、严格 SRT、质量 Gate 和最终交付语义不得回归。
+本文说明阶段 0 的 `topic | text` 首版入口、`schemaVersion=1` content draft、artifact-first 审阅与修订、内容与制作方案联合确认、确定性 source package、正式项目 provenance、stale/恢复与验收边界。传统 `inputMode=srt` 路径保持一次独立的模式/语义分镜确认；其 `voiceoverMode=disabled | edge-tts | minimax | doubao`、严格 SRT、质量 Gate 和最终交付语义不得回归。
 
 ## 正常新任务的 fast path
 
@@ -35,6 +35,8 @@ rewritePolicy = preserve | polish | generate
 | `text` | 非空正文 | `preserve | polish` | 自动读取 `activeProvider` |
 
 `topic + preserve`、`topic + polish`、`text + generate` 以及非 SRT + `disabled` 均须拒绝。topic/text 首版不使用估算阅读时长作为最终权威时钟；target 只用于内容预算与 provisional SRT，获批的真实音频 provider timeline 才接管正式时钟。
+
+当 `voiceoverMode=doubao` 时，candidate 的有效中文/字母/数字字符数不得超过 `floor(targetDurationSeconds × 3.2)`；推荐写作区间为每秒约 2.8–3.0 个有效字符。该宽松上限只阻止明显无法自然朗读的超长稿，不替代真实 provider duration、原生词级字幕或后续时长 Gate。
 
 首版不接入通用文本模型 provider。旁白稿、cue、scene 和画面建议由宿主真实派发的 `contentDrafting` child 生成 candidate，再由 coordinator 校验、确定性生成 `result.json` 与 Markdown 审阅 artifact；bootstrap 已冻结 attempt 和宿主中立 task descriptor，并直接给出可派发的 `agentPrompt`、candidate 校验 argv 与 result materialize argv。`prepare_draft_agent_task.py` 保留为兼容、恢复或特殊路径接口。`content_source.py` 与 `prepare_source.py` 只做确定性规范化、校验、排时、hash、持久化和派生文件。上述脚本都不判断宿主能力、不发起文本模型请求、不读取外部凭据、不自行改写或批准草案，也不创建正式项目。
 
@@ -85,12 +87,11 @@ review 文件名必须使用完整 content identity 和模板配方 SHA 各自�
 
 主窗口交付 review 时不得用整文件读取把内容回灌到主上下文；只消费渲染器的短结构化摘要并发送可点击文件链接。用户可用稳定的 `cueId`、`sceneId` 或全局说明提出修改；只有无法定位时才按需读取 review 的局部片段。
 
-用户修改意见由 coordinator 冻结为 `whiteboard-content-revision-request-v1`：
+用户修改意见由 coordinator 冻结为 `schemaVersion=1` revision request：
 
 ```json
 {
   "schemaVersion": 1,
-  "contractVersion": "whiteboard-content-revision-request-v1",
   "baseContentDraftIdentitySha256": "<64位 current identity>",
   "globalInstructions": ["整体语气更克制"],
   "cueChanges": [
@@ -130,13 +131,13 @@ python <SKILL_ROOT>\scripts\prepare_env.py --bootstrap-content-draft `
 ```powershell
 <ENV_PY> scripts/prepare_draft_agent_task.py contentDrafting `
   --draft-root <D:\SRTWhiteboard\drafts\草案ID> `
-  --revision-request <whiteboard-content-revision-request-v1.json> `
+  --revision-request <revision-request.json> `
   --base-content-draft <上一版-candidate.content-draft.json>
 ```
 
 若用户变更模板，上述修订命令必须增加 `--visual-style-preset <具体模板ID>` 并创建新 attempt；传统 SRT 的 `storyboardPlanning` 也通过同名参数在 attempt 前冻结具体模板。不得原地修改已存在的 task、candidate 或 review。
 
-成功 stdout 是 `whiteboard-draft-agent-prepare-v2`，包含 `configuredAgentConcurrency`、宿主中立 `preparedTask`、`formalPublished:false` 与 `approvalWritten:false`。descriptor 除冻结 task/role 的绝对路径和 SHA、唯一 attempt 根、candidate/result 路径、allowed outputs 与 required capabilities 外，还必须直接给出：
+成功 stdout 使用 `schemaVersion=1` 和 `operation=prepareDraftAgentTask`，包含 `configuredAgentConcurrency`、宿主中立 `preparedTask`、`formalPublished:false` 与 `approvalWritten:false`。descriptor 除冻结 task/role 的绝对路径和 SHA、唯一 attempt 根、candidate/result 路径、allowed outputs 与 required capabilities 外，还必须直接给出：
 
 - `agentPrompt`：只含冻结定位、SHA、允许 attempt 和固定返回协议，可原样用于宿主派发；
 - `candidateValidationArgv`：使用已捕获绝对 `ENV_PY` 与绝对脚本路径的纯本地 candidate 校验命令；
@@ -161,7 +162,7 @@ coordinator 在生成 topic/text 审阅 artifact 前，必须通过标准输入�
 <ENV_PY> scripts/validate_content_draft.py --stdin
 ```
 
-该命令仅在内存调用 current `validate_content_draft()` 和 `build_source_package()`，用于同时检查草案合同和确定性派生是否成立。成功时向 stdout 输出单个结构化 JSON，只包含 content draft identity、合同/模式/策略/target、cue 数、scene 数、`valid: true` 与 `writesPerformed: false`；不输出 topic/body、旁白正文、图片提示词、绝对路径或秘密。它不调用文本模型或 provider，不读取本地 secret 配置，不运行 `prepare_source.py`，不创建 source 准备包或正式项目，也不写任何批准记录。
+该命令仅在内存调用 current `validate_content_draft()` 和 `build_source_package()`，用于同时检查草案结构和确定性派生是否成立。成功时向 stdout 输出单个 `schemaVersion=1` 结构化 JSON，只包含 operation、content draft identity、模式/策略/target、cue 数、scene 数、`valid: true` 与 `writesPerformed: false`；不输出 topic/body、旁白正文、图片提示词、绝对路径或秘密。它不调用文本模型或 provider，不读取本地 secret 配置，不运行 `prepare_source.py`，不创建 source 准备包或正式项目，也不写任何批准记录。
 
 `--stdin` 与 `--draft` 互斥。`--draft <candidate.content-draft.json>` 可以由 coordinator 在联合确认前读取已持久化的 attempt candidate；它只做只读校验，不能表示用户已确认。人工确认前若 candidate 尚未持久化，当前对话只能使用 `--stdin` 或直接调用纯函数。测试 fixture 同样不表示批准。无效 UTF-8、无效 JSON、草案合同错误、文件读取错误和参数错误均以退出码 2 拒绝，并只输出不含输入值或路径的结构化错误码。
 
@@ -180,21 +181,19 @@ candidate 通过只读校验后，由 coordinator 调用确定性 renderer；ren
 
 coordinator 只消费 renderer 的结构化短摘要和 review 路径，不再读取 Markdown 全文。
 
-## 自然中文旁白合同（`natural-spoken-zh-v1`）
+## 自然中文旁白规范
 
 旁白写法、三类 rewritePolicy 边界、两遍回读和“批准后不得继续改写”统一见
-[`phase-0-content.md`](phase-0-content.md)。`natural-spoken-zh-v1` 只约束
-`narrationCues[].text`，不是新的 schema/identity 字段；本文后续只定义
-`whiteboard-content-draft-v1` 的机器合同。
+[`phase-0-content.md`](phase-0-content.md)。该规范只约束 `narrationCues[].text`，
+不是新的 schema/identity 字段；本文后续只定义 `schemaVersion=1` content draft 的机器结构。
 
-## `whiteboard-content-draft-v1`
+## Content draft（`schemaVersion=1`）
 
 草案 JSON 的顶层字段固定为明确 allowlist：
 
 ```json
 {
   "schemaVersion": 1,
-  "contractVersion": "whiteboard-content-draft-v1",
   "inputMode": "topic",
   "topic": "为什么人会拖延",
   "body": null,
@@ -223,7 +222,7 @@ coordinator 只消费 renderer 的结构化短摘要和 review 路径，不再�
 
 硬校验包括：
 
-- `schemaVersion=1`，`contractVersion=whiteboard-content-draft-v1`；未知敏感字段拒绝或至少不得持久化。
+- `schemaVersion=1`；未知敏感字段拒绝或至少不得持久化。
 - `topic` 与 `body` 分开保存，不能用其中一个覆盖另一个。topic 模式必须有非空 topic；text 模式必须有非空 body。
 - 文本统一 Unicode NFKC、CRLF→LF 并移除首尾空白；不得静默改变正文语义。
 - topic 建议上限 200 Unicode 字符；body 上限 128 KiB UTF-8。
@@ -235,7 +234,7 @@ coordinator 只消费 renderer 的结构化短摘要和 review 路径，不再�
 
 ### `imagePrompt` 到正式 `prompt` 的确定性映射
 
-`imagePrompt` 只属于 `whiteboard-content-draft-v1` 内容草案；正式 `planning/generation-plan.json` 的 scene 字段名固定为 `prompt`。用户确认 current 内容草案后，coordinator 通过 `prepare_source.py` / `scripts.content_source.build_generation_plan()` 做逐幕确定性映射：
+`imagePrompt` 只属于 content draft；正式 `planning/generation-plan.json` 的 scene 字段名固定为 `prompt`。用户确认 current 内容草案后，coordinator 通过 `prepare_source.py` / `scripts.content_source.build_generation_plan()` 做逐幕确定性映射：
 
 ```text
 content draft scenes[i].imagePrompt
@@ -282,7 +281,7 @@ CUE_COUNT=<...>
 SCENE_COUNT=<...>
 ```
 
-`input.json` 保存规范化后的 allowlist 内容；`manifest.json` 至少绑定 contract version、normalized input SHA、narration cue identity、source SRT SHA、generation plan SHA、target duration、inputMode/rewritePolicy 和工具版本。审计字段不得含秘密；manifest 内的文件引用必须是准备包内相对路径，不保存本机绝对路径。
+`input.json` 保存规范化后的 allowlist 内容；`manifest.json` 使用数字 `schemaVersion`，至少绑定 normalized input SHA、narration cue identity、source SRT SHA、generation plan SHA、target duration、inputMode/rewritePolicy，以及结构化 `timingAlgorithm.algorithm/version/parameters`。审计字段不得含秘密；manifest 内的文件引用必须是准备包内相对路径，不保存本机绝对路径。
 
 相同规范化草案必须产生相同 canonical JSON hash、source SRT 和 generation plan。创建时间等非确定性审计字段不得进入内容 identity。失败候选在本次工作目录内保留或清理，但不得覆盖上一次有效准备包。
 

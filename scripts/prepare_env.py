@@ -38,7 +38,6 @@ FUNASR_VERSION = "1.4.3"
 MODELSCOPE_VERSION = "1.39.1"
 TORCH_VERSION = "2.11.0"
 TORCHAUDIO_VERSION = TORCH_VERSION
-NARRATION_ASR_CONTRACT = "narration-asr-models-v1"
 NARRATION_ASR_RECEIPT_NAME = "narration-asr-models.json"
 NARRATION_ASR_DEPS: dict[str, str] = {
     "funasr": f"funasr=={FUNASR_VERSION}",
@@ -205,8 +204,8 @@ def load_narration_asr_model_paths(
     expected_cache = cache_root.resolve()
     if not isinstance(payload, dict):
         raise RuntimeError("narration-asr 模型 receipt 必须是 JSON 对象")
-    if payload.get("schemaVersion") != 1 or payload.get("contract") != NARRATION_ASR_CONTRACT:
-        raise RuntimeError("narration-asr 模型 receipt 合同不匹配")
+    if payload.get("schemaVersion") != 1 or payload.get("kind") != "narrationAsrModels":
+        raise RuntimeError("narration-asr 模型 receipt 结构不匹配")
     try:
         recorded_cache = Path(payload["cacheRoot"]).resolve()
     except (KeyError, TypeError, OSError) as exc:
@@ -507,7 +506,7 @@ def prepare_narration_asr_models(
         raise NarrationAsrBlockedError("narration-asr 模型准备结果必须是数组")
     receipt_payload: dict[str, object] = {
         "schemaVersion": 1,
-        "contract": NARRATION_ASR_CONTRACT,
+        "kind": "narrationAsrModels",
         "cacheRoot": str(cache_root.resolve()),
         "dependencyRequirements": list(NARRATION_ASR_DEPS.values()),
         "models": models,
@@ -535,8 +534,9 @@ def _print_narration_asr_status(
     model_paths: dict[str, Path] | None = None,
 ) -> None:
     payload: dict[str, object] = {
+        "schemaVersion": 1,
+        "kind": "narrationAsrEnvironment",
         "status": status,
-        "contract": NARRATION_ASR_CONTRACT,
         "cacheRoot": str(cache_root.resolve()),
         "receiptPath": str(receipt_path.resolve()),
         "models": {
@@ -648,7 +648,8 @@ def _bootstrap_content_draft(args: argparse.Namespace) -> tuple[int, dict[str, o
         return 2, payload
     descriptor = payload["preparedTask"]
     return 0, {
-        "contractVersion": "whiteboard-bootstrap-content-draft-v1",
+        "schemaVersion": 1,
+        "operation": "bootstrapContentDraft",
         "ok": True,
         "workspaceAccess": access.as_dict(),
         "draftRoot": payload["draftRoot"],

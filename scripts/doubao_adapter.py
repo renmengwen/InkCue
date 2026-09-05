@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""豆包 Seed Audio v2 adapter；原子返回音频与严格字级字幕。"""
+"""豆包 Seed Audio prompt-only adapter；原子返回音频与严格字级字幕。"""
 from __future__ import annotations
 
 import base64
@@ -35,8 +35,9 @@ except ImportError:  # pragma: no cover
     )
 
 
-DOUBAO_PROVIDER_CONTRACT_VERSION = "doubao-seed-audio-expressive-native-word-v2"
-DOUBAO_SUBTITLE_TYPE = "doubao-seed-audio-native-word-json-v1"
+DOUBAO_SUBTITLE_SCHEMA_VERSION = 1
+DOUBAO_SUBTITLE_KIND = "providerNativeWordSubtitles"
+DOUBAO_SUBTITLE_TYPE = "word"
 DOUBAO_ENDPOINT = "https://openspeech.bytedance.com/api/v3/tts/create"
 DOUBAO_MAX_AUDIO_DURATION_SECONDS = 120
 DOUBAO_TIMESTAMP_TOLERANCE_MS = 100
@@ -221,14 +222,9 @@ class DoubaoAdapter:
             raise PermanentProviderError("豆包朗读文本不能为空")
         if len(request.text) > 3000:
             raise PermanentProviderError("豆包 text_prompt 不能超过 3000 字符")
-        if not isinstance(request.voice, str) or not request.voice.strip():
-            raise PermanentProviderError("豆包 speaker 不能为空")
-        if request.providerContractVersion != DOUBAO_PROVIDER_CONTRACT_VERSION:
-            raise PermanentProviderError("豆包 provider contractVersion 不匹配")
         payload = {
             "model": self.model,
             "text_prompt": request.text,
-            "references": [{"speaker": request.voice}],
             "audio_config": {
                 "format": "wav",
                 "sample_rate": 24000,
@@ -434,8 +430,10 @@ class DoubaoAdapter:
                 "subtitle_sentences_text_mismatch"
             )
         sidecar = {
-            "contractVersion": DOUBAO_SUBTITLE_TYPE,
-            "providerContractVersion": DOUBAO_PROVIDER_CONTRACT_VERSION,
+            "schemaVersion": DOUBAO_SUBTITLE_SCHEMA_VERSION,
+            "kind": DOUBAO_SUBTITLE_KIND,
+            "provider": "doubao",
+            "model": self.model,
             "textPromptSha256": hashlib.sha256(text_prompt.encode("utf-8")).hexdigest(),
             "durationMs": duration_ms,
             "originalDurationMs": original_duration_ms,
@@ -476,7 +474,8 @@ class DoubaoAdapter:
 __all__ = [
     "DOUBAO_EVIDENCE_REASON_CODES",
     "DOUBAO_ENDPOINT",
-    "DOUBAO_PROVIDER_CONTRACT_VERSION",
+    "DOUBAO_SUBTITLE_SCHEMA_VERSION",
+    "DOUBAO_SUBTITLE_KIND",
     "DOUBAO_SUBTITLE_TYPE",
     "DOUBAO_TIMESTAMP_TOLERANCE_MS",
     "DoubaoAdapter",

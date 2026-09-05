@@ -92,7 +92,7 @@ candidate validator 的一次运行必须返回完整结构错误清单，不得
 
 - 正式图片请求只消费 current formal generation plan；topic/text 的 `imagePrompt` 由 coordinator 确定性映射为 formal `prompt`。每幕请求彼此独立，失败不阻断其他独立幕，但任一必需幕缺失/失败/stale 时 batch 不得越过 Gate。
 - Edge/MiniMax/豆包完整旁白都固定为一个整轨 synthesis task，不因 provider/ASR 失败回退为逐句多请求。Edge 使用本地 FunASR token 证据；MiniMax 与豆包只使用各自同一次合成响应绑定的 provider-native word 字幕，不重复跑 FunASR。
-- 豆包固定 `doubao-seed-audio-expressive-native-word-v2`。新旁白版本在样音前由 coordinator 重新读取 `C:\Users\MOVER\Desktop\seed-audio-1.0 text_prompt 参考.txt`，只把它作为风格/能力示例，结合 current 全文、scene 与 BGM 方向冻结 `doubao-performance-brief-v1`；程序逐字装配正文并把 brief、参考 SHA 和最终 prompt SHA 纳入既有 voice identity。关闭 BGM/样音禁音由程序固定，恢复或重试复用 brief。`backgroundMusic.enabled=true` 时豆包音乐已嵌入 canonical narration，且只在叙事确有变化处改变，不为每个 scene 强制补一句；final mux 不得再混内置曲。Edge/MiniMax 才按既有合同混入 CC0 BGM。
+- 豆包固定使用外部模型 `seed-audio-1.0` 的 prompt-only 能力。请求省略整个 `references` 字段，不传 `speaker`、`audio_data` 或 `audio_url`；音色、年龄和表演只由 authored `text_prompt` 定义。新旁白版本在样音前由 coordinator 重新读取 `C:\Users\MOVER\Desktop\seed-audio-1.0 text_prompt 参考.txt`，只把它作为风格/能力示例，结合 current 全文、scene 与 BGM 方向冻结 `schemaVersion: 1, kind: performanceBrief` 的 brief；程序逐字装配正文，并把 provisional scene 时间窗口写成 `[startSeconds:endSeconds]`，明确整轨目标时长。brief、参考 SHA 和最终 prompt SHA 纳入既有 voice identity，恢复或重试复用。`backgroundMusic.enabled=true` 时豆包音乐已嵌入 canonical narration，且只在叙事确有变化处改变，不为每个 scene 强制补一句；final mux 不得再混内置曲。Edge/MiniMax 才按既有固定混音 recipe 混入 CC0 BGM。
 - 正式 final 永远烧录字幕：静音为 H.264/0 音频并用 source SRT；旁白为 H.264 + 24kHz mono AAC 并用 current narration SRT。完整解码、流、尺寸、fps、帧数/时长/尾部、字体/字幕、BGM 模式和 identity 必须 current。
 - 自动测试、fixture、技术检查或 child 结果不得冒充真实 provider、真实媒体或主观质量 PASS；外部服务或宿主媒体能力不足时准确报告 `BLOCKED`/`FAIL`。
 

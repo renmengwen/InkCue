@@ -25,7 +25,6 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 WIDTH = 1920
 HEIGHT = 1080
 BACKGROUND = (245, 235, 215)
-MANIFEST_VERSION = "whole-video-cover-v1"
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -241,7 +240,7 @@ def generate_cover(project_root: str | Path, *, overwrite: bool = False, title: 
 
     manifest = {
         "schemaVersion": 1,
-        "contractVersion": MANIFEST_VERSION,
+        "kind": "social-cover",
         "semanticSource": "whole_video",
         "projectId": _text((_read_json(root / "project.json") or {}).get("projectId")) or None,
         "file": "previews/social-cover.png",

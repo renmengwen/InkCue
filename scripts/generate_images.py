@@ -47,13 +47,12 @@ SKILL_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PROVIDER_CONFIG = SKILL_ROOT / "config" / "image-providers.local.json"
 RECOVERABLE_STATUSES = frozenset({"prepared", "requesting", "candidate_ready", "publishing"})
 IMAGE_GENERATION_LOCK_NAME = "image-generation.lock"
-HOST_IMAGE_TASK_CONTRACT_VERSION = "whiteboard-host-image-generation-tasks-v1"
-HOST_IMAGE_RESULTS_CONTRACT_VERSION = "whiteboard-host-image-results-v1"
+HOST_IMAGE_SCHEMA_VERSION = 1
 HOST_IMAGE_BACKEND_IDENTITY = {
     "provider": "gpt-login",
     "protocol": "codex-image-gen",
     "model": "host-managed",
-    "toolContractVersion": "codex-image-gen-v1",
+    "tool": {"id": "codex-image-gen", "version": 1},
 }
 
 
@@ -484,8 +483,9 @@ def _host_task_descriptor(task: GenerationTask, *, run_id: str) -> dict[str, str
 
 def _host_task_package(tasks: list[GenerationTask], *, run_id: str) -> dict[str, Any]:
     return {
-        "contractVersion": HOST_IMAGE_TASK_CONTRACT_VERSION,
-        "resultsContractVersion": HOST_IMAGE_RESULTS_CONTRACT_VERSION,
+        "schemaVersion": HOST_IMAGE_SCHEMA_VERSION,
+        "kind": "host-image-generation-tasks",
+        "resultsSchemaVersion": HOST_IMAGE_SCHEMA_VERSION,
         "runId": run_id,
         "tasks": [_host_task_descriptor(task, run_id=run_id) for task in tasks],
     }
@@ -499,8 +499,12 @@ def _load_host_results(path_value: str) -> dict[str, Any]:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise CliArgumentError("--host-results 不存在或不是有效 JSON") from exc
-    if not isinstance(document, dict) or document.get("contractVersion") != HOST_IMAGE_RESULTS_CONTRACT_VERSION:
-        raise CliArgumentError("host results contractVersion 无效")
+    if (
+        not isinstance(document, dict)
+        or document.get("schemaVersion") != HOST_IMAGE_SCHEMA_VERSION
+        or document.get("kind") != "host-image-results"
+    ):
+        raise CliArgumentError("host results schema/kind 无效")
     run_id = document.get("runId")
     results = document.get("results")
     if not isinstance(run_id, str) or not run_id or not isinstance(results, list):

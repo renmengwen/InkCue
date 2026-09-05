@@ -16,17 +16,12 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable, Iterable, Literal, Mapping, Sequence
 
 
-TASK_CONTRACT_VERSION = "whiteboard-agent-task-v1"
-RESULT_CONTRACT_VERSION = "whiteboard-agent-result-v1"
-ROLE_CONTRACT_VERSION = "whiteboard-subagent-orchestration-v1"
-PREPARED_TASK_CONTRACT_VERSION = "whiteboard-prepared-agent-task-v1"
-
 CONTENT_DRAFT_CANDIDATE_SCHEMA: Mapping[str, Any] = {
-    "contractVersion": "whiteboard-content-draft-v1",
+    "kind": "contentDraft",
+    "schemaVersion": 1,
     "topLevel": {
         "required": [
             "schemaVersion",
-            "contractVersion",
             "inputMode",
             "topic",
             "body",
@@ -39,7 +34,6 @@ CONTENT_DRAFT_CANDIDATE_SCHEMA: Mapping[str, Any] = {
         ],
         "allowed": [
             "schemaVersion",
-            "contractVersion",
             "inputMode",
             "topic",
             "body",
@@ -62,7 +56,6 @@ CONTENT_DRAFT_CANDIDATE_SCHEMA: Mapping[str, Any] = {
 }
 CONTENT_DRAFT_CANDIDATE_SKELETON: Mapping[str, Any] = {
     "schemaVersion": 1,
-    "contractVersion": "whiteboard-content-draft-v1",
     "inputMode": None,
     "topic": None,
     "body": None,
@@ -258,11 +251,11 @@ def _validate_candidate_schema(data: Mapping[str, Any], task_kind: str) -> None:
         )
     if data["candidateSchema"] != CONTENT_DRAFT_CANDIDATE_SCHEMA:
         raise AgentContractError(
-            "schema", "candidateSchema 与 whiteboard-content-draft-v1 不匹配"
+            "schema", "candidateSchema 与 schemaVersion=1 的 content draft 不匹配"
         )
     if data["candidateSkeleton"] != CONTENT_DRAFT_CANDIDATE_SKELETON:
         raise AgentContractError(
-            "schema", "candidateSkeleton 与 whiteboard-content-draft-v1 不匹配"
+            "schema", "candidateSkeleton 与 schemaVersion=1 的 content draft 不匹配"
         )
 
 
@@ -523,11 +516,10 @@ def validate_agent_task(
     _require_exact_keys(
         data,
         required={
-            "contractVersion",
+            "schemaVersion",
             "taskId",
             "taskKind",
             "scopeKind",
-            "roleContractVersion",
             "roleContractSha256",
             "attempt",
             "sequence",
@@ -546,8 +538,8 @@ def validate_agent_task(
         },
         field="task",
     )
-    if data["contractVersion"] != TASK_CONTRACT_VERSION:
-        raise AgentContractError("contract_version", "task contractVersion 不支持")
+    if data["schemaVersion"] != 1:
+        raise AgentContractError("schema", "task schemaVersion 必须为 1")
     if data["taskId"] != context.task_id:
         raise AgentContractError("task_identity", "taskId 与可信目录不匹配")
     task_kind = data["taskKind"]
@@ -559,8 +551,6 @@ def validate_agent_task(
         raise AgentContractError("scope", "scopeKind 与可信上下文不匹配")
     if ROLE_SCOPE[task_kind] != context.scope_kind:
         raise AgentContractError("role_scope", "taskKind 与 scopeKind 不匹配")
-    if data["roleContractVersion"] != ROLE_CONTRACT_VERSION:
-        raise AgentContractError("role_contract", "roleContractVersion 不支持")
     role_sha = _require_sha(data["roleContractSha256"], "roleContractSha256")
     if _require_positive_int(data["attempt"], "attempt") != context.attempt:
         raise AgentContractError("attempt", "attempt 与 attempt 目录不匹配")
@@ -712,13 +702,12 @@ def validate_agent_result(
     _require_exact_keys(
         data,
         required={
-            "contractVersion",
+            "schemaVersion",
             "taskId",
             "taskKind",
             "scopeKind",
             "attempt",
             "taskSha256",
-            "roleContractVersion",
             "roleContractSha256",
             "sequence",
             "status",
@@ -731,13 +720,12 @@ def validate_agent_result(
         field="result",
     )
     expected_equal = {
-        "contractVersion": RESULT_CONTRACT_VERSION,
+        "schemaVersion": 1,
         "taskId": task.data["taskId"],
         "taskKind": task.data["taskKind"],
         "scopeKind": task.data["scopeKind"],
         "attempt": task.data["attempt"],
         "taskSha256": dispatched_task_sha256,
-        "roleContractVersion": task.data["roleContractVersion"],
         "roleContractSha256": task.data["roleContractSha256"],
         "sequence": task.data["sequence"],
     }
@@ -853,13 +841,12 @@ def build_coordinator_result_payload(
         if path.name != "result.json" and path.absolute() in requested
     ]
     return {
-        "contractVersion": RESULT_CONTRACT_VERSION,
+        "schemaVersion": 1,
         "taskId": task.data["taskId"],
         "taskKind": task.data["taskKind"],
         "scopeKind": task.data["scopeKind"],
         "attempt": task.data["attempt"],
         "taskSha256": task.task_sha256,
-        "roleContractVersion": task.data["roleContractVersion"],
         "roleContractSha256": task.data["roleContractSha256"],
         "sequence": task.data["sequence"],
         "status": "completed",
@@ -914,7 +901,7 @@ def build_prepared_task_descriptor(
             *common_argv,
         ]
     return {
-        "contractVersion": PREPARED_TASK_CONTRACT_VERSION,
+        "schemaVersion": 1,
         "preparedOnly": True,
         "taskId": task.data["taskId"],
         "taskKind": task.data["taskKind"],
@@ -964,7 +951,7 @@ def build_agent_prompt(
     attempt_dir = task_json.parent
     if task_kind == "annotationDrafting":
         return (
-            "WHITEBOARD_WORKER_PROTOCOL=annotation-elements-v2\n"
+            "WHITEBOARD_WORKER_OPERATION=annotationElements\n"
             f"ROLE_CONTRACT_PATH={role_contract}\n"
             f"ROLE_CONTRACT_SHA256={role_contract_sha256}\n"
             f"TASK_JSON_PATH={task_json}\n"
@@ -1027,8 +1014,8 @@ def build_agent_bundle_prompt(
         raise AgentContractError("prompt", "bundle taskId 不能重复")
 
     blocks = [
-        "TASK_BUNDLE_VERSION=whiteboard-agent-task-bundle-v1",
-        "DISPATCH_PROTOCOL=annotation-unit-complete-v1",
+        "TASK_BUNDLE_KIND=agentTaskBundle",
+        "DISPATCH_OPERATION=annotationUnitComplete",
         "PROCESS_TASKS_IN_SEQUENCE=true",
         "CONTINUE_AFTER_TASK_FAILURE=true",
         "WRITE_RESULT_JSON=false",

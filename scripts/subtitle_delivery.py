@@ -42,13 +42,7 @@ except ImportError:  # pragma: no cover - exercised by command-line entry points
 
 
 DEFAULT_FONT_PATH = Path(r"C:\Windows\Fonts\msyh.ttc")
-STYLE_CONTRACT_VERSION = "subtitle-style-v1"
-BURN_CONTRACT_VERSION = "subtitle-burn-v2"
-FINAL_IDENTITY_CONTRACT_VERSION = "final-media-identity-v1"
-DISABLED_MUX_CONTRACT_VERSION = "disabled-copy-v1"
-
 SUBTITLE_STYLE: dict[str, Any] = {
-    "contractVersion": STYLE_CONTRACT_VERSION,
     "playResX": 1920,
     "playResY": 1080,
     "fontFamily": "Microsoft YaHei",
@@ -65,6 +59,16 @@ SUBTITLE_STYLE: dict[str, Any] = {
     "marginV": 54,
     "maxLines": 2,
     "maxTextWidthPx": 1728,
+}
+SUBTITLE_STYLE_RECIPE: dict[str, Any] = {
+    "algorithm": "ass_subtitle_style",
+    "version": 1,
+    "parameters": SUBTITLE_STYLE,
+}
+DISABLED_MUX_RECIPE: dict[str, Any] = {
+    "algorithm": "copy_video_without_audio",
+    "version": 1,
+    "parameters": {},
 }
 
 _ASS_FILTER_RE = re.compile(r"^\s*[.A-Z]{2,3}\s+ass\s+V->V\b", re.MULTILINE)
@@ -102,7 +106,7 @@ class FontIdentity:
 class CompiledAss:
     content: bytes
     sha256: str
-    style_contract_sha256: str
+    style_recipe_sha256: str
     font: FontIdentity
     cue_count: int
     first_start_ms: int
@@ -344,7 +348,7 @@ def compile_ass(
         raise SubtitleDeliveryError("不能编译空字幕")
     font_identity, font = load_font_identity(font_path)
     style = SUBTITLE_STYLE
-    style_contract_sha = sha256_json(style)
+    style_recipe_sha = sha256_json(SUBTITLE_STYLE_RECIPE)
     header = (
         "[Script Info]\n"
         "; Generated deterministically by srt-whiteboard-animation\n"
@@ -383,7 +387,7 @@ def compile_ass(
     return CompiledAss(
         content=content,
         sha256=hashlib.sha256(content).hexdigest(),
-        style_contract_sha256=style_contract_sha,
+        style_recipe_sha256=style_recipe_sha,
         font=font_identity,
         cue_count=len(cues),
         first_start_ms=int(cues[0]["startMs"]),
@@ -424,41 +428,44 @@ def find_subtitle_gap(
     return None
 
 
-def subtitle_burn_contract(
+def subtitle_burn_recipe(
     *,
     subtitle_preset: str,
-    ass_style_contract_sha256: str,
+    ass_style_recipe_sha256: str,
 ) -> dict[str, Any]:
-    """Build the identity-bearing libx264 subtitle encoding contract."""
+    """Build the identity-bearing libx264 subtitle encoding recipe."""
 
     if not isinstance(subtitle_preset, str) or subtitle_preset not in SUBTITLE_PRESETS:
         allowed = " | ".join(sorted(SUBTITLE_PRESETS))
         raise SubtitleDeliveryError(f"subtitlePreset 必须是以下字符串之一: {allowed}")
     if (
-        not isinstance(ass_style_contract_sha256, str)
-        or len(ass_style_contract_sha256) != 64
-        or any(ch not in "0123456789abcdef" for ch in ass_style_contract_sha256)
+        not isinstance(ass_style_recipe_sha256, str)
+        or len(ass_style_recipe_sha256) != 64
+        or any(ch not in "0123456789abcdef" for ch in ass_style_recipe_sha256)
     ):
-        raise SubtitleDeliveryError("ASS style contract SHA-256 无效")
+        raise SubtitleDeliveryError("ASS style recipe SHA-256 无效")
     return {
-        "contractVersion": BURN_CONTRACT_VERSION,
-        "codec": "libx264",
-        "subtitlePreset": subtitle_preset,
-        "crf": 18,
-        "pixelFormat": "yuv420p",
-        "assStyleContractSha256": ass_style_contract_sha256,
+        "algorithm": "subtitle_burn",
+        "version": 2,
+        "parameters": {
+            "codec": "libx264",
+            "subtitlePreset": subtitle_preset,
+            "crf": 18,
+            "pixelFormat": "yuv420p",
+            "assStyleRecipeSha256": ass_style_recipe_sha256,
+        },
     }
 
 
-def subtitle_burn_contract_sha256(
+def subtitle_burn_recipe_sha256(
     *,
     subtitle_preset: str,
-    ass_style_contract_sha256: str,
+    ass_style_recipe_sha256: str,
 ) -> str:
     return sha256_json(
-        subtitle_burn_contract(
+        subtitle_burn_recipe(
             subtitle_preset=subtitle_preset,
-            ass_style_contract_sha256=ass_style_contract_sha256,
+            ass_style_recipe_sha256=ass_style_recipe_sha256,
         )
     )
 
@@ -469,9 +476,9 @@ def subtitle_identity(
     *,
     subtitle_preset: str = "medium",
 ) -> str:
-    burn_contract_sha = subtitle_burn_contract_sha256(
+    burn_recipe_sha = subtitle_burn_recipe_sha256(
         subtitle_preset=subtitle_preset,
-        ass_style_contract_sha256=compiled.style_contract_sha256,
+        ass_style_recipe_sha256=compiled.style_recipe_sha256,
     )
     return sha256_json(
         {
@@ -480,8 +487,8 @@ def subtitle_identity(
             "sourceFile": selection.relative_path,
             "sourceSha256": selection.sha256,
             "timelineSha256": selection.timeline_sha256,
-            "styleContractSha256": compiled.style_contract_sha256,
-            "burnContractSha256": burn_contract_sha,
+            "styleRecipeSha256": compiled.style_recipe_sha256,
+            "burnRecipeSha256": burn_recipe_sha,
             "subtitlePreset": subtitle_preset,
             "fontSha256": compiled.font.sha256,
             "assSha256": compiled.sha256,
@@ -700,14 +707,14 @@ def compute_final_identity_inputs(
     audio_sha256: str,
     timeline_sha256: str,
     authoritative_subtitle_sha256: str,
-    subtitle_style_contract_sha256: str,
+    subtitle_style_recipe_sha256: str,
     font_sha256: str,
     render_profile_sha256: str,
     timing_plan_sha256: str,
-    mux_contract_version: str,
+    mux_recipe: Mapping[str, Any],
     final_media_sha256: str,
     subtitle_preset: str | None = None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Build the frozen final-media identity payload shared with D2/B2."""
 
     if subtitle_preset is None:
@@ -722,44 +729,63 @@ def compute_final_identity_inputs(
         raise SubtitleDeliveryError(f"subtitlePreset 必须是以下字符串之一: {allowed}")
 
     values = {
-        "contractVersion": FINAL_IDENTITY_CONTRACT_VERSION,
+        "schemaVersion": 1,
+        "kind": "finalMediaIdentity",
         "voiceoverMode": voiceover_mode,
         "cleanVideoSha256": clean_video_sha256,
         "audioSha256": audio_sha256,
         "timelineSha256": timeline_sha256,
         "authoritativeSubtitleSha256": authoritative_subtitle_sha256,
-        "subtitleStyleContractSha256": subtitle_style_contract_sha256,
+        "subtitleStyleRecipeSha256": subtitle_style_recipe_sha256,
         "fontSha256": font_sha256,
         "renderProfileSha256": render_profile_sha256,
         "timingPlanSha256": timing_plan_sha256,
-        "burnContractVersion": BURN_CONTRACT_VERSION,
+        "burnRecipeSha256": subtitle_burn_recipe_sha256(
+            subtitle_preset=subtitle_preset,
+            ass_style_recipe_sha256=subtitle_style_recipe_sha256,
+        ),
         "subtitlePreset": subtitle_preset,
-        "muxContractVersion": mux_contract_version,
+        "muxRecipe": dict(mux_recipe),
         "finalMediaSha256": final_media_sha256,
     }
     if voiceover_mode == "disabled" and audio_sha256 != "":
         raise SubtitleDeliveryError("Disabled final identity 的 audioSha256 必须为空字符串")
-    for key, value in values.items():
+    for key in (
+        "kind",
+        "voiceoverMode",
+        "cleanVideoSha256",
+        "audioSha256",
+        "timelineSha256",
+        "authoritativeSubtitleSha256",
+        "subtitleStyleRecipeSha256",
+        "fontSha256",
+        "renderProfileSha256",
+        "timingPlanSha256",
+        "burnRecipeSha256",
+        "subtitlePreset",
+        "finalMediaSha256",
+    ):
+        value = values[key]
         if not isinstance(value, str) or (key != "audioSha256" and not value):
             raise SubtitleDeliveryError(f"final identity 字段 {key} 必须是非空字符串")
+    if not isinstance(mux_recipe, Mapping) or not mux_recipe:
+        raise SubtitleDeliveryError("final identity muxRecipe 必须是非空对象")
     return values
 
 
-def compute_final_identity(**kwargs: Any) -> tuple[dict[str, str], str]:
+def compute_final_identity(**kwargs: Any) -> tuple[dict[str, Any], str]:
     inputs = compute_final_identity_inputs(**kwargs)
     return inputs, sha256_json(inputs)
 
 
 __all__ = [
     "AuthoritativeSrt",
-    "BURN_CONTRACT_VERSION",
     "CompiledAss",
     "DEFAULT_FONT_PATH",
-    "DISABLED_MUX_CONTRACT_VERSION",
-    "FINAL_IDENTITY_CONTRACT_VERSION",
+    "DISABLED_MUX_RECIPE",
     "FontIdentity",
-    "STYLE_CONTRACT_VERSION",
     "SUBTITLE_STYLE",
+    "SUBTITLE_STYLE_RECIPE",
     "SubtitleDeliveryError",
     "SubtitleStaleError",
     "compile_ass",
@@ -773,8 +799,8 @@ __all__ = [
     "load_font_identity",
     "preflight_subtitles",
     "select_authoritative_srt",
-    "subtitle_burn_contract",
-    "subtitle_burn_contract_sha256",
+    "subtitle_burn_recipe",
+    "subtitle_burn_recipe_sha256",
     "subtitle_identity",
     "wrap_subtitle_text",
 ]

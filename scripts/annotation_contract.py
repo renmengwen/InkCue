@@ -14,12 +14,8 @@ from copy import deepcopy
 from typing import Any
 
 
-VISUAL_ELEMENTS_CONTRACT_V1 = "whiteboard-annotation-visual-elements-v1"
-VISUAL_ELEMENTS_CONTRACT_V2 = "whiteboard-annotation-visual-elements-v2"
-SUPPORTED_VISUAL_ELEMENTS_CONTRACTS = {
-    VISUAL_ELEMENTS_CONTRACT_V1,
-    VISUAL_ELEMENTS_CONTRACT_V2,
-}
+VISUAL_ELEMENTS_SCHEMA_VERSION = 1
+VISUAL_ELEMENTS_KIND = "annotation-visual-elements"
 
 ELEMENT_FIELDS = {
     "id",

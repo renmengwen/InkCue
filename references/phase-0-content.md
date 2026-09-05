@@ -1,7 +1,5 @@
 # Phase 0：主题 / 正文内容与旁白写作
 
-合同版本：`whiteboard-phase-0-content-v1`
-
 本文件是阶段 0 的流程、自然中文旁白和内容草案审阅规则的唯一规范来源。
 `references/content-input.md` 保留脚本/schema 细节，但旁白写法、两遍回读、内容与
 制作方案联合 Gate 以本文为准；视觉拓扑统一见
@@ -32,10 +30,12 @@ lookup、整份或分段重读本文件/`content-input.md`/`subagent-orchestrati
 `voiceoverMode=disabled`。`targetDurationSeconds` 只用于内容预算和 provisional SRT；
 topic/text 的正式时钟由获批真实音频 timeline 接管。
 
+豆包 prompt-only 模式的内容预算同时是外部请求前的硬边界：目标按每秒约 2.8–3.0 个有效中文/字母/数字字符写作，validator 使用每秒 3.2 个字符的宽松上限。明显超限的 candidate 必须在阶段 0 followup 压缩，不能先生成样音或把不可自然朗读的文字硬塞进时间轴提示。
+
 ## 2. 阶段 0 预项目、样音与一次联合 Gate
 
 1. 对正常 topic/text 新任务，coordinator 只运行一次入口已记录的 `python <SKILL_ROOT>\scripts\prepare_env.py --bootstrap-content-draft ...` bootstrap。该单次调用已完成 workspace-access、环境 check、provider/preset/input/draft/task fast-prepare，并输出紧凑 descriptor；它冻结 active provider、具体 preset、合法 managed input、唯一不覆盖既有内容的 `draft-root` 与 attempt descriptor。用户明确要求新任务时不得恢复、覆盖或续接旧 draft/project。派发前不另跑两条 `prepare_env`、provider status、`recommend-visual-style`，不先落 `body-file`、不手写 `content-input.json`、试目录名、搜索源码/tests/examples/CLI `--help`，也不做 memory lookup、reference 或 `prompt-writing.md` 预读。只有用户主动要求浏览模板时才运行 `visual-style-catalog`；浏览不新增选择 Gate。BGM、后续模式和生图方式仍只在能力过滤后的完整句中由联合动作原子冻结。
-2. fast-prepare 返回 descriptor `nextAction=spawn_now` 时，coordinator 立即按当前宿主状态调用 `spawn_agent` 或 `followup`；descriptor 的 canonical `candidateSchema`/`candidateSkeleton`、`agentPrompt` 和 argv 已是充分交接，不再搜索或回读。由 `contentDrafting` child（或同合同 fallback）生成 `whiteboard-content-draft-v1` candidate；child 只读取冻结 task、role contract 和 inputs，不猜字段、不调用 provider、不写正式项目。
+2. fast-prepare 返回 descriptor `nextAction=spawn_now` 时，coordinator 立即按当前宿主状态调用 `spawn_agent` 或 `followup`；descriptor 的 canonical `candidateSchema`/`candidateSkeleton`、`agentPrompt` 和 argv 已是充分交接，不再搜索或回读。由 `contentDrafting` child（或同能力 fallback）生成 `schemaVersion=1` content draft candidate；child 只读取冻结 task、role contract 和 inputs，不猜字段、不调用 provider、不写正式项目。
 3. coordinator 校验 candidate，确定性渲染 review Markdown，确定性派生 source package，并创建 `project.json.initialApproval.status=pending` 的 `pending_initial_approval` 预项目。确认前创建的是受限预项目，不是可执行下游的正式项目。
 4. 预项目中只允许阶段 0 审阅、样音生成/技术验证、草案或 voice/rate 修订与联合批准。coordinator 生成绑定 current content identity、voice plan 与项目的真实样音，向用户交付 review 与不可变样音副本。完整旁白、正式生图、annotation、render、merge、burn、mux、final 必须在入口调用统一 pending guard，不能只依赖 coordinator 记忆。
 5. coordinator 调用 `build_initial_approval_options()` 按当前真实能力生成完整自然语言句子。固定生图方式时必须逐字列出四个旁白通过句；仅当登录态 `image_gen` 与已配置图片供应商同时可用时，才把生图方式并入每条通过句并枚举 BGM × 后续模式 × 生图方式共 8 项。不可用组合不展示，active voice provider 只显示“当前已采用”。另列三条草案/样音定向返工句。传统 `disabled` SRT 不生成样音，使用“字幕与分镜方案通过……”语义。
@@ -56,7 +56,7 @@ topic/text 的正式时钟由获批真实音频 timeline 接管。
 之外的新费用、凭据或服务授权，版权授权，以及必须实质改变已冻结用户意图的修订。冻结计划内的
 正常有界调用与常规返工不打断用户。该选择不引入新 identity、manifest、状态机或专用恢复协议。
 
-## 3. 自然中文旁白（`natural-spoken-zh-v1`）
+## 3. 自然中文旁白规范
 
 规则只约束 `narrationCues[].text`，不改 schema、`coreIdea`、`visualSubject` 或
 `imagePrompt`。旁白应像熟悉主题的人直接解释：现代、简洁、可朗读，优先主语、动词和

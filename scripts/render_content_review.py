@@ -15,7 +15,8 @@ from typing import Any, Mapping
 try:  # direct CLI execution
     from content_source import (
         ContentSourceError,
-        PROVISIONAL_TIMING_VERSION,
+        PROVISIONAL_TIMING_ALGORITHM,
+        PROVISIONAL_TIMING_ALGORITHM_VERSION,
         content_draft_identity,
         validate_content_draft,
     )
@@ -31,7 +32,8 @@ try:  # direct CLI execution
 except ImportError:  # imported as scripts.render_content_review
     from scripts.content_source import (
         ContentSourceError,
-        PROVISIONAL_TIMING_VERSION,
+        PROVISIONAL_TIMING_ALGORITHM,
+        PROVISIONAL_TIMING_ALGORITHM_VERSION,
         content_draft_identity,
         validate_content_draft,
     )
@@ -46,8 +48,7 @@ except ImportError:  # imported as scripts.render_content_review
     )
 
 
-REVIEW_DOCUMENT_CONTRACT_VERSION = "whiteboard-content-review-v1"
-REVIEW_ARTIFACT_CONTRACT_VERSION = "whiteboard-content-review-artifact-v1"
+REVIEW_SCHEMA_VERSION = 1
 _ATTEMPT_RE = re.compile(r"^attempt-[0-9]{4}$")
 
 
@@ -127,7 +128,8 @@ def render_review_markdown(draft: Mapping[str, Any]) -> str:
     }[normalised["voiceoverMode"]]
     lines = [
         "---",
-        f"contractVersion: {REVIEW_DOCUMENT_CONTRACT_VERSION}",
+        f"schemaVersion: {REVIEW_SCHEMA_VERSION}",
+        "kind: content-review",
         f"contentDraftIdentitySha256: {identity}",
         f"inputMode: {normalised['inputMode']}",
         f"rewritePolicy: {normalised['rewritePolicy']}",
@@ -202,7 +204,7 @@ def render_review_markdown(draft: Mapping[str, Any]) -> str:
         [
             "## 时序与确认边界",
             "",
-            f"- provisional SRT 使用 `{PROVISIONAL_TIMING_VERSION}`，按旁白字符与停顿权重在目标时长内确定性分配。",
+            f"- provisional SRT 使用 `{PROVISIONAL_TIMING_ALGORITHM}` 算法第 {PROVISIONAL_TIMING_ALGORITHM_VERSION} 版，参数与输入哈希由 source manifest 冻结。",
             f"- 当前目标时长只用于内容预算与 provisional source SRT；{provider_label} 获批后的真实音频时间轴才是权威时钟。",
             "- 正式字幕将来自获批真实音频时间轴派生的 narration SRT。",
             "- 当前仍待用户完成“内容与制作方案联合确认”；在新流程中，这次确认还必须包含对 pending 预项目 current 样音的试听与联合批准。",
@@ -263,7 +265,8 @@ def create_review_artifact(args: argparse.Namespace) -> dict[str, Any]:
         fixed_image_generation_mode=args.fixed_image_generation_mode,
     )
     return {
-        "contractVersion": REVIEW_ARTIFACT_CONTRACT_VERSION,
+        "schemaVersion": REVIEW_SCHEMA_VERSION,
+        "kind": "content-review-artifact",
         "ok": True,
         "valid": True,
         "writesPerformed": True,
@@ -340,7 +343,8 @@ def main(argv: list[str] | None = None) -> int:
     ):
         _emit(
             {
-                "contractVersion": REVIEW_ARTIFACT_CONTRACT_VERSION,
+                "schemaVersion": REVIEW_SCHEMA_VERSION,
+                "kind": "content-review-artifact",
                 "ok": False,
                 "valid": False,
                 "writesPerformed": False,

@@ -51,8 +51,7 @@ SKILL_ROOT = Path(__file__).resolve().parent.parent
 ASSETS_DIR = SKILL_ROOT / "assets"
 PREVIEW_HTML = ASSETS_DIR / "preview.html"
 DRAWING_HAND = ASSETS_DIR / "drawing-hand.png"
-SERVER_CONTRACT = "whiteboard-preview-server-v1"
-API_CONTRACT = "whiteboard-project-preview-v1"
+PREVIEW_SCHEMA_VERSION = 1
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_ANNOTATION_BYTES = 2 * 1024 * 1024
@@ -173,7 +172,8 @@ class PreviewCatalog:
                 }
             )
         return {
-            "contractVersion": API_CONTRACT,
+            "schemaVersion": PREVIEW_SCHEMA_VERSION,
+            "kind": "project-preview",
             "projectId": project.project_id,
             "projectName": project.metadata["projectName"],
             "sceneCount": len(scenes),
@@ -237,7 +237,8 @@ class PreviewApplication:
 
     def health(self) -> dict[str, Any]:
         return {
-            "contractVersion": SERVER_CONTRACT,
+            "schemaVersion": PREVIEW_SCHEMA_VERSION,
+            "kind": "preview-server-health",
             "status": "ok",
             "workspaceIdentitySha256": self.workspace_identity,
             "tokenIdentitySha256": self.token_identity,
@@ -485,7 +486,8 @@ def ensure_server_and_url(
     if health is None:
         raise PreviewServerError("本地预览服务启动失败或端口不可用")
     if (
-        health.get("contractVersion") != SERVER_CONTRACT
+        health.get("schemaVersion") != PREVIEW_SCHEMA_VERSION
+        or health.get("kind") != "preview-server-health"
         or health.get("workspaceIdentitySha256") != expected_workspace
         or health.get("tokenIdentitySha256") != expected_token
     ):

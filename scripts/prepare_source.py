@@ -24,7 +24,7 @@ PACKAGE_FILES = ("input.json", "source.srt", "generation-plan.json", "manifest.j
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "校验已由用户明确确认的 content-draft-v1，并确定性输出 input.json、"
+            "校验已由用户明确确认的 schemaVersion=1 content draft，并确定性输出 input.json、"
             "source.srt、generation-plan.json 与 manifest.json；本命令不会调用模型或批准草案。"
         )
     )

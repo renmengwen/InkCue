@@ -28,10 +28,9 @@ try:
         write_json_atomic,
     )
     from .subtitle_delivery import (
-        BURN_CONTRACT_VERSION,
         DEFAULT_FONT_PATH,
-        DISABLED_MUX_CONTRACT_VERSION,
-        SUBTITLE_STYLE,
+        DISABLED_MUX_RECIPE,
+        SUBTITLE_STYLE_RECIPE,
         SubtitleDeliveryError,
         SubtitleStaleError,
         build_subtitle_only_clean_master_reuse,
@@ -41,13 +40,13 @@ try:
         find_subtitle_gap,
         preflight_subtitles,
         select_authoritative_srt,
-        subtitle_burn_contract,
-        subtitle_burn_contract_sha256,
+        subtitle_burn_recipe,
+        subtitle_burn_recipe_sha256,
         subtitle_identity,
     )
     from .cover_frame import attach_cover_manifest, attach_cover_review_manifest, cover_record
     from .background_music import (
-        BGM_MIX_CONTRACT_VERSION,
+        BGM_MIX_RECIPE,
         PROVIDER_EMBEDDED_RENDER_MODE,
         BackgroundMusicError,
         load_background_music_plan,
@@ -65,10 +64,9 @@ except ImportError:  # pragma: no cover - direct script execution
         write_json_atomic,
     )
     from subtitle_delivery import (
-        BURN_CONTRACT_VERSION,
         DEFAULT_FONT_PATH,
-        DISABLED_MUX_CONTRACT_VERSION,
-        SUBTITLE_STYLE,
+        DISABLED_MUX_RECIPE,
+        SUBTITLE_STYLE_RECIPE,
         SubtitleDeliveryError,
         SubtitleStaleError,
         build_subtitle_only_clean_master_reuse,
@@ -78,13 +76,13 @@ except ImportError:  # pragma: no cover - direct script execution
         find_subtitle_gap,
         preflight_subtitles,
         select_authoritative_srt,
-        subtitle_burn_contract,
-        subtitle_burn_contract_sha256,
+        subtitle_burn_recipe,
+        subtitle_burn_recipe_sha256,
         subtitle_identity,
     )
     from cover_frame import attach_cover_manifest, attach_cover_review_manifest, cover_record
     from background_music import (
-        BGM_MIX_CONTRACT_VERSION,
+        BGM_MIX_RECIPE,
         PROVIDER_EMBEDDED_RENDER_MODE,
         BackgroundMusicError,
         load_background_music_plan,
@@ -277,16 +275,16 @@ def _media_record(relative_file: str, validation: Mapping[str, Any]) -> dict[str
     return record
 
 
-def _encoding_record(*, subtitle_preset: str, ass_style_contract_sha256: str) -> dict[str, Any]:
-    contract = subtitle_burn_contract(
+def _encoding_record(*, subtitle_preset: str, ass_style_recipe_sha256: str) -> dict[str, Any]:
+    recipe = subtitle_burn_recipe(
         subtitle_preset=subtitle_preset,
-        ass_style_contract_sha256=ass_style_contract_sha256,
+        ass_style_recipe_sha256=ass_style_recipe_sha256,
     )
     return {
-        **contract,
-        "contractSha256": subtitle_burn_contract_sha256(
+        "recipe": recipe,
+        "recipeSha256": subtitle_burn_recipe_sha256(
             subtitle_preset=subtitle_preset,
-            ass_style_contract_sha256=ass_style_contract_sha256,
+            ass_style_recipe_sha256=ass_style_recipe_sha256,
         ),
     }
 
@@ -326,7 +324,7 @@ def _background_music_reuse_binding(project: Project) -> dict[str, Any]:
             "enabled": True,
             "renderMode": PROVIDER_EMBEDDED_RENDER_MODE,
             "provider": plan["provider"],
-            "providerContractVersion": plan["providerContractVersion"],
+            "model": plan["model"],
         }
     return {
         "enabled": True,
@@ -340,7 +338,7 @@ def _background_music_reuse_binding(project: Project) -> dict[str, Any]:
         "fadeInMs": plan["fadeInMs"],
         "fadeOutMs": plan["fadeOutMs"],
         "loop": plan["loop"],
-        "mixContractVersion": BGM_MIX_CONTRACT_VERSION,
+        "mixRecipe": BGM_MIX_RECIPE,
     }
 
 
@@ -446,8 +444,7 @@ def _reuse_current_burn(
         return False
     if (
         not isinstance(style, Mapping)
-        or style.get("contractSha256") != encoding.get("contractSha256")
-        or style.get("assStyleContractSha256") != compiled.style_contract_sha256
+        or style.get("recipeSha256") != compiled.style_recipe_sha256
         or not isinstance(ass, Mapping)
         or ass.get("file") != "subtitles/final.ass"
         or ass.get("sha256") != compiled.sha256
@@ -455,8 +452,8 @@ def _reuse_current_burn(
         or subtitles.get("encoding") != expected_encoding
         or captioned.get("cleanVideoSha256") != clean_validation.get("sha256")
         or captioned.get("subtitleIdentitySha256") != subtitle_identity_sha256
-        or captioned.get("burnContractVersion") != BURN_CONTRACT_VERSION
-        or captioned.get("burnContractSha256") != encoding.get("contractSha256")
+        or captioned.get("burnRecipe") != encoding.get("recipe")
+        or captioned.get("burnRecipeSha256") != encoding.get("recipeSha256")
         or not isinstance(captioned_technical, Mapping)
         or captioned_technical.get("subtitleEncoding") != expected_encoding
     ):
@@ -522,11 +519,11 @@ def _reuse_current_burn(
             audio_sha256="",
             timeline_sha256=selection.timeline_sha256,
             authoritative_subtitle_sha256=selection.sha256,
-            subtitle_style_contract_sha256=str(encoding["contractSha256"]),
+            subtitle_style_recipe_sha256=compiled.style_recipe_sha256,
             font_sha256=compiled.font.sha256,
             render_profile_sha256=project.timing_plan["renderProfileSha256"],
             timing_plan_sha256=_timing_plan_sha(project),
-            mux_contract_version=DISABLED_MUX_CONTRACT_VERSION,
+            mux_recipe=DISABLED_MUX_RECIPE,
             final_media_sha256=str(final_media["sha256"]),
             subtitle_preset=str(encoding["subtitlePreset"]),
         )
@@ -561,7 +558,7 @@ def burn_project(
         raise SubtitleDeliveryError("preflight 与 ASS 编译使用的字体 identity 不一致")
     encoding = _encoding_record(
         subtitle_preset=subtitle_preset,
-        ass_style_contract_sha256=compiled.style_contract_sha256,
+        ass_style_recipe_sha256=compiled.style_recipe_sha256,
     )
     sub_identity = subtitle_identity(
         selection,
@@ -755,9 +752,8 @@ def burn_project(
             "lastEndMs": compiled.last_end_ms,
             "timelineSha256": selection.timeline_sha256,
             "style": {
-                "contractVersion": SUBTITLE_STYLE["contractVersion"],
-                "contractSha256": encoding["contractSha256"],
-                "assStyleContractSha256": compiled.style_contract_sha256,
+                "recipe": SUBTITLE_STYLE_RECIPE,
+                "recipeSha256": compiled.style_recipe_sha256,
                 "font": {
                     "family": compiled.font.family,
                     "file": compiled.font.file_name,
@@ -783,8 +779,8 @@ def burn_project(
             **_media_record("output/final-subtitled-video-only.mp4", caption_validation),
             "cleanVideoSha256": clean_validation["sha256"],
             "subtitleIdentitySha256": sub_identity,
-            "burnContractVersion": BURN_CONTRACT_VERSION,
-            "burnContractSha256": encoding["contractSha256"],
+            "burnRecipe": encoding["recipe"],
+            "burnRecipeSha256": encoding["recipeSha256"],
         }
         manifest["timingPlan"] = current_timing
         manifest["cleanVideo"] = refreshed_clean
@@ -797,11 +793,11 @@ def burn_project(
                 audio_sha256="",
                 timeline_sha256=selection.timeline_sha256,
                 authoritative_subtitle_sha256=selection.sha256,
-                subtitle_style_contract_sha256=encoding["contractSha256"],
+                subtitle_style_recipe_sha256=compiled.style_recipe_sha256,
                 font_sha256=compiled.font.sha256,
                 render_profile_sha256=project.timing_plan["renderProfileSha256"],
                 timing_plan_sha256=timing_sha,
-                mux_contract_version=DISABLED_MUX_CONTRACT_VERSION,
+                mux_recipe=DISABLED_MUX_RECIPE,
                 final_media_sha256=final_validation["sha256"],
                 subtitle_preset=subtitle_preset,
             )

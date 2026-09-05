@@ -11,7 +11,8 @@ from urllib.parse import quote
 from project_workspace import Project, sha256_file, sha256_json, write_json_atomic
 
 
-LINE_ART_REVIEW_CONTRACT = "whiteboard-line-art-review-v1"
+LINE_ART_REVIEW_SCHEMA_VERSION = 1
+LINE_ART_REVIEW_KIND = "line-art-review"
 LINE_ART_REVIEW_MANIFEST = "manifests/line-art-review-manifest.json"
 
 
@@ -113,7 +114,8 @@ def _identity_payload(
 
     canvas = project.plan["outputCanvas"]
     return {
-        "contractVersion": LINE_ART_REVIEW_CONTRACT,
+        "schemaVersion": LINE_ART_REVIEW_SCHEMA_VERSION,
+        "kind": LINE_ART_REVIEW_KIND,
         "projectId": project.project_id,
         "generationPlanSha256": sha256_file(project.plan_path),
         "generationManifestSha256": sha256_file(generation_manifest_path),
@@ -140,7 +142,8 @@ def render_line_art_review_markdown(
     )
     lines = [
         "---",
-        f"contractVersion: {LINE_ART_REVIEW_CONTRACT}",
+        f"schemaVersion: {LINE_ART_REVIEW_SCHEMA_VERSION}",
+        f"kind: {LINE_ART_REVIEW_KIND}",
         f"projectId: {project.project_id}",
         f"lineArtReviewIdentitySha256: {identity_hash}",
         f"sceneCount: {len(identity_payload['scenes'])}",
@@ -209,7 +212,8 @@ def create_line_art_review(
     review_bytes = render_line_art_review_markdown(project, payload, identity).encode("utf-8")
     _write_bytes_atomic_once(review_path, review_bytes)
     technical = {
-        "contractVersion": LINE_ART_REVIEW_CONTRACT,
+        "schemaVersion": LINE_ART_REVIEW_SCHEMA_VERSION,
+        "kind": LINE_ART_REVIEW_KIND,
         "status": "current_technical",
         "identityHash": identity,
         "identityPayload": payload,
@@ -223,7 +227,8 @@ def create_line_art_review(
     }
     write_json_atomic(project.path(LINE_ART_REVIEW_MANIFEST), technical)
     return {
-        "contractVersion": LINE_ART_REVIEW_CONTRACT,
+        "schemaVersion": LINE_ART_REVIEW_SCHEMA_VERSION,
+        "kind": LINE_ART_REVIEW_KIND,
         "lineArtReviewIdentitySha256": identity,
         "reviewFile": review_relative,
         "manifestFile": LINE_ART_REVIEW_MANIFEST,
@@ -234,8 +239,9 @@ def create_line_art_review(
 
 
 __all__ = [
-    "LINE_ART_REVIEW_CONTRACT",
+    "LINE_ART_REVIEW_KIND",
     "LINE_ART_REVIEW_MANIFEST",
+    "LINE_ART_REVIEW_SCHEMA_VERSION",
     "LineArtReviewError",
     "create_line_art_review",
     "render_line_art_review_markdown",

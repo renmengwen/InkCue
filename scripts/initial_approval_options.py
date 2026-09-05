@@ -11,9 +11,6 @@ import re
 from typing import Any, Mapping, Sequence
 
 
-OPTIONS_CONTRACT_VERSION = "whiteboard-initial-approval-options-v1"
-CHOICE_CONTRACT_VERSION = "whiteboard-initial-approval-choice-v1"
-
 _VOICEOVER_MODES = {"edge-tts", "minimax", "doubao", "disabled"}
 _IMAGE_GENERATION_MODES = {"provider", "gpt-login"}
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -44,7 +41,7 @@ def _choice(
     requires_feedback: bool = False,
 ) -> dict[str, Any]:
     return {
-        "contractVersion": OPTIONS_CONTRACT_VERSION,
+        "schemaVersion": 1,
         "number": number,
         "choiceId": choice_id,
         "action": action,
@@ -258,7 +255,7 @@ def _validated_options(options: Sequence[Mapping[str, Any]]) -> tuple[Mapping[st
     seen_ids: set[str] = set()
     validated: list[Mapping[str, Any]] = []
     required = {
-        "contractVersion",
+        "schemaVersion",
         "number",
         "choiceId",
         "action",
@@ -274,8 +271,8 @@ def _validated_options(options: Sequence[Mapping[str, Any]]) -> tuple[Mapping[st
     for option in options:
         if not isinstance(option, Mapping) or set(option) != required:
             raise InitialApprovalOptionError("option 字段不符合 allowlist")
-        if option["contractVersion"] != OPTIONS_CONTRACT_VERSION:
-            raise InitialApprovalOptionError("option contractVersion 不匹配")
+        if option["schemaVersion"] != 1:
+            raise InitialApprovalOptionError("option schemaVersion 必须为 1")
         number = option["number"]
         text = option["text"]
         choice_id = option["choiceId"]
@@ -351,7 +348,7 @@ def parse_initial_approval_response(
     )
     requires_feedback = bool(option["requiresFeedback"])
     return {
-        "contractVersion": CHOICE_CONTRACT_VERSION,
+        "schemaVersion": 1,
         "choiceId": option["choiceId"],
         "optionNumber": option["number"],
         "action": option["action"],

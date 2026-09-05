@@ -23,8 +23,6 @@ try:  # direct CLI execution
     from agent_task_contract import (
         CONTENT_DRAFT_CANDIDATE_SCHEMA,
         CONTENT_DRAFT_CANDIDATE_SKELETON,
-        ROLE_CONTRACT_VERSION,
-        TASK_CONTRACT_VERSION,
         TrustedTaskContext,
         build_prepared_task_descriptor,
         sha256_file,
@@ -54,8 +52,6 @@ except ImportError:  # imported as scripts.prepare_draft_agent_task
     from scripts.agent_task_contract import (
         CONTENT_DRAFT_CANDIDATE_SCHEMA,
         CONTENT_DRAFT_CANDIDATE_SKELETON,
-        ROLE_CONTRACT_VERSION,
-        TASK_CONTRACT_VERSION,
         TrustedTaskContext,
         build_prepared_task_descriptor,
         sha256_file,
@@ -83,9 +79,6 @@ except ImportError:  # imported as scripts.prepare_draft_agent_task
     from scripts.srt_timeline import SrtValidationError, group_scenes, parse_srt
 
 
-PREPARE_CONTRACT_VERSION = "whiteboard-draft-agent-prepare-v2"
-CONTENT_INPUT_CONTRACT_VERSION = "whiteboard-content-input-v1"
-CONTENT_REVISION_REQUEST_CONTRACT_VERSION = "whiteboard-content-revision-request-v1"
 HOST_DRAFT_CAPABILITIES = ("readFiles", "writeCandidateJson")
 _DRIVE_PATH_RE = re.compile(r"(?i)(?:^|\s)[a-z]:[\\/]")
 _ABSOLUTE_PATH_RE = re.compile(
@@ -104,7 +97,7 @@ _SAFE_ERROR_MESSAGES = {
     ),
     "input_unreadable": "输入文件不存在、不可读，或不是有效的 UTF-8 JSON/SRT。",
     "content_input_invalid": (
-        "content input 不符合 whiteboard-content-input-v1 或 activeProvider 绑定要求。"
+        "content input 不符合 schemaVersion=1 或 activeProvider 绑定要求。"
     ),
     "revision_input_invalid": "修订输入、上一版草案或二者的 identity 绑定无效。",
     "storyboard_input_invalid": "传统 SRT 输入或分幕时长参数无效。",
@@ -117,11 +110,12 @@ _SAFE_ERROR_MESSAGES = {
 CONTENT_ROLE_CONTRACT = """# contentDrafting frozen role contract
 
 - 只读取 task.json 的 inputs；正文不从 prompt 或主对话补取。
-- 根据 content-input.json 生成完整 whiteboard-content-draft-v1：自然中文旁白、连续 cue/scene、自包含的单幕 imagePrompt。
+- 根据 content-input.json 生成 `schemaVersion=1` 的完整 content draft：自然中文旁白、连续 cue/scene、自包含的单幕 imagePrompt。
 - task.json 已冻结具体 visualStylePreset、显示名、完整 promptRecipe 与配方 SHA；必须实际消费该模板，并在 candidate 顶层原样写入同一个 visualStylePreset。不得输出 auto，也不得自行改选模板。
-- topic 只允许 generate；text 只允许 preserve/polish；voiceoverMode 必须由 skill 根目录
-  config/voice-providers.local.json 的 activeProvider 派生，不能由用户或调用方选择。
+- topic 只允许 generate；text 只允许 preserve/polish；voiceoverMode 直接复制冻结的
+  content-input.json，不得读取 skill 根目录的 provider 配置。
 - text+preserve 不改写语义；polish 不改变事实、数字、人物、结论、因果强度或责任主体。
+- voiceoverMode=doubao 时按 targetDurationSeconds 规划自然朗读体量，目标约 2.8–3.0 个有效中文/字母/数字字符每秒，硬上限 3.2；超出时优先压缩重复修饰，保留人物、事实、因果、关键意象与结论。
 - 每个 imagePrompt 必须自含当前 `warm-paper-stream-v1` 共享的 `#F5EBD7` 画布 surface、冻结 promptRecipe 的线条/造型/配色/纹理语言、主体、构图、留白和禁水印要求，不引用前图；不得额外套用默认“极简黑色白板线稿”去覆盖所选模板。语义需要的画内文字可以出现，但须写明准确内容并避免乱码或意外文字。
 - 每个 imagePrompt 都必须以 task 中冻结的 promptRecipe 为视觉权威，同时保持当前 renderer 的共享画布与流式揭示可消费性；global 配方不能替代单幕自包含要求。
 - cue 到 scene 按视觉状态变化拆分，不按具体名词类别机械拆分；允许通过增加 scene 降低单图叙事负担，但不得预设固定场景数量。
@@ -138,9 +132,10 @@ CONTENT_REVISION_ROLE_CONTRACT = """# contentDrafting frozen revision role contr
 - 只读取 task.json 的 inputs；不得从 prompt 或主对话补取正文、上一版草案或修改要求。
 - base.content-draft.json 是上一版只读候选；revision-request.json 是本 attempt 唯一修改要求。两者都不得改写。
 - task.json 已冻结本 attempt 的具体 visualStylePreset、显示名、完整 promptRecipe 与配方 SHA；candidate 顶层必须原样写入该 visualStylePreset。模板若与 base 不同，应把全部 imagePrompt 调整为本 attempt 的冻结配方；不得静默沿用旧模板或输出 auto。
-- 输出完整的 whiteboard-content-draft-v1，不输出 patch；未被修改要求触及的事实、数字、人物、结论、因果强度、责任主体、cue/scene 内容与图片约束应保持不变。
+- 输出 `schemaVersion=1` 的完整 content draft，不输出 patch；未被修改要求触及的事实、数字、人物、结论、因果强度、责任主体、cue/scene 内容与图片约束应保持不变。
 - globalInstructions、cueChanges、sceneChanges 是要执行的修改；mustPreserve 是修改时必须继续满足的保护条件。
 - cue/scene 可因修改需要重新编号或调整映射，但最终仍须满足连续 cue、连续 scene 和每幕至少一个 cue 的完整合同。
+- voiceoverMode=doubao 时修订稿仍须满足 targetDurationSeconds 的自然朗读预算：目标约 2.8–3.0 个有效中文/字母/数字字符每秒，硬上限 3.2。
 - 每个 imagePrompt 必须自含当前 `warm-paper-stream-v1` 共享的 `#F5EBD7` 画布 surface、冻结 promptRecipe 的线条/造型/配色/纹理语言、主体、构图、留白和禁水印要求，不引用前图；不得额外套用默认“极简黑色白板线稿”去覆盖所选模板。语义需要的画内文字可以出现，但须写明准确内容并避免乱码或意外文字。
 - 每个 imagePrompt 都必须以 task 中冻结的 promptRecipe 为视觉权威，同时保持当前 renderer 的共享画布与流式揭示可消费性；global 配方不能替代单幕自包含要求。
 - cue 到 scene 按视觉状态变化拆分，不按具体名词类别机械拆分；允许通过增加 scene 降低单图叙事负担，但不得预设固定场景数量。
@@ -227,7 +222,8 @@ def _safe_failure(reason_code: str) -> dict[str, Any]:
         else "draft_agent_prepare_invalid"
     )
     return {
-        "contractVersion": PREPARE_CONTRACT_VERSION,
+        "schemaVersion": 1,
+        "operation": "prepareDraftAgentTask",
         "ok": False,
         "exitCode": 2,
         "error": "draft_agent_prepare_invalid",
@@ -269,17 +265,17 @@ def validate_content_input(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise PrepareError("content input 顶层必须是对象")
     required = {
-        "schemaVersion", "contractVersion", "inputMode", "topic", "body",
+        "schemaVersion", "inputMode", "topic", "body",
         "rewritePolicy", "targetDurationSeconds", "visualStylePreset",
     }
     allowed = required | {"voiceoverMode"}
     if set(value) - allowed or not required.issubset(value):
         raise PrepareError(
-            "content input 字段必须与 whiteboard-content-input-v1 完全一致；"
+            "content input 字段必须与 schemaVersion=1 的结构完全一致；"
             "voiceoverMode 由 activeProvider 自动派生"
         )
-    if value.get("schemaVersion") != 1 or value.get("contractVersion") != CONTENT_INPUT_CONTRACT_VERSION:
-        raise PrepareError("content input 合同版本无效")
+    if value.get("schemaVersion") != 1:
+        raise PrepareError("content input schemaVersion 必须为 1")
     mode = value.get("inputMode")
     policy = value.get("rewritePolicy")
     if mode == "topic" and policy != "generate":
@@ -324,7 +320,6 @@ def validate_content_input(value: Any) -> dict[str, Any]:
         raise PrepareError("visualStylePreset 必须是注册表中的具体模板 ID") from exc
     return {
         "schemaVersion": 1,
-        "contractVersion": CONTENT_INPUT_CONTRACT_VERSION,
         "inputMode": mode,
         "topic": topic,
         "body": body,
@@ -399,7 +394,6 @@ def _build_fast_content_input(
         normalised = validate_content_input(
             {
                 "schemaVersion": 1,
-                "contractVersion": CONTENT_INPUT_CONTRACT_VERSION,
                 "inputMode": mode,
                 "topic": topic,
                 "body": body,
@@ -484,7 +478,6 @@ def validate_revision_request(
         raise PrepareError("revision request 顶层必须是对象")
     expected = {
         "schemaVersion",
-        "contractVersion",
         "baseContentDraftIdentitySha256",
         "globalInstructions",
         "cueChanges",
@@ -495,8 +488,6 @@ def validate_revision_request(
         raise PrepareError("revision request 字段必须与合同完全一致")
     if value.get("schemaVersion") != 1:
         raise PrepareError("revision request schemaVersion 必须为 1")
-    if value.get("contractVersion") != CONTENT_REVISION_REQUEST_CONTRACT_VERSION:
-        raise PrepareError("revision request contractVersion 无效")
     base_identity = value.get("baseContentDraftIdentitySha256")
     if not isinstance(base_identity, str) or _SHA256_RE.fullmatch(base_identity) is None:
         raise PrepareError("baseContentDraftIdentitySha256 必须是小写 SHA-256")
@@ -536,7 +527,6 @@ def validate_revision_request(
         raise PrepareError("revision request 文本总量超过 128 KiB UTF-8")
     return {
         "schemaVersion": 1,
-        "contractVersion": CONTENT_REVISION_REQUEST_CONTRACT_VERSION,
         "baseContentDraftIdentitySha256": base_identity,
         "globalInstructions": global_instructions,
         "cueChanges": cue_changes,
@@ -858,11 +848,10 @@ def prepare_draft_task(args: argparse.Namespace) -> dict[str, Any]:
     )
     candidate = context.task_dir / candidate_name
     task_data = {
-        "contractVersion": TASK_CONTRACT_VERSION,
+        "schemaVersion": 1,
         "taskId": task_id,
         "taskKind": args.role,
         "scopeKind": "draft",
-        "roleContractVersion": ROLE_CONTRACT_VERSION,
         "roleContractSha256": sha256_file(role_contract),
         "attempt": args.attempt,
         "sequence": 1,
@@ -891,7 +880,8 @@ def prepare_draft_task(args: argparse.Namespace) -> dict[str, Any]:
     task = validate_agent_task(context.task_json, context, expected_current_bindings=bindings)
     prepared_task = build_prepared_task_descriptor(task, result_writer="coordinator")
     return {
-        "contractVersion": PREPARE_CONTRACT_VERSION,
+        "schemaVersion": 1,
+        "operation": "prepareDraftAgentTask",
         "ok": True,
         "preparedOnly": True,
         "formalWritesAllowed": False,
@@ -940,10 +930,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-id", help="稳定 run ID；默认自动生成")
     parser.add_argument("--task-id", help="稳定 task ID；默认按 role 生成")
     parser.add_argument("--attempt", type=int, default=1, help="attempt 正整数，默认 1")
-    parser.add_argument("--content-input", help="contentDrafting 的 whiteboard-content-input-v1 JSON")
+    parser.add_argument("--content-input", help="contentDrafting 的 schemaVersion=1 输入 JSON")
     parser.add_argument(
         "--revision-request",
-        help="contentDrafting 修订的 whiteboard-content-revision-request-v1 JSON",
+        help="contentDrafting 修订的 schemaVersion=1 请求 JSON",
     )
     parser.add_argument(
         "--base-content-draft",

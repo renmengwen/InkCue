@@ -56,6 +56,9 @@ def load_voice_provider_config(*, provider_id: str | None = None, root: Path | N
     config = copy.deepcopy(value["providers"][key])
     if not isinstance(config, dict):
         raise VoiceProviderConfigError("active provider 配置必须是对象")
+    # 旧 local 文件中的内部 contractVersion 不再参与配置或控制流。
+    # 兼容性只体现在忽略该冗余字段，不迁移也不把它写入任何 artifact。
+    config.pop("contractVersion", None)
     normalized = key.lower()
     config["id"] = normalized
     config["configKey"] = key
@@ -96,15 +99,11 @@ def load_voice_provider_config(*, provider_id: str | None = None, root: Path | N
             )
         if config.get("protocol") != "Doubao":
             raise VoiceProviderConfigError("豆包 protocol 必须为 Doubao")
-        for field in ("voice", "language", "model"):
+        for field in ("language", "model"):
             if not isinstance(config.get(field), str) or not config[field].strip():
                 raise VoiceProviderConfigError(f"豆包 {field} 必须是非空字符串")
         if config["model"] != "seed-audio-1.0":
             raise VoiceProviderConfigError("豆包 model 当前只允许 seed-audio-1.0")
-        if config.get("contractVersion") != "doubao-seed-audio-expressive-native-word-v2":
-            raise VoiceProviderConfigError(
-                "豆包 contractVersion 与当前 Seed Audio v2 合同不匹配"
-            )
         if config.get("outputFormat") != "audio-24khz-mono-wav":
             raise VoiceProviderConfigError(
                 "豆包 outputFormat 必须为 audio-24khz-mono-wav"
@@ -149,6 +148,8 @@ def load_voice_provider_config(*, provider_id: str | None = None, root: Path | N
         config["endpoint"] = endpoint
         config["queueIntervalMs"] = queue_interval_ms
         config["requestTimeoutSeconds"] = float(timeout_seconds)
+        config.pop("voice", None)
+        config["voiceControlMode"] = "text_prompt"
     return config
 
 
@@ -187,7 +188,7 @@ def voice_provider_status(*, root: Path | None = None) -> dict[str, Any]:
         raise VoiceProviderConfigError(
             "activeProvider 只允许 edge-tts、MiniMax 或 doubao"
         )
-    voice = config.get("voice")
+    voice = "text-prompt-authored" if provider == "doubao" else config.get("voice")
     model = config.get("model")
     if not isinstance(voice, str) or not voice.strip():
         raise VoiceProviderConfigError("active provider voice 必须是非空字符串")
@@ -200,13 +201,16 @@ def voice_provider_status(*, root: Path | None = None) -> dict[str, Any]:
     credentials_configured = provider == "edge-tts" or (
         isinstance(config.get("apiKey"), str) and bool(config["apiKey"].strip())
     )
-    return {
+    result = {
         "provider": provider,
         "model": model,
         "voice": voice,
         "rate": rate,
         "credentialsConfigured": credentials_configured,
     }
+    if provider == "doubao":
+        result["voiceControlMode"] = "text_prompt"
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:

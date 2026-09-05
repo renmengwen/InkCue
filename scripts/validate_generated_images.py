@@ -16,8 +16,6 @@ from PIL import Image, UnidentifiedImageError
 from cover_review import CoverReviewError, load_cover_review
 
 from agent_task_contract import (
-    ROLE_CONTRACT_VERSION,
-    TASK_CONTRACT_VERSION,
     AgentContractError,
     TrustedTaskContext,
     ValidatedAgentResult,
@@ -46,7 +44,7 @@ VISUAL_REVIEW_ROLE_CONTRACT = """# visualReview frozen role contract
 - 只读 task.json 列出的 generation plan、generation manifest 与 current PNG。
 - 必须真实查看全部图片并保持跨幕人物、配色、纸张和构图的全局视野。
 - 只写 findings.json；不得写 result.json、修改图片、调用 provider、写 manifest 或批准。result 由 coordinator 确定性生成。
-- findings.json 顶层严格使用 whiteboard-visual-review-findings-v1：只含 contractVersion、sceneOrder、findings、approvalWritten=false；每条 finding 必须带冻结 sceneOrder 内的 sceneId 和 message/summary，同一幕最多一条并按 scene 顺序。
+- findings.json 顶层严格使用 schemaVersion=1：只含 schemaVersion、sceneOrder、findings、approvalWritten=false；每条 finding 必须带冻结 sceneOrder 内的 sceneId 和 message/summary，同一幕最多一条并按 scene 顺序。
 - 写完 findings.json 后立即以 candidate_ready 返回；不得搜索源码、测试、examples、其他 reference 或 CLI help，也不得自行运行 coordinator validator。
 - 按 generation plan 的 constraints.forbidText 核对文字策略：false 时不得因图片含文字而判错，
   只检查语义所需文字是否清晰、正确并避免乱码或意外文字；true 时才检查 scene 源图禁字。
@@ -246,11 +244,10 @@ def create_visual_review_task(
     if cover_review is not None:
         current_bindings["coverManifestSha256"] = cover_review["manifestSha256"]
     task_data = {
-        "contractVersion": TASK_CONTRACT_VERSION,
+        "schemaVersion": 1,
         "taskId": context.task_id,
         "taskKind": "visualReview",
         "scopeKind": "project",
-        "roleContractVersion": ROLE_CONTRACT_VERSION,
         "roleContractSha256": agent_sha256_file(role_contract),
         "attempt": 1,
         "sequence": 1,
@@ -339,7 +336,7 @@ def record_visual_review_fallback(
         normalized_findings.append(normalized)
     findings_path = task.context.task_dir / "findings.json"
     finding_document = {
-        "contractVersion": "whiteboard-visual-review-findings-v1",
+        "schemaVersion": 1,
         "sceneOrder": scene_order,
         "findings": findings,
         "approvalWritten": False,

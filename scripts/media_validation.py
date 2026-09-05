@@ -17,9 +17,14 @@ from typing import Any, Mapping
 import validation_receipts
 
 
-MEDIA_VALIDATION_CONTRACT_VERSION = "media-validation-v2"
-DEEP_MEDIA_RECEIPT_CONTRACT_VERSION = "media-deep-receipt-v1"
-FRAME_COUNT_EVIDENCE = "decoded_frames_v1"
+MEDIA_VALIDATOR_ID = "media-validation"
+MEDIA_VALIDATOR_VERSION = 2
+MEDIA_VALIDATION_SCHEMA_VERSION = 1
+MEDIA_VALIDATION_KIND = "media-validation"
+FRAME_COUNT_EVIDENCE = {
+    "algorithm": "ffmpeg-progress-frame-count",
+    "version": 1,
+}
 
 
 class MediaValidationError(ValueError):
@@ -307,20 +312,24 @@ def _receipt_can_bind(value: Mapping[str, Any], probe: Mapping[str, Any]) -> boo
         raise MediaValidationError(str(exc)) from exc
     if not receipt_read.current_contract:
         return False
-    receipt_contract = receipt_read.receipt.get("validatorContract")
-    if not isinstance(receipt_contract, str):
-        raise MediaValidationError("媒体 candidate receipt validator contract 无效")
+    validator = receipt_read.receipt.get("validator")
+    if not isinstance(validator, Mapping):
+        raise MediaValidationError("媒体 candidate receipt validator 无效")
     try:
         validation_receipts.validate_candidate_receipt(
             receipt_read.receipt,
             expected_candidate_sha256=probe.get("sha256"),
             expected_candidate_bytes=probe.get("bytes"),
             expected_format="MP4",
-            expected_validator_contract=receipt_contract,
+            expected_validator_id=str(validator.get("id") or ""),
+            expected_validator_version=validator.get("version"),
         )
     except validation_receipts.ReceiptValidationError as exc:
         raise MediaValidationError(str(exc)) from exc
-    return receipt_contract == MEDIA_VALIDATION_CONTRACT_VERSION
+    return dict(validator) == {
+        "id": MEDIA_VALIDATOR_ID,
+        "version": MEDIA_VALIDATOR_VERSION,
+    }
 
 
 def _validate_deep_receipt_binding(
@@ -334,15 +343,14 @@ def _validate_deep_receipt_binding(
             expected_candidate_sha256=probe.get("sha256"),
             expected_candidate_bytes=probe.get("bytes"),
             expected_format="MP4",
-            expected_validator_contract=MEDIA_VALIDATION_CONTRACT_VERSION,
+            expected_validator_id=MEDIA_VALIDATOR_ID,
+            expected_validator_version=MEDIA_VALIDATOR_VERSION,
         )
     except validation_receipts.ReceiptValidationError as exc:
         raise MediaValidationError(str(exc)) from exc
     evidence = receipt.get("evidence")
     if not isinstance(evidence, Mapping):
         raise MediaValidationError("媒体 candidate receipt evidence 无效")
-    if evidence.get("legacyContractVersion") != DEEP_MEDIA_RECEIPT_CONTRACT_VERSION:
-        raise MediaValidationError("媒体 deep receipt compatibility contract 已 stale")
     if evidence.get("durationMs") != probe.get("durationMs"):
         raise MediaValidationError("媒体 duration 与 deep receipt binding 不一致")
     if evidence.get("streams") != probe.get("streams"):
@@ -370,17 +378,6 @@ def _validate_deep_receipt_binding(
     decoded = evidence.get("decodedFrameCount")
     if isinstance(decoded, bool) or not isinstance(decoded, int) or decoded <= 0:
         raise MediaValidationError("媒体 deep receipt decodedFrameCount 无效")
-    if (
-        receipt_value.get("contractVersion") == DEEP_MEDIA_RECEIPT_CONTRACT_VERSION
-        and isinstance(receipt_value.get("candidateReceipt"), Mapping)
-    ):
-        for key, expected in evidence.items():
-            if key == "legacyContractVersion":
-                continue
-            if key in receipt_value and receipt_value.get(key) != expected:
-                if key == "validatorContractVersion":
-                    raise MediaValidationError("媒体 validator contract version 已 stale")
-                raise MediaValidationError(f"媒体 deep receipt {key} 兼容视图已 stale")
     return decoded
 
 
@@ -396,21 +393,25 @@ def _validated_media_result(
 ) -> dict[str, Any]:
     result = copy.deepcopy(dict(probe))
     result["decodedFrameCount"] = decoded_frame_count
-    result["frameCountEvidence"] = FRAME_COUNT_EVIDENCE
+    result["frameCountEvidence"] = copy.deepcopy(FRAME_COUNT_EVIDENCE)
     result["streams"]["video"][0]["frameCount"] = decoded_frame_count
     result["validation"] = {
-        "contractVersion": MEDIA_VALIDATION_CONTRACT_VERSION,
+        "schemaVersion": MEDIA_VALIDATION_SCHEMA_VERSION,
+        "kind": MEDIA_VALIDATION_KIND,
+        "validator": {
+            "id": MEDIA_VALIDATOR_ID,
+            "version": MEDIA_VALIDATOR_VERSION,
+        },
         "validated": True,
         "validationMode": mode,
         "expectedFrameCount": expected_frame_count,
         "expectedAudioStreams": expected_audio_streams,
         "renderProfileSha256": _render_profile_sha256(render_profile),
         "decodedFrameCount": decoded_frame_count,
-        "frameCountEvidence": FRAME_COUNT_EVIDENCE,
+        "frameCountEvidence": copy.deepcopy(FRAME_COUNT_EVIDENCE),
         "containerNbFrames": result["streams"]["video"][0].get("containerNbFrames"),
         "fullDecode": True,
-        "candidateReceipt": copy.deepcopy(dict(_receipt_from(deep_receipt))),
-        "deepReceipt": copy.deepcopy(dict(deep_receipt)),
+        "receipt": copy.deepcopy(dict(_receipt_from(deep_receipt))),
     }
     return result
 
@@ -454,9 +455,7 @@ def validate_video(
         decode = full_decode(path, probe=probe)
         decoded = decode["decodedFrameCount"]
         video = probe["streams"]["video"][0]
-        legacy_evidence = {
-            "legacyContractVersion": DEEP_MEDIA_RECEIPT_CONTRACT_VERSION,
-            "validatorContractVersion": MEDIA_VALIDATION_CONTRACT_VERSION,
+        evidence = {
             "durationMs": probe["durationMs"],
             "formatName": probe["formatName"],
             "streams": copy.deepcopy(probe["streams"]),
@@ -468,7 +467,7 @@ def validate_video(
             "videoDurationMs": video["durationMs"],
             "containerNbFrames": video.get("containerNbFrames"),
             "decodedFrameCount": decoded,
-            "frameCountEvidence": FRAME_COUNT_EVIDENCE,
+            "frameCountEvidence": copy.deepcopy(FRAME_COUNT_EVIDENCE),
             "fullDecode": {"passed": True, "progressEnd": True},
         }
         candidate_receipt = validation_receipts.build_candidate_receipt(
@@ -476,17 +475,11 @@ def validate_video(
             candidate_bytes=probe["bytes"],
             decoded=True,
             format="MP4",
-            validator_contract=MEDIA_VALIDATION_CONTRACT_VERSION,
-            evidence=legacy_evidence,
+            validator_id=MEDIA_VALIDATOR_ID,
+            validator_version=MEDIA_VALIDATOR_VERSION,
+            evidence=evidence,
         )
-        receipt = {
-            "candidateReceipt": candidate_receipt,
-            "contractVersion": DEEP_MEDIA_RECEIPT_CONTRACT_VERSION,
-            "validatorContractVersion": MEDIA_VALIDATION_CONTRACT_VERSION,
-            "mediaSha256": probe["sha256"],
-            "bytes": probe["bytes"],
-            **{key: copy.deepcopy(value) for key, value in legacy_evidence.items() if key != "legacyContractVersion"},
-        }
+        receipt = candidate_receipt
         mode = "deep"
     _validate_video_contract(
         probe,
@@ -580,7 +573,7 @@ def full_decode(
         raise MediaValidationError("媒体在完整解码期间发生变化")
     return {
         "decodedFrameCount": decoded,
-        "frameCountEvidence": FRAME_COUNT_EVIDENCE,
+        "frameCountEvidence": copy.deepcopy(FRAME_COUNT_EVIDENCE),
         "fullDecode": {"passed": True, "progressEnd": True},
     }
 
@@ -601,8 +594,11 @@ def bind_validated_video(
         raise MediaValidationError(str(exc)) from exc
     if not receipt_read.current_contract:
         raise MediaValidationError("媒体 binding 缺少 current candidate receipt")
-    if receipt_read.receipt.get("validatorContract") != MEDIA_VALIDATION_CONTRACT_VERSION:
-        raise MediaValidationError("媒体 validator contract version 已 stale")
+    if receipt_read.receipt.get("validator") != {
+        "id": MEDIA_VALIDATOR_ID,
+        "version": MEDIA_VALIDATOR_VERSION,
+    }:
+        raise MediaValidationError("媒体 validator 版本已 stale")
 
     return validate_video(
         path,
@@ -644,9 +640,11 @@ def atomic_publish(candidate: str | Path, destination: str | Path) -> None:
 
 
 __all__ = [
-    "DEEP_MEDIA_RECEIPT_CONTRACT_VERSION",
     "FRAME_COUNT_EVIDENCE",
-    "MEDIA_VALIDATION_CONTRACT_VERSION",
+    "MEDIA_VALIDATION_KIND",
+    "MEDIA_VALIDATION_SCHEMA_VERSION",
+    "MEDIA_VALIDATOR_ID",
+    "MEDIA_VALIDATOR_VERSION",
     "MediaValidationError",
     "probe_media",
     "validate_video",

@@ -1,7 +1,5 @@
 # Codex Subagent 编排合同
 
-合同版本：`whiteboard-subagent-orchestration-v1`
-
 本合同定义 coordinator 如何以 artifact-first 方式准备、真实派发、校验和回收候选任务。child 不拥有正式写入、批准或用户交互权限。
 
 对正常 topic/text 新任务，入口在读取 `SKILL.md` 后只执行已记录的一次 `python <SKILL_ROOT>\scripts\prepare_env.py --bootstrap-content-draft ...` bootstrap；该单次调用已完成 workspace-access、环境 check、provider/preset/input/draft/task fast-prepare 并输出紧凑 descriptor。派发前不得预先另跑两条 `prepare_env` 或先落 `body-file`，并禁止 memory lookup、整份或分段重读本合同/其他 reference，以及 `prompt-writing.md` 预读。prepared descriptor 已含 canonical schema/skeleton、`agentPrompt` 与 argv；`nextAction=spawn_now` 是立刻 direct spawn 的充分条件。candidate、materialize、pending approval、样音及具体 revision 等阶段开始后，才按需读取相应 reference 小节。
@@ -60,9 +58,9 @@ agent.log
 
 ## 4. Task 与 Result
 
-`task.json` 使用 `whiteboard-agent-task-v1`，至少冻结 task identity、role contract version/SHA、input 相对路径和 SHA、current bindings、required capabilities、allowed outputs、该 role 的 canonical `candidateSchema` 与 `candidateSkeleton`，以及两个显式 false 的写权限字段。schema/skeleton 是 candidate 唯一结构来源，必须随 task 一起受 SHA/identity 保护；child 不得从 examples、源码、旧 candidate 或对话猜 schema。
+`task.json` 使用数字 `schemaVersion=1`，并以非版本化 `taskKind` 区分 role；至少冻结 task identity、role contract SHA、input 相对路径和 SHA、current bindings、required capabilities、allowed outputs、该 role 的 canonical `candidateSchema` 与 `candidateSkeleton`，以及两个显式 false 的写权限字段。schema/skeleton 是 candidate 唯一结构来源，必须随 task 一起受 SHA/identity 保护；child 不得从 examples、源码、旧 candidate 或对话猜 schema。
 
-`result.json` 使用 `whiteboard-agent-result-v1`。`status` 只允许 `completed | failed | cancelled`。所有 role 的 result 均由 coordinator 的确定性 materializer 生成，必须回显 task identity、派发 task SHA、role contract version/SHA、task 声明的 frozen inputs，以及 attempt 内 output 路径和 SHA。materializer 不能把 child 的自然语言完成声明转换成成功；candidate/findings 不存在、校验失败或 SHA 不匹配时必须生成失败审计或拒绝 materialize。
+`result.json` 使用数字 `schemaVersion=1`，并回显 `taskKind`。`status` 只允许 `completed | failed | cancelled`。所有 role 的 result 均由 coordinator 的确定性 materializer 生成，必须回显 task identity、派发 task SHA、role contract SHA、task 声明的 frozen inputs，以及 attempt 内 output 路径和 SHA。materializer 不能把 child 的自然语言完成声明转换成成功；candidate/findings 不存在、校验失败或 SHA 不匹配时必须生成失败审计或拒绝 materialize。
 
 coordinator 收取 result 后必须重验：
 

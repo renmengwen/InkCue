@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from initial_approval_options import (
-    CHOICE_CONTRACT_VERSION,
     InitialApprovalOptionError,
     build_initial_approval_options,
 )
@@ -103,7 +102,7 @@ def _validate_current_sample(project: Project) -> tuple[dict[str, Any], str, boo
 
 
 _SELECTION_FIELDS = {
-    "contractVersion",
+    "schemaVersion",
     "choiceId",
     "optionNumber",
     "action",
@@ -196,8 +195,8 @@ def _validate_selection(
         configured_image_provider_available=configured_image_provider_available,
         fixed_image_generation_mode=fixed_image_generation_mode,
     )
-    if selection.get("contractVersion") != CHOICE_CONTRACT_VERSION:
-        raise InitialApprovalError("联合选择 contractVersion 无效")
+    if selection.get("schemaVersion") != 1:
+        raise InitialApprovalError("联合选择 schemaVersion 必须为 1")
     if selection.get("action") != "approve":
         raise InitialApprovalError("联合批准动作只接受通过选项")
     if selection.get("readyForAtomicApproval") is not True:

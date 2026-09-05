@@ -75,7 +75,7 @@ pending 预项目 + current 样音
 output/final.mp4 最终确认
 ```
 
-技术校验通过不等于真实听审。逐阶段模式继续由用户完整试听旁白、看片听音最终成片。自主模式以用户已批准的 current 样音作为唯一声音主观 Gate；完整旁白仍须通过整轨单次 provider、canonical WAV、完整解码、原稿对齐、timeline/narration SRT/current identity 与时长偏差检查。Edge TTS 使用本地 FunASR token 时间证据；MiniMax 使用同次 T2A 响应返回的 `subtitle_enable=true`、`subtitle_type=word` 原生字幕证据；豆包使用同次 Seed Audio 响应返回的 `subtitle.sentences[].words[]` 原生字幕证据并绑定完整导演式 prompt SHA。MiniMax 与豆包都不进行 FunASR 二次识别。final 仍须通过流结构、AAC、字幕、完整解码、帧数/时长/尾部、实际 BGM 模式和 `FINAL_IDENTITY`；Edge/MiniMax 启用 BGM 时验证固定混音，豆包 v2 启用时验证 `provider_embedded` 且不得重复混入内置曲目。通过后记录“用户样音授权后的技术推进”，绝不声称 AI 完整听过。视觉 Gate 仍要求宿主对 current artifact 实际检查。
+技术校验通过不等于真实听审。逐阶段模式继续由用户完整试听旁白、看片听音最终成片。自主模式以用户已批准的 current 样音作为唯一声音主观 Gate；完整旁白仍须通过整轨单次 provider、canonical WAV、完整解码、原稿对齐、timeline/narration SRT/current identity 与时长偏差检查。Edge TTS 使用本地 FunASR token 时间证据；MiniMax 使用同次 T2A 响应返回的 `subtitle_enable=true`、`subtitle_type=word` 原生字幕证据；豆包 prompt-only 使用外部模型 `seed-audio-1.0` 同次响应返回的 `subtitle.sentences[].words[]` 原生字幕证据，并绑定纯文本音色、scene 时间窗口与完整导演式 prompt SHA。MiniMax 与豆包都不进行 FunASR 二次识别。final 仍须通过流结构、AAC、字幕、完整解码、帧数/时长/尾部、实际 BGM 模式和 `FINAL_IDENTITY`；Edge/MiniMax 启用 BGM 时验证固定混音，豆包启用时验证 `provider_embedded` 且不得重复混入内置曲目。通过后记录“用户样音授权后的技术推进”，绝不声称 AI 完整听过。视觉 Gate 仍要求宿主对 current artifact 实际检查。
 
 正式多幕渲染会记录 `configuredSceneRenderConcurrency` 与 `readySceneCount`，并按 `effectiveSceneRenderConcurrency = min(configuredSceneRenderConcurrency, readySceneCount)` 计算有效 worker 数。worker 只生成并深验彼此独立的单幕 candidate；coordinator 即使收到乱序结果，也必须按 generation plan 顺序复核 current binding 并原子发布。任一必需幕失败时 batch 仍为 `FAIL`；即使已有部分幕成功发布，也不能进入全量 scene review。只有全部必需幕 current、并由项目当前批准主体明确批准 current 有序 scene bundle 后，才允许合并。
 
@@ -121,8 +121,9 @@ Copy-Item config\voice-providers.example.json config\voice-providers.local.json
 ```
 
 真实 API Key 只能保存在被 `.gitignore` 排除的 `*.local.json` 中。启用豆包语音时，把
-`activeProvider` 设为 `doubao`，并只在 `providers.doubao` 的本地副本中补入 `apiKey` 与
-控制台提供的实际 `voice`（音色 ID）；示例文件中的 `YOUR_DOUBAO_SPEAKER_ID` 不是可调用音色。
+`activeProvider` 设为 `doubao`，并只在 `providers.doubao` 的本地副本中补入 `apiKey`。
+豆包固定使用官方纯文本生成模式，音色与年龄由 authored `text_prompt` 定义；不要配置或传入
+`speaker`，本地残留的旧 `voice` 和内部 `contractVersion` 字段也会在配置 loader 边界丢弃。
 
 先单独验证当前回合是否真的能写目标工作区：
 

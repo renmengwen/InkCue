@@ -18,10 +18,7 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from .generate_annotation_previews import (
-        PREVIEW_BATCH_CONTRACT,
-        generate_annotation_preview_batch,
-    )
+    from .generate_annotation_previews import generate_annotation_preview_batch
     from .project_workspace import Project, WorkspaceConfig
     from .burn_subtitles import burn_project
     from .merge_scenes import merge_project_scenes, ordered_scene_inputs
@@ -37,10 +34,7 @@ try:
         write_formal_validation_context_receipt,
     )
 except ImportError:  # pragma: no cover - direct script execution
-    from generate_annotation_previews import (  # type: ignore
-        PREVIEW_BATCH_CONTRACT,
-        generate_annotation_preview_batch,
-    )
+    from generate_annotation_previews import generate_annotation_preview_batch  # type: ignore
     from project_workspace import Project, WorkspaceConfig  # type: ignore
     from burn_subtitles import burn_project  # type: ignore
     from merge_scenes import merge_project_scenes, ordered_scene_inputs  # type: ignore
@@ -57,8 +51,6 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-PHASE_ADAPTER_CONTRACT = "whiteboard-phase-adapters-v1"
-FINAL_DELIVERY_CONTRACT = "whiteboard-final-delivery-runner-v1"
 _RUN_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 
@@ -117,8 +109,8 @@ def _adapt_summary(
     ]
     deep_reused = validation_mode == "binding"
     result: dict[str, Any] = {
-        "contractVersion": PHASE_ADAPTER_CONTRACT,
-        "phaseContractVersion": PREVIEW_BATCH_CONTRACT,
+        "schemaVersion": 1,
+        "phase": "annotation-preview",
         "status": status,
         "projectId": project.project_id,
         "runId": run_id,
@@ -358,8 +350,8 @@ def run_final_delivery(
         and initial.get("status") == "approved"
     )
     return {
-        "contractVersion": PHASE_ADAPTER_CONTRACT,
-        "phaseContractVersion": FINAL_DELIVERY_CONTRACT,
+        "schemaVersion": 1,
+        "phase": "final-delivery",
         "status": "PASS" if ok else "FAIL",
         "projectId": project.project_id,
         "runId": requested_run_id,
@@ -410,8 +402,6 @@ def run_final_delivery(
 
 
 __all__ = [
-    "PHASE_ADAPTER_CONTRACT",
-    "FINAL_DELIVERY_CONTRACT",
     "PhaseAdapterError",
     "run_annotation_preview",
     "run_final_delivery",

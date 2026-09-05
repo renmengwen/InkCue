@@ -16,13 +16,13 @@ from cover_review import CoverReviewError, load_cover_review
 from generate_voiceover import ApprovalGateError, VoiceoverStateError, validate_current_voiceover
 from media_validation import MediaValidationError, validate_video
 from mux_voiceover import (
-    DOUBAO_PROVIDER_EMBEDDED_BGM_MUX_CONTRACT_VERSION,
-    EDGE_MUX_CONTRACT_VERSION,
-    FINAL_AUDIO_MIX_CONTRACT_VERSION,
+    FIXED_BGM_MUX_RECIPE,
+    NARRATION_MUX_RECIPE,
+    PROVIDER_EMBEDDED_MUX_RECIPE,
     validate_edge_mux_media,
 )
 from background_music import (
-    BGM_MIX_CONTRACT_VERSION,
+    BGM_MIX_RECIPE,
     BGM_ASSET_FILE,
     FIXED_ASSET_RENDER_MODE,
     PROVIDER_EMBEDDED_RENDER_MODE,
@@ -42,7 +42,7 @@ from project_workspace import (
 )
 from subtitle_delivery import (
     DEFAULT_FONT_PATH,
-    DISABLED_MUX_CONTRACT_VERSION,
+    DISABLED_MUX_RECIPE,
     SubtitleDeliveryError,
     SubtitleStaleError,
     assert_subtitle_only_clean_master_reuse,
@@ -67,7 +67,7 @@ DELIVERY_MANIFEST_KEYS = {
     "cover",
 }
 DELIVERY_MANIFEST_OPTIONAL_KEYS = {"coverReview"}
-FINAL_TECHNICAL_VALIDATION_VERSION = "final-technical-validation-v1"
+FINAL_TECHNICAL_VALIDATION_SCHEMA_VERSION = 1
 
 
 class FinalMediaStaleError(ValueError):
@@ -145,7 +145,7 @@ def _background_music_reuse_binding(plan: Mapping[str, Any]) -> dict[str, Any]:
             "enabled": True,
             "renderMode": PROVIDER_EMBEDDED_RENDER_MODE,
             "provider": plan["provider"],
-            "providerContractVersion": plan["providerContractVersion"],
+            "model": plan["model"],
         }
     return {
         "enabled": True,
@@ -159,7 +159,7 @@ def _background_music_reuse_binding(plan: Mapping[str, Any]) -> dict[str, Any]:
         "fadeInMs": plan["fadeInMs"],
         "fadeOutMs": plan["fadeOutMs"],
         "loop": plan["loop"],
-        "mixContractVersion": BGM_MIX_CONTRACT_VERSION,
+        "mixRecipe": BGM_MIX_RECIPE,
     }
 
 
@@ -273,18 +273,13 @@ def _assert_subtitle_identity(project: Project, manifest: Mapping[str, Any]) -> 
     }
     for field, expected in expected_values.items():
         actual = subtitles.get(field)
-        legacy_voiceover_kind = (
-            field == "sourceKind"
-            and project.voiceover_mode != "disabled"
-            and actual == "edge-tts-narration-srt"
-        )
-        if actual != expected and not legacy_voiceover_kind:
+        if actual != expected:
             raise FinalMediaStaleError(f"subtitles.{field} 与 current 权威字幕不一致")
     style = _require_mapping(subtitles.get("style"), "subtitles.style")
     font = _require_mapping(style.get("font"), "subtitles.style.font")
     ass = _require_mapping(style.get("ass"), "subtitles.style.ass")
-    if not isinstance(style.get("contractSha256"), str) or len(style["contractSha256"]) != 64:
-        raise FinalMediaStaleError("subtitle style contract SHA-256 无效")
+    if not isinstance(style.get("recipeSha256"), str) or len(style["recipeSha256"]) != 64:
+        raise FinalMediaStaleError("subtitle style recipe SHA-256 无效")
     font_path = Path(DEFAULT_FONT_PATH)
     if not font_path.is_file() or sha256_file(font_path) != font.get("sha256"):
         raise FinalMediaStaleError("字幕字体文件或 SHA-256 已变化")
@@ -317,7 +312,7 @@ def _assert_edge_audio(
     final_media: Mapping[str, Any],
     identity_inputs: Mapping[str, Any],
     final_record: Mapping[str, Any],
-    mux_contract_version: str,
+    mux_recipe: Mapping[str, Any],
 ) -> None:
     audio_streams = final_media["streams"]["audio"]
     if len(audio_streams) != 1:
@@ -384,7 +379,7 @@ def _assert_edge_audio(
         "timeline": {
             "file": "audio/timeline.json",
             "sha256": sha256_file(timeline_path),
-            "contractVersion": timeline.get("contractVersion"),
+            "schemaVersion": timeline.get("schemaVersion"),
             "durationMs": canonical.durationMs,
         },
         "narrationSrt": {
@@ -405,7 +400,7 @@ def _assert_edge_audio(
             "sampleRate": 24000,
             "channels": 1,
         },
-        "muxContractVersion": mux_contract_version,
+        "muxRecipe": dict(mux_recipe),
     }
     if dict(edge) != expected_edge:
         raise FinalMediaStaleError("final.edgeDelivery 与 current Edge 输入不一致")
@@ -430,9 +425,7 @@ def _assert_background_music(
             "projectField": "project.json#backgroundMusic.enabled",
             "renderMode": PROVIDER_EMBEDDED_RENDER_MODE,
             "provider": "doubao",
-            "providerContractVersion": background_music[
-                "providerContractVersion"
-            ],
+            "model": background_music["model"],
             "textPromptSha256": current_voice["providerTextPromptSha256"],
             "voiceSynthesisIdentityHash": voice_manifest["segments"][0][
                 "voiceSynthesisIdentityHash"
@@ -457,7 +450,7 @@ def _assert_background_music(
         "fadeInMs": background_music["fadeInMs"],
         "fadeOutMs": background_music["fadeOutMs"],
         "loop": background_music["loop"],
-        "mixContractVersion": BGM_MIX_CONTRACT_VERSION,
+        "mixRecipe": BGM_MIX_RECIPE,
     }
     if dict(record) != expected:
         raise FinalMediaStaleError("final.backgroundMusic 与 current BGM plan 不一致")
@@ -473,11 +466,11 @@ def inspect_project_final_media(
     project = load_project(project_root)
     background_music = load_background_music_plan(project)
     if background_music.get("renderMode") == PROVIDER_EMBEDDED_RENDER_MODE:
-        mux_version = DOUBAO_PROVIDER_EMBEDDED_BGM_MUX_CONTRACT_VERSION
+        mux_recipe = PROVIDER_EMBEDDED_MUX_RECIPE
     elif background_music.get("renderMode") == FIXED_ASSET_RENDER_MODE:
-        mux_version = FINAL_AUDIO_MIX_CONTRACT_VERSION
+        mux_recipe = FIXED_BGM_MUX_RECIPE
     else:
-        mux_version = EDGE_MUX_CONTRACT_VERSION
+        mux_recipe = NARRATION_MUX_RECIPE
     manifest_path, manifest = _load_manifest(project)
     _assert_current_timing(project, manifest.get("timingPlan"))
     _assert_cover(project, manifest.get("cover"))
@@ -524,7 +517,7 @@ def inspect_project_final_media(
                 canonical_duration_ms=canonical_duration,
                 deep_receipt=receipt,
                 force_deep=force_deep,
-                mux_contract_version=mux_version,
+                mux_recipe=mux_recipe,
             )
         return _validate_output(
             project, relative_file="output/final.mp4",
@@ -571,7 +564,7 @@ def inspect_project_final_media(
     font = _require_mapping(style.get("font"), "subtitles.style.font")
     identity_inputs = _require_mapping(final.get("identityInputs"), "final.identityInputs")
     if project.voiceover_mode == "disabled":
-        mux_version = DISABLED_MUX_CONTRACT_VERSION
+        mux_recipe = DISABLED_MUX_RECIPE
     audio_sha = "" if project.voiceover_mode == "disabled" else str(identity_inputs.get("audioSha256") or "")
     expected_inputs, expected_identity = compute_final_identity(
         voiceover_mode=project.voiceover_mode,
@@ -579,11 +572,11 @@ def inspect_project_final_media(
         audio_sha256=audio_sha,
         timeline_sha256=selection.timeline_sha256,
         authoritative_subtitle_sha256=selection.sha256,
-        subtitle_style_contract_sha256=str(style.get("contractSha256") or ""),
+        subtitle_style_recipe_sha256=str(style.get("recipeSha256") or ""),
         font_sha256=str(font.get("sha256") or ""),
         render_profile_sha256=project.timing_plan["renderProfileSha256"],
         timing_plan_sha256=_timing_plan_sha(project),
-        mux_contract_version=mux_version,
+        mux_recipe=mux_recipe,
         final_media_sha256=final_media["sha256"],
     )
     if dict(identity_inputs) != expected_inputs or final.get("finalIdentitySha256") != expected_identity:
@@ -595,7 +588,7 @@ def inspect_project_final_media(
             final_media,
             identity_inputs,
             final,
-            mux_version,
+            mux_recipe,
         )
     try:
         assert_subtitle_only_clean_master_reuse(
@@ -653,7 +646,8 @@ def validate_project_final_media(
     previous_approval = manifest.get("finalApproval")
     final_entry = dict(final)
     final_entry["technicalValidation"] = {
-        "contractVersion": FINAL_TECHNICAL_VALIDATION_VERSION,
+        "schemaVersion": FINAL_TECHNICAL_VALIDATION_SCHEMA_VERSION,
+        "kind": "final-technical-validation",
         "validated": True,
         "validatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "finalIdentitySha256": expected_identity,

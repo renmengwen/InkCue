@@ -13,7 +13,6 @@ from typing import Any
 
 try:
     from .agent_task_contract import (
-        RESULT_CONTRACT_VERSION,
         ROLE_REQUIRED_OUTPUT_BASENAME,
         AgentContractError,
         TrustedTaskContext,
@@ -36,7 +35,6 @@ try:
     )
 except ImportError:  # pragma: no cover - direct script execution
     from agent_task_contract import (  # type: ignore
-        RESULT_CONTRACT_VERSION,
         ROLE_REQUIRED_OUTPUT_BASENAME,
         AgentContractError,
         TrustedTaskContext,
@@ -59,7 +57,6 @@ except ImportError:  # pragma: no cover - direct script execution
     )
 
 
-CONTRACT = "whiteboard-coordinator-cli-v1"
 _ATTEMPT_RE = re.compile(r"attempt-(\d+)")
 
 
@@ -214,11 +211,11 @@ def _validate_visual_findings(
     findings_path: Path,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     document = _read_json(findings_path)
-    required = {"contractVersion", "sceneOrder", "findings", "approvalWritten"}
+    required = {"schemaVersion", "sceneOrder", "findings", "approvalWritten"}
     if set(document) != required:
-        raise ValueError("findings.json 字段必须严格匹配 visual review findings v1")
-    if document["contractVersion"] != "whiteboard-visual-review-findings-v1":
-        raise ValueError("findings.json contractVersion 不支持")
+        raise ValueError("findings.json 字段必须严格匹配 schemaVersion=1")
+    if document["schemaVersion"] != 1:
+        raise ValueError("findings.json schemaVersion 必须为 1")
     if document["approvalWritten"] is not False:
         raise ValueError("findings.json approvalWritten 必须为 false")
     scene_order = _scene_order_from_frozen_inputs(task)
@@ -293,7 +290,7 @@ def validate_agent_candidate(
     task = _load_dispatched_task(task_path, dispatched_task_sha256)
     candidate, _findings, candidate_summary = _validate_candidate(task)
     return {
-        "contractVersion": CONTRACT,
+        "schemaVersion": 1,
         "operation": "validate-agent-candidate",
         "status": "PASS",
         "taskId": task.data["taskId"],
@@ -320,8 +317,6 @@ def materialize_agent_result(
         output_files=[candidate],
         findings=findings,
     )
-    if payload["contractVersion"] != RESULT_CONTRACT_VERSION:
-        raise ValueError("coordinator result contractVersion 不匹配")
     write_json_atomic(task.context.result_json, payload)
     result = validate_agent_result(
         task.context.result_json,
@@ -330,7 +325,7 @@ def materialize_agent_result(
         expected_current_bindings=task.data["currentBindings"],
     )
     return {
-        "contractVersion": CONTRACT,
+        "schemaVersion": 1,
         "operation": "materialize-agent-result",
         "status": "PASS",
         "taskId": task.data["taskId"],
@@ -387,7 +382,7 @@ def validate_draft_result(task_path: Path) -> dict[str, Any]:
     if not candidate_summary:
         raise ValueError("result 未包含已校验的 content draft candidate")
     return {
-        "contractVersion": CONTRACT,
+        "schemaVersion": 1,
         "operation": "validate-draft-result",
         "status": "PASS",
         "taskId": task.data["taskId"],
@@ -438,7 +433,7 @@ def parse_initial(args: argparse.Namespace) -> dict[str, Any]:
     output.parent.mkdir(parents=True, exist_ok=True)
     write_json_atomic(output, selection)
     return {
-        "contractVersion": CONTRACT,
+        "schemaVersion": 1,
         "operation": "parse-initial-approval",
         "status": "PASS",
         "projectId": project.project_id,
@@ -493,7 +488,7 @@ def project_status(project_path: Path) -> dict[str, Any]:
         next_gate = "current_phase_review"
         next_command = [python, str(skill_root / "scripts/run_phase.py"), "--project", str(project.root), "--phase", "annotation-preview"]
     return {
-        "contractVersion": CONTRACT,
+        "schemaVersion": 1,
         "operation": "project-status",
         "status": "PASS",
         "projectId": project.project_id,
@@ -571,7 +566,7 @@ def recommend_visual_style(args: argparse.Namespace) -> dict[str, Any]:
 
     recommended = recommendations[0]
     return {
-        "contractVersion": CONTRACT,
+        "schemaVersion": 1,
         "operation": "recommend-visual-style",
         "status": "PASS",
         "inputKind": input_kind,
@@ -611,7 +606,7 @@ def visual_style_catalog(args: argparse.Namespace) -> dict[str, Any]:
     else:
         catalog_result = None
     return {
-        "contractVersion": CONTRACT,
+        "schemaVersion": 1,
         "operation": "visual-style-catalog",
         "status": "PASS",
         "defaultVisualStylePreset": DEFAULT_VISUAL_STYLE_PRESET_ID,
@@ -711,7 +706,7 @@ def main(argv: list[str] | None = None) -> int:
         code = 0
     except Exception as exc:
         summary = {
-            "contractVersion": CONTRACT,
+            "schemaVersion": 1,
             "operation": args.command,
             "status": "FAIL",
             "error": str(exc),
@@ -727,7 +722,6 @@ if __name__ == "__main__":
 
 
 __all__ = [
-    "CONTRACT",
     "main",
     "materialize_agent_result",
     "project_status",

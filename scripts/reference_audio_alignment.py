@@ -591,7 +591,11 @@ def align_reference_audio(
         "timingFallbackUsed": False,
         "tokenTimingUsed": True,
         "timingValidationProfile": timing_validation_profile,
-        "captionSegmentationContract": "reference-punctuation-caption-v1",
+        "captionSegmentationRecipe": {
+            "algorithm": "reference_punctuation_caption",
+            "version": 1,
+            "parameters": {},
+        },
         "thresholds": {
             "minMatchRatio": min_match_ratio,
             "maxNormalizedEditRatio": max_normalized_edit_ratio,
