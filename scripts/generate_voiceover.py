@@ -39,7 +39,6 @@ try:
         write_json_atomic,
     )
     from .srt_timeline import parse_srt, serialize_srt
-    from .content_source import DOUBAO_MAX_SPOKEN_CHARACTERS_PER_SECOND
     from .voiceover import (
         CancelledError,
         DOUBAO_PROMPT_VOICE_ID,
@@ -131,7 +130,6 @@ except ImportError:  # pragma: no cover - direct script execution
         write_json_atomic,
     )
     from srt_timeline import parse_srt, serialize_srt
-    from content_source import DOUBAO_MAX_SPOKEN_CHARACTERS_PER_SECOND
     from voiceover import (
         CancelledError,
         DOUBAO_PROMPT_VOICE_ID,
@@ -304,22 +302,6 @@ def _build_plan_and_units(
     if provider_id == "doubao":
         provider_options.setdefault("model", "seed-audio-1.0")
         provider_options.setdefault("endpoint", DOUBAO_ENDPOINT)
-        target_seconds = cues[-1]["endMs"] / 1000.0
-        spoken_characters = sum(
-            1
-            for cue in cues
-            for character in str(cue["text"])
-            if character.isalnum()
-        )
-        maximum_characters = int(
-            target_seconds * DOUBAO_MAX_SPOKEN_CHARACTERS_PER_SECOND
-        )
-        if spoken_characters > maximum_characters:
-            raise VoiceoverStateError(
-                "豆包旁白超过 prompt 时间轴的自然朗读预算："
-                f"{spoken_characters} 个有效字符 > {maximum_characters}；"
-                "请回到阶段 0 压缩正文，外部请求尚未发起"
-            )
         provider_options["promptSpec"] = build_doubao_prompt_spec(
             cues,
             scenes,

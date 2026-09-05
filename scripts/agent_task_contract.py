@@ -426,6 +426,58 @@ class TrustedTaskContext:
         return PurePosixPath(*absolute.relative_to(self.scope_root.absolute()).parts).as_posix()
 
 
+def _validate_cover_review_snapshot(
+    data: Mapping[str, Any],
+    task_kind: str,
+    context: TrustedTaskContext,
+) -> None:
+    """验证 global visualReview 可选携带的封面排除快照。"""
+
+    if "coverReview" not in data:
+        return
+    if task_kind != "visualReview":
+        raise AgentContractError("schema", "只有 visualReview 可以包含 coverReview")
+    cover = _require_exact_keys(
+        data["coverReview"],
+        required={
+            "file",
+            "sha256",
+            "frameRange",
+            "visualReviewExcluded",
+            "technicalChecksExcluded",
+        },
+        field="coverReview",
+    )
+    cover_path = context.resolve_scope_path(
+        cover["file"],
+        field="coverReview.file",
+        require_exists=True,
+    )
+    cover_sha = _require_sha(cover["sha256"], "coverReview.sha256")
+    if sha256_file(cover_path) != cover_sha:
+        raise StaleAgentTaskError("coverReview 对应封面 SHA 已变化")
+    frame_range = _require_exact_keys(
+        cover["frameRange"],
+        required={"startFrame", "endFrameExclusive"},
+        field="coverReview.frameRange",
+    )
+    start_frame = frame_range["startFrame"]
+    end_frame = frame_range["endFrameExclusive"]
+    if (
+        isinstance(start_frame, bool)
+        or not isinstance(start_frame, int)
+        or start_frame < 0
+        or isinstance(end_frame, bool)
+        or not isinstance(end_frame, int)
+        or end_frame <= start_frame
+    ):
+        raise AgentContractError("schema", "coverReview.frameRange 无效")
+    if cover["visualReviewExcluded"] is not True:
+        raise AgentContractError("schema", "coverReview 必须排除语义视觉审阅")
+    if cover["technicalChecksExcluded"] is not False:
+        raise AgentContractError("schema", "coverReview 不能排除技术检查")
+
+
 @dataclass(frozen=True)
 class ValidatedAgentTask:
     data: Mapping[str, Any]
@@ -534,6 +586,7 @@ def validate_agent_task(
             "sceneId",
             "candidateSchema",
             "candidateSkeleton",
+            "coverReview",
             *_VISUAL_STYLE_TASK_FIELDS,
         },
         field="task",
@@ -545,6 +598,7 @@ def validate_agent_task(
     task_kind = data["taskKind"]
     if task_kind not in TASK_KINDS:
         raise AgentContractError("task_kind", "taskKind 不在 allowlist")
+    _validate_cover_review_snapshot(data, task_kind, context)
     _validate_visual_style_snapshot(data, task_kind)
     _validate_candidate_schema(data, task_kind)
     if data["scopeKind"] != context.scope_kind:
