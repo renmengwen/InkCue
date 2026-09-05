@@ -151,7 +151,15 @@ class RegionStreamRenderer:
         mask[y0:y1, x0:x1] = True
         for later in later_elements:
             lx0, ly0, lx1, ly1 = _scaled_rect(later["region"], self.sx, self.sy, self.out_w, self.out_h)
-            mask[ly0:ly1, lx0:lx1] = False
+            later_mask = np.zeros_like(mask)
+            later_mask[ly0:ly1, lx0:lx1] = True
+            # 后续元素的 protectedRegions 本就不应由该元素揭示，因此也不能
+            # 用后续大框把这些像素从先前元素中扣掉；否则被背景框完整包住的
+            # 主体永远无法出现，着色阶段还会少写计划帧数。
+            for prot in later.get("reveal", {}).get("protectedRegions", []):
+                px0, py0, px1, py1 = _scaled_rect(prot, self.sx, self.sy, self.out_w, self.out_h)
+                later_mask[py0:py1, px0:px1] = False
+            mask[later_mask] = False
         for prot in element.get("reveal", {}).get("protectedRegions", []):
             px0, py0, px1, py1 = _scaled_rect(prot, self.sx, self.sy, self.out_w, self.out_h)
             mask[py0:py1, px0:px1] = False

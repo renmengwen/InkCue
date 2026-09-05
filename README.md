@@ -42,7 +42,7 @@ topic/text 的旁白 provider 不需要用户选择。skill 始终读取自身�
 | `disabled` | 原始 `source/source.srt` | H.264，静音 |
 | `edge-tts` / `minimax` / `doubao` | 已批准的真实音频时间轴和 `audio/narration.srt` | H.264 + AAC 旁白 |
 
-非 SRT 输入的目标时长必须在 15 到 600 秒之间。Edge TTS 不需要 API Key，但需要访问微软在线语音服务。
+非 SRT 输入的目标时长必须在 15 到 600 秒之间。阶段 0 不按固定字数或“每秒字符数”拒绝、反复压缩旁白；整轨节奏由 prompt 中的总目标时长和每幕时间窗口控制，生成后以真实音频 duration、原生字幕和既有时长审阅为准。Edge TTS 不需要 API Key，但需要访问微软在线语音服务。
 
 阶段 0 不使用斜杠填空模板。coordinator 按当前合法能力枚举完整自然语言句子；用户可直接复制一句或回复编号。固定生图方式时，旁白项目提供 BGM × 后续模式的 4 个通过组合；只有当前登录态 `image_gen` 和已配置图片供应商同时真实可用时，才把生图方式并入每句，枚举 8 个组合。active voice provider 只显示“当前已采用”，不把 Edge/MiniMax/豆包列为选项。传统静音 SRT 使用“字幕与分镜方案通过……”语义，并保持静音交付。
 

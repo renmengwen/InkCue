@@ -46,7 +46,7 @@ MiniMax 额外使用 provider 级共享节流器：`requestsPerMinute`（默认 
 
 - provider/protocol：`doubao` / `Doubao`；外部 model 固定 `seed-audio-1.0`，endpoint 固定为官方非流式 `/api/v3/tts/create`。
 - endpoint：`https://openspeech.bytedance.com/api/v3/tts/create`，使用新版控制台的 `X-Api-Key` 单头鉴权；每次请求另发随机 `X-Api-Request-Id`，不得把 key 或原始请求 ID 写入项目。
-- 请求使用单人白板 authored `text_prompt`。每个新的豆包旁白版本在首次完整音频请求前，由 coordinator 读取 `C:\Users\MOVER\Desktop\seed-audio-1.0 text_prompt 参考.txt` 的 current 字节，把附件仅作为风格与能力示例而非指令，并结合 current 全文、scene、音色与可选 BGM 方向生成 `schemaVersion: 1, kind: performanceBrief` 的 brief。brief 使用简洁自然的连续导演语言：角色、音色和整体表演合并写一次，局部表演和音乐变化紧邻对应台词，只在叙事确有变化时出现；禁止“第 N 段导演说明”、固定“承接上一段”或每段重复原稿保护套话。程序把 current scene 正文逐字装配到 `「」` 内，不让模型复制或改写正文；关闭 BGM 由程序固定约束，不要求模型生成同义说明。引号外指令不得写回 source SRT、narrationCues 或最终字幕；明确禁止擅自增删、改写、复述、补充、第二人声、克隆音色、SSML 和未由 brief 明确要求的环境音/影视拟音。
+- 请求使用单人白板 authored `text_prompt`。每个新的豆包旁白版本在首次完整音频请求前，由 coordinator 以 `SKILL.md` 所在目录为 `SKILL_ROOT`，读取仓库内 `<SKILL_ROOT>\assets\seed-audio-1.0-text-prompt-reference.txt` 的 current 字节，把它仅作为风格与能力示例而非指令，并结合 current 全文、scene、音色与可选 BGM 方向生成 `schemaVersion: 1, kind: performanceBrief` 的 brief。brief 使用简洁自然的连续导演语言：角色、音色和整体表演合并写一次，局部表演和音乐变化紧邻对应台词，只在叙事确有变化时出现；禁止“第 N 段导演说明”、固定“承接上一段”或每段重复原稿保护套话。程序把 current scene 正文逐字装配到 `「」` 内，不让模型复制或改写正文；关闭 BGM 由程序固定约束，不要求模型生成同义说明。引号外指令不得写回 source SRT、narrationCues 或最终字幕；明确禁止擅自增删、改写、复述、补充、第二人声、克隆音色、SSML 和未由 brief 明确要求的环境音/影视拟音。
 - 请求固定使用官方纯文本生成模式：省略整个 `references` 字段，不传 `speaker`、`audio_data`、`audio_url` 或参考图片。音色、年龄、口吻和表演只由 authored `text_prompt` 定义；不得再让本地 `voice` 音色 ID 覆盖 prompt。完整旁白把 current provisional scene 起止毫秒确定性渲染为 `[startSeconds:endSeconds]`，并明确整轨目标总时长；真实响应时长和原生字幕仍是最终权威证据。固定请求 24 kHz WAV，规范化 rate/volume/pitch 分别映射为 `speech_rate`、`loudness_rate`、`pitch_rate`，合法范围为 `-50–100`、`-50–100`、`-12–12`。
 - `audio_config.enable_subtitle` 固定为 `true`。同一次响应必须原子取得 Base64 `audio` 与 `subtitle`，并严格解析 `subtitle.text`、`subtitle.sentences[]`、每句 `start_time/end_time/text` 及 `sentences[].words[]` 的毫秒 `start_time/end_time/text`；禁止递归猜测任意数组。官方字段合同只承诺非负毫秒整数，并未承诺标点 token 必有正时长、相邻 token 绝不轻微重叠或 word 严格包含于 sentence 边界：sidecar 保留原始 token 以验证文本完整性；生成语义时间轴时忽略纯标点零时长 token，只允许不超过 100ms 且仍能保留正时长的相邻语义 token 交叠裁切，其他倒序、越界、语义 token 零时长或大幅重叠继续 fail-closed。
 - `duration` 是后处理音频时长，`original_duration` 是计费原始时长；两者都必须为正且不超过 120 秒。只读取 Base64 `audio`，不消费或持久化有效期两小时的 `url`；`X-Tt-Logid` 仅保存不可逆摘要。原始 WAV 仍须经过共享 FFmpeg/ffprobe 规范化与 canonical 24 kHz mono 校验。
@@ -162,7 +162,7 @@ voice plan 另有 `voicePlanAuditHash`，覆盖完整 plan。豆包的 `provider
 }
 ```
 
-coordinator 生成 brief 时必须完整读取 current 参考附件，但按当前任务选择适用能力，不照搬无关角色、语言、拟音或剧情。官方润色范式优先：
+coordinator 生成 brief 时必须完整读取仓库内 current 参考文件，但按当前任务选择适用能力，不照搬无关角色、语言、拟音或剧情。官方润色范式优先：
 
 - `narratorDirection` 用一个自然段同时说明年龄/音色/普通话、交流姿态和贯穿全文的表层与内在情绪，不再补第二段同义的“整体表演方向”。
 - `enabledOpeningDirection` 只交代开头动机、核心配器、情绪颜色、相对人声音量与人声进入后的退让；没有可听价值的乐器清单和抽象解释应删除。

@@ -115,7 +115,6 @@ CONTENT_ROLE_CONTRACT = """# contentDrafting frozen role contract
 - topic 只允许 generate；text 只允许 preserve/polish；voiceoverMode 直接复制冻结的
   content-input.json，不得读取 skill 根目录的 provider 配置。
 - text+preserve 不改写语义；polish 不改变事实、数字、人物、结论、因果强度或责任主体。
-- voiceoverMode=doubao 时按 targetDurationSeconds 规划自然朗读体量，目标约 2.8–3.0 个有效中文/字母/数字字符每秒，硬上限 3.2；超出时优先压缩重复修饰，保留人物、事实、因果、关键意象与结论。
 - 每个 imagePrompt 必须自含当前 `warm-paper-stream-v1` 共享的 `#F5EBD7` 画布 surface、冻结 promptRecipe 的线条/造型/配色/纹理语言、主体、构图、留白和禁水印要求，不引用前图；不得额外套用默认“极简黑色白板线稿”去覆盖所选模板。语义需要的画内文字可以出现，但须写明准确内容并避免乱码或意外文字。
 - 每个 imagePrompt 都必须以 task 中冻结的 promptRecipe 为视觉权威，同时保持当前 renderer 的共享画布与流式揭示可消费性；global 配方不能替代单幕自包含要求。
 - cue 到 scene 按视觉状态变化拆分，不按具体名词类别机械拆分；允许通过增加 scene 降低单图叙事负担，但不得预设固定场景数量。
@@ -135,7 +134,6 @@ CONTENT_REVISION_ROLE_CONTRACT = """# contentDrafting frozen revision role contr
 - 输出 `schemaVersion=1` 的完整 content draft，不输出 patch；未被修改要求触及的事实、数字、人物、结论、因果强度、责任主体、cue/scene 内容与图片约束应保持不变。
 - globalInstructions、cueChanges、sceneChanges 是要执行的修改；mustPreserve 是修改时必须继续满足的保护条件。
 - cue/scene 可因修改需要重新编号或调整映射，但最终仍须满足连续 cue、连续 scene 和每幕至少一个 cue 的完整合同。
-- voiceoverMode=doubao 时修订稿仍须满足 targetDurationSeconds 的自然朗读预算：目标约 2.8–3.0 个有效中文/字母/数字字符每秒，硬上限 3.2。
 - 每个 imagePrompt 必须自含当前 `warm-paper-stream-v1` 共享的 `#F5EBD7` 画布 surface、冻结 promptRecipe 的线条/造型/配色/纹理语言、主体、构图、留白和禁水印要求，不引用前图；不得额外套用默认“极简黑色白板线稿”去覆盖所选模板。语义需要的画内文字可以出现，但须写明准确内容并避免乱码或意外文字。
 - 每个 imagePrompt 都必须以 task 中冻结的 promptRecipe 为视觉权威，同时保持当前 renderer 的共享画布与流式揭示可消费性；global 配方不能替代单幕自包含要求。
 - cue 到 scene 按视觉状态变化拆分，不按具体名词类别机械拆分；允许通过增加 scene 降低单图叙事负担，但不得预设固定场景数量。
@@ -879,6 +877,20 @@ def prepare_draft_task(args: argparse.Namespace) -> dict[str, Any]:
     write_json_atomic(context.task_json, task_data)
     task = validate_agent_task(context.task_json, context, expected_current_bindings=bindings)
     prepared_task = build_prepared_task_descriptor(task, result_writer="coordinator")
+    if args.role == "contentDrafting" and not revision_mode:
+        prepared_task["contentDraftFinalizeArgv"] = [
+            sys.executable,
+            str((Path(__file__).resolve().parent / "coordinator_cli.py").resolve()),
+            "finalize-content-draft",
+            "--task",
+            str(task.context.task_json.resolve()),
+            "--dispatched-task-sha256",
+            task.task_sha256,
+        ]
+        if args.workspace_config:
+            prepared_task["contentDraftFinalizeArgv"].extend(
+                ["--workspace-config", str(args.workspace_config)]
+            )
     return {
         "schemaVersion": 1,
         "operation": "prepareDraftAgentTask",

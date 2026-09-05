@@ -10,12 +10,20 @@ import sys
 import uuid
 from pathlib import Path
 
-from content_source import (
-    ContentSourceError,
-    SourcePackage,
-    build_source_package,
-    validate_source_package,
-)
+try:  # direct CLI execution
+    from content_source import (
+        ContentSourceError,
+        SourcePackage,
+        build_source_package,
+        validate_source_package,
+    )
+except ImportError:  # imported as scripts.prepare_source
+    from scripts.content_source import (
+        ContentSourceError,
+        SourcePackage,
+        build_source_package,
+        validate_source_package,
+    )
 
 
 PACKAGE_FILES = ("input.json", "source.srt", "generation-plan.json", "manifest.json")

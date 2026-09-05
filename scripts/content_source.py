@@ -35,7 +35,6 @@ MAX_BODY_UTF8_BYTES = 128 * 1024
 MIN_CUE_DURATION_MS = 400
 SPOKEN_CHARACTER_WEIGHT = 100
 SENTENCE_PAUSE_WEIGHT = 20
-DOUBAO_MAX_SPOKEN_CHARACTERS_PER_SECOND = 3.2
 
 _TOP_LEVEL_FIELDS = {
     "schemaVersion",
@@ -301,22 +300,6 @@ def validate_content_draft(value: Any) -> dict[str, Any]:
             raise ContentSourceError("text+preserve 的 cue 必须保留正文中的文字、数字与顺序")
 
     target_seconds = _normalise_target_seconds(value.get("targetDurationSeconds"))
-    if value.get("voiceoverMode") == "doubao":
-        spoken_characters = sum(
-            1
-            for cue in cues
-            for character in cue["text"]
-            if unicodedata.category(character)[0] in {"L", "N"}
-        )
-        maximum_characters = math.floor(
-            float(target_seconds) * DOUBAO_MAX_SPOKEN_CHARACTERS_PER_SECOND
-        )
-        if spoken_characters > maximum_characters:
-            raise ContentSourceError(
-                "豆包旁白超过 prompt 时间轴的自然朗读预算："
-                f"{spoken_characters} 个有效字符 > {maximum_characters}；"
-                "请在阶段 0 压缩正文后重新生成 candidate"
-            )
 
     return {
         "schemaVersion": 1,
@@ -665,7 +648,6 @@ def validate_project_source_binding(
 
 
 __all__ = [
-    "DOUBAO_MAX_SPOKEN_CHARACTERS_PER_SECOND",
     "PROVISIONAL_TIMING_ALGORITHM",
     "PROVISIONAL_TIMING_ALGORITHM_VERSION",
     "ContentSourceError",

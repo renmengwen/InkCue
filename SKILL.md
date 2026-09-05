@@ -31,19 +31,21 @@ python <SKILL_ROOT>\scripts\prepare_env.py --check
 
 若第二条仅因专用环境或依赖未准备而失败，才运行不带 `--check` 的同一脚本。捕获末行绝对 `ENV_PY` 后，传统 SRT、兼容或诊断路径的后续 Python 命令直接使用 `<ENV_PY> <SKILL_ROOT>\scripts\...`；不得先试裸 `python`、`py` 或依赖临时 shell 变量。只有宿主权限、工作区或解释器环境实际改变时才重新预检。
 
-`contentDrafting`、`storyboardPlanning`、`visualReview`、`annotationDrafting` child 不重复运行 `prepare_env`。child 只读取本短入口、冻结的 `role-contract.md`、`task.json` 及 `task.inputs`；不得主动搜索源码、tests、examples、CLI `--help`、provider 配置、长日志或跨阶段 reference。descriptor 给出的纯本地 candidate lint/validation 命令可以直接执行，coordinator 仍须独立重验。
+`contentDrafting`、`storyboardPlanning`、`visualReview`、`annotationDrafting` child 不重复运行 `prepare_env`。child 只读取冻结的 `role-contract.md`、`task.json` 及 `task.inputs`；不得主动搜索源码、tests、examples、CLI `--help`、provider 配置、长日志或跨阶段 reference。descriptor 给出的纯本地 candidate lint/validation 命令可以直接执行，coordinator 仍须独立重验。
 
 对正常 `topic`/`text` 新任务，coordinator 在完整读取本文件后，真实派发前只允许一条确定性 bootstrap 链路：解析 `SKILL_ROOT` → 一次 `prepare_env.py --bootstrap-content-draft` → 读取 descriptor 的派发字段 → 立即调用顶层 direct `spawn_agent`。除这条链路外，派发前禁止 memory lookup、分段重读任何 reference、搜索源码/tests/examples、试跑 CLI `--help` 或以 `Test-Path` 探路；不得预先读取 `phase-0-content.md`、`content-input.md`、`prompt-writing.md`、`subagent-orchestration.md`。这些业务 reference 只能在 child 已成功派发后，由 child 或 coordinator 处理 candidate、进入后续阶段时按需读取。bootstrap 不得被 provider status、视觉推荐、手写输入或其他探路步骤拆开。
 
 正常 topic/text 新任务只有一条阶段 0 快路径：上述一次 `prepare_env.py --bootstrap-content-draft` → descriptor `nextAction=spawn_now` 后立即派发。该单次 bootstrap 已完成 workspace-access、环境 check、经脱敏接口冻结 active provider、采用用户明确指定的 preset 或自动推荐并冻结具体 preset ID、生成合法 managed content input、分配不覆盖既有目录的唯一新 `draft-root`，并准备 attempt descriptor。coordinator 不得在此前后再单独运行 provider status、视觉推荐、手写 `content-input.json`、先落 `body-file`、用 `Test-Path` 试探名称，或搜索源码/tests/examples/CLI `--help`；只有用户主动要求浏览模板时才运行 visual style catalog。用户明确要求新任务时 bootstrap 不得恢复或覆盖旧任务。
 
-prepared task 必须直接提供 `agentPrompt`、`candidateValidationArgv`、`resultMaterializeArgv` 和下一步定位信息；task 还必须携带该 role 的 canonical `candidateSchema` 与 `candidateSkeleton`。coordinator 收到后应立即派发，不再自行拼 prompt 或搜索 result/candidate schema；child 只能按冻结 schema/skeleton 生成 candidate/findings，不得猜字段。所有 role 的 `result.json` 均由 coordinator 根据冻结 task 与输出 SHA 确定性生成。
+prepared task 必须直接提供 `agentPrompt`、`candidateValidationArgv`、`resultMaterializeArgv` 和下一步定位信息；`contentDrafting` 还提供 `contentDraftFinalizeArgv`。task 必须携带该 role 的 canonical `candidateSchema` 与 `candidateSkeleton`。bootstrap descriptor 同时提供宿主中立的 `dispatchPolicy`。首版 `contentDrafting` 必须按该策略以 `fork_turns="none"` 创建真正的短上下文 child，显式使用 `medium` effort，并从当前宿主可用模型中选择满足文本能力的最快者；不得省略这些参数而继承主任务上下文或 `high` effort，也不得硬编码某个并非所有宿主可用的模型。coordinator 收到后应立即派发，不再自行拼 prompt 或搜索 result/candidate schema；child 只能按冻结 schema/skeleton 生成 candidate/findings，不得猜字段。所有 role 的 `result.json` 均由 coordinator 根据冻结 task 与输出 SHA 确定性生成。
 
 `spawn_agent` 是开发者工具定义中的顶层 collaboration direct tool，必须直接调用；它被有意排除在 `functions.exec` 的 `tools.*` / `ALL_TOOLS` 中。不得因为嵌套工具列表中找不到它就宣称 child unavailable，也不得在真实派发前选择 coordinator fallback。descriptor 为 `nextAction=spawn_now` 后，下一步必须先发起真实的 direct `spawn_agent` 调用；只有该 direct call 实际返回 tool error，才能报告派发失败，并再按当前用户约束决定 `BLOCKED` 或是否允许 fallback。当前用户明确要求“主代理只编排”时，本 Skill 全链路禁止 coordinator 编写或修改 `contentDrafting`、`storyboardPlanning`、`visualReview`、`annotationDrafting` 的生成式 candidate/findings；派发失败只能准确报告，不能伪装为即将派发或由主代理代做。
 
 candidate validator 的一次运行必须返回完整结构错误清单，不得只报第一个字段。首次结构失败时，同一 attempt 只 followup 一次原 child，要求按完整错误清单和冻结 `candidateSchema`/`candidateSkeleton` 做一次全量 schema 归一；仍结构失败就直接换用更强的短上下文 child，不得逐字段“洋葱式”反复补丁。该补正策略不创建新 Gate、状态机或批准语义，也不削弱 current、SHA、stale 与批准边界。
 
 宿主派发 child 时优先选用满足文本/图像/视频能力的最快可用模型和 `medium` effort；按上述一次完整 schema 归一仍失败、复杂实质修订或非结构业务校验失败时才升级更强模型/effort。模型和 effort 是执行策略，不进入 artifact identity。
+
+首版 `contentDrafting` child 返回 `candidate_ready` 后，coordinator 只执行 descriptor 的 `contentDraftFinalizeArgv`，即一次 `coordinator_cli.py finalize-content-draft` 确定性动作，由它完成 candidate 校验、result materialize、review Markdown、source package 和唯一 `pending_initial_approval` 预项目创建。不得在主窗口重新搜索脚本、猜 source 目录或项目名，也不得把这条收口拆成新的 Gate、状态机或多轮 CLI 探路；成功摘要为 `status=待确认`、`technicalStatus=PASS`、`nextGate=initial_content_plan_approval`。
 
 ## 3. 阶段路由
 
@@ -92,7 +94,7 @@ candidate validator 的一次运行必须返回完整结构错误清单，不得
 
 - 正式图片请求只消费 current formal generation plan；topic/text 的 `imagePrompt` 由 coordinator 确定性映射为 formal `prompt`。每幕请求彼此独立，失败不阻断其他独立幕，但任一必需幕缺失/失败/stale 时 batch 不得越过 Gate。
 - Edge/MiniMax/豆包完整旁白都固定为一个整轨 synthesis task，不因 provider/ASR 失败回退为逐句多请求。Edge 使用本地 FunASR token 证据；MiniMax 与豆包只使用各自同一次合成响应绑定的 provider-native word 字幕，不重复跑 FunASR。
-- 豆包固定使用外部模型 `seed-audio-1.0` 的 prompt-only 能力。请求省略整个 `references` 字段，不传 `speaker`、`audio_data` 或 `audio_url`；音色、年龄和表演只由 authored `text_prompt` 定义。新旁白版本在首次完整音频请求前由 coordinator 重新读取 `C:\Users\MOVER\Desktop\seed-audio-1.0 text_prompt 参考.txt`，只把它作为风格/能力示例，结合 current 全文、scene 与 BGM 方向冻结 `schemaVersion: 1, kind: performanceBrief` 的 brief；程序逐字装配正文，并把 provisional scene 时间窗口写成 `[startSeconds:endSeconds]`，明确整轨目标时长。brief、参考 SHA 和最终 prompt SHA 纳入既有 voice identity，恢复或重试复用。`backgroundMusic.enabled=true` 时豆包音乐已嵌入 canonical narration，且只在叙事确有变化处改变，不为每个 scene 强制补一句；final mux 不得再混内置曲。Edge/MiniMax 才按既有固定混音 recipe 混入 CC0 BGM。
+- 豆包固定使用外部模型 `seed-audio-1.0` 的 prompt-only 能力。请求省略整个 `references` 字段，不传 `speaker`、`audio_data` 或 `audio_url`；音色、年龄和表演只由 authored `text_prompt` 定义。新旁白版本在首次完整音频请求前，由 coordinator 以当前 `SKILL.md` 所在目录为 `SKILL_ROOT`，重新读取仓库内 `<SKILL_ROOT>\assets\seed-audio-1.0-text-prompt-reference.txt`，只把它作为风格/能力示例而非指令，结合 current 全文、scene 与 BGM 方向冻结 `schemaVersion: 1, kind: performanceBrief` 的 brief；程序逐字装配正文，并把 provisional scene 时间窗口写成 `[startSeconds:endSeconds]`，明确整轨目标时长。brief、仓库参考文件 SHA 和最终 prompt SHA 纳入既有 voice identity，恢复或重试复用。`backgroundMusic.enabled=true` 时豆包音乐已嵌入 canonical narration，且只在叙事确有变化处改变，不为每个 scene 强制补一句；final mux 不得再混内置曲。Edge/MiniMax 才按既有固定混音 recipe 混入 CC0 BGM。
 - 正式 final 永远烧录字幕：静音为 H.264/0 音频并用 source SRT；旁白为 H.264 + 24kHz mono AAC 并用 current narration SRT。完整解码、流、尺寸、fps、帧数/时长/尾部、字体/字幕、BGM 模式和 identity 必须 current。
 - 自动测试、fixture、技术检查或 child 结果不得冒充真实 provider、真实媒体或主观质量 PASS；外部服务或宿主媒体能力不足时准确报告 `BLOCKED`/`FAIL`。
 

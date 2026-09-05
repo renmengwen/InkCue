@@ -29,10 +29,16 @@ try:
         parse_initial_approval_response,
     )
     from .project_workspace import (
+        Project,
+        ProjectValidationError,
+        ProjectWorkspace,
         load_project,
+        sanitize_project_name,
         validate_pre_project_generation_plan_data,
         write_json_atomic,
     )
+    from .prepare_source import prepare_source
+    from .render_content_review import create_review_artifact
 except ImportError:  # pragma: no cover - direct script execution
     from agent_task_contract import (  # type: ignore
         ROLE_REQUIRED_OUTPUT_BASENAME,
@@ -51,10 +57,16 @@ except ImportError:  # pragma: no cover - direct script execution
         parse_initial_approval_response,
     )
     from project_workspace import (  # type: ignore
+        Project,
+        ProjectValidationError,
+        ProjectWorkspace,
         load_project,
+        sanitize_project_name,
         validate_pre_project_generation_plan_data,
         write_json_atomic,
     )
+    from prepare_source import prepare_source  # type: ignore
+    from render_content_review import create_review_artifact  # type: ignore
 
 
 _ATTEMPT_RE = re.compile(r"attempt-(\d+)")
@@ -339,6 +351,182 @@ def materialize_agent_result(
         "validationDurationMs": round((time.perf_counter() - started) * 1000),
         "formalWritesPerformed": False,
         "approvalWritten": False,
+    }
+
+
+def _matching_pending_content_project(
+    workspace: ProjectWorkspace,
+    project_root: Path,
+    *,
+    project_name: str,
+    content_draft_identity_sha256: str,
+    source_package_identity_sha256: str,
+    generation_plan: dict[str, Any],
+    voiceover_mode: str,
+    visual_style_preset: str,
+) -> Project:
+    """只复用一次 finalize 已精确提交的同一 pending 预项目。"""
+
+    if project_root.is_symlink():
+        raise ProjectValidationError("既有预项目目录不能是符号链接")
+    project = workspace.load_project(
+        project_root,
+        allow_pending_audio_timeline=True,
+        allow_pending_initial_approval=True,
+    )
+    content_source = project.metadata.get("contentSource")
+    detached_plan = dict(project.plan)
+    detached_plan["projectId"] = ""
+    if (
+        project.metadata.get("projectName") != project_name
+        or not project.pending_initial_approval
+        or project.current_content_identity_sha256 != content_draft_identity_sha256
+        or not isinstance(content_source, dict)
+        or content_source.get("sourcePackageIdentitySha256")
+        != source_package_identity_sha256
+        or project.voiceover_mode != voiceover_mode
+        or project.visual_style_preset != visual_style_preset
+        or detached_plan != generation_plan
+    ):
+        raise ProjectValidationError(
+            "draftRoot 同名项目已存在，但不是本次 content draft 的同一 pending 预项目"
+        )
+    return project
+
+
+def finalize_content_draft(args: argparse.Namespace) -> dict[str, Any]:
+    """一次收口 contentDrafting candidate，最终停在初始联合批准 Gate。"""
+
+    started = time.perf_counter()
+    task = _load_dispatched_task(args.task, args.dispatched_task_sha256)
+    if task.data["taskKind"] != "contentDrafting":
+        raise ValueError("finalize-content-draft 只接受 contentDrafting task")
+    if task.context.scope_kind != "draft":
+        raise ValueError("finalize-content-draft task 必须位于 workspace/drafts scope")
+
+    workspace = ProjectWorkspace.from_config(args.workspace_config)
+    workspace_root = workspace.config.root.resolve(strict=True)
+    if task.context.workspace_root.resolve(strict=True) != workspace_root:
+        raise ValueError("task workspace 与 --workspace-config 不一致")
+    draft_root = task.context.scope_root.resolve(strict=True)
+    expected_drafts = (workspace_root / "drafts").resolve(strict=False)
+    if draft_root.parent != expected_drafts or not draft_root.name:
+        raise ValueError("task draftRoot 不是 workspace/drafts 的直接子目录")
+
+    materialized = materialize_agent_result(
+        args.task,
+        args.dispatched_task_sha256,
+    )
+    candidate = Path(materialized["candidatePath"])
+
+    review = create_review_artifact(
+        argparse.Namespace(
+            draft_root=draft_root,
+            candidate=candidate,
+            workspace_config=args.workspace_config,
+            gpt_login_image_generation_available=(
+                args.gpt_login_image_generation_available
+            ),
+            configured_image_provider_available=(
+                args.configured_image_provider_available
+            ),
+            fixed_image_generation_mode=args.fixed_image_generation_mode,
+        )
+    )
+    if (
+        review.get("ok") is not True
+        or review.get("valid") is not True
+        or review.get("contentDraftIdentitySha256")
+        != materialized["contentDraftIdentitySha256"]
+    ):
+        raise ValueError("content review artifact 未通过确定性校验")
+    review_path = draft_root.joinpath(*Path(review["reviewFile"]).parts)
+    if not review_path.is_file() or sha256_file(review_path) != review["reviewSha256"]:
+        raise ValueError("content review artifact 写入后 SHA 不一致")
+
+    source_root = draft_root / "source-package"
+    if source_root.is_symlink():
+        raise ValueError("draftRoot/source-package 不能是符号链接")
+    source_package = prepare_source(candidate, source_root)
+    if (
+        source_package.content_draft_identity
+        != materialized["contentDraftIdentitySha256"]
+    ):
+        raise ValueError("source package 与 materialized candidate identity 不一致")
+
+    project_name = sanitize_project_name(draft_root.name)
+    if project_name != draft_root.name:
+        raise ValueError("draftRoot basename 不是可直接使用的唯一项目名")
+    project_root = (workspace.config.projects_dir / project_name).resolve(strict=False)
+    if project_root.exists():
+        project = _matching_pending_content_project(
+            workspace,
+            project_root,
+            project_name=project_name,
+            content_draft_identity_sha256=source_package.content_draft_identity,
+            source_package_identity_sha256=source_package.manifest[
+                "sourcePackageIdentitySha256"
+            ],
+            generation_plan=source_package.generation_plan,
+            voiceover_mode=source_package.draft["voiceoverMode"],
+            visual_style_preset=source_package.draft["visualStylePreset"],
+        )
+        project_created = False
+    else:
+        project = workspace.create_project(
+            project_name,
+            source_package.directory / "source.srt",
+            confirmed_plan=source_package.generation_plan,
+            voiceover_mode=source_package.draft["voiceoverMode"],
+            visual_style_preset=source_package.draft["visualStylePreset"],
+            pending_initial_approval=True,
+            source_input=source_package.directory / "input.json",
+            source_manifest=source_package.directory / "manifest.json",
+            source_plan=source_package.directory / "generation-plan.json",
+        )
+        project_created = True
+
+    status = project_status(project.root)
+    if (
+        status.get("status") != "PASS"
+        or status.get("pendingInitialApproval") is not True
+        or status.get("nextGate") != "initial_content_plan_approval"
+        or status.get("approvalWritten") is not False
+    ):
+        raise ValueError("新预项目没有安全停在 initial content plan approval Gate")
+
+    return {
+        "schemaVersion": 1,
+        "operation": "finalize-content-draft",
+        "status": "待确认",
+        "technicalStatus": "PASS",
+        "taskId": task.data["taskId"],
+        "attempt": task.data["attempt"],
+        "candidatePath": materialized["candidatePath"],
+        "candidateSha256": materialized["candidateSha256"],
+        "contentDraftIdentitySha256": source_package.content_draft_identity,
+        "resultJsonPath": materialized["resultJsonPath"],
+        "resultSha256": materialized["resultSha256"],
+        "reviewFilePath": str(review_path.resolve(strict=True)),
+        "reviewSha256": review["reviewSha256"],
+        "sourcePackagePath": str(source_package.directory.resolve(strict=True)),
+        "sourcePackageIdentitySha256": source_package.manifest[
+            "sourcePackageIdentitySha256"
+        ],
+        "projectRoot": str(project.root.resolve(strict=True)),
+        "projectId": project.project_id,
+        "projectCreated": project_created,
+        "pendingInitialApproval": True,
+        "cueCount": materialized["cueCount"],
+        "sceneCount": materialized["sceneCount"],
+        "visualStylePreset": source_package.draft["visualStylePreset"],
+        "initialApprovalOptions": review["initialApprovalOptions"],
+        "userConfirmationRequired": True,
+        "nextGate": "initial_content_plan_approval",
+        "nextCommandArgv": None,
+        "formalPublished": True,
+        "approvalWritten": False,
+        "durationMs": round((time.perf_counter() - started) * 1000),
     }
 
 
@@ -648,6 +836,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     materialize.add_argument("--task", required=True, type=Path)
     materialize.add_argument("--dispatched-task-sha256", required=True)
+    finalize = sub.add_parser(
+        "finalize-content-draft",
+        help="一次校验/materialize content candidate 并创建待联合批准预项目",
+    )
+    finalize.add_argument("--task", required=True, type=Path)
+    finalize.add_argument("--dispatched-task-sha256", required=True)
+    finalize.add_argument(
+        "--workspace-config",
+        type=Path,
+        help="工作区配置；省略时使用 config/workspace.local.json",
+    )
+    finalize.add_argument(
+        "--gpt-login-image-generation-available",
+        action="store_true",
+    )
+    finalize_provider = finalize.add_mutually_exclusive_group()
+    finalize_provider.add_argument(
+        "--configured-image-provider-available",
+        dest="configured_image_provider_available",
+        action="store_true",
+    )
+    finalize_provider.add_argument(
+        "--configured-image-provider-unavailable",
+        dest="configured_image_provider_available",
+        action="store_false",
+    )
+    finalize.set_defaults(configured_image_provider_available=True)
+    finalize.add_argument(
+        "--fixed-image-generation-mode",
+        choices=("provider", "gpt-login"),
+    )
     status = sub.add_parser("project-status")
     status.add_argument("--project", required=True, type=Path)
     recommend = sub.add_parser(
@@ -691,6 +910,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.task,
                 args.dispatched_task_sha256,
             )
+        elif args.command == "finalize-content-draft":
+            summary = finalize_content_draft(args)
         elif args.command == "recommend-visual-style":
             summary = recommend_visual_style(args)
         elif args.command == "visual-style-catalog":
@@ -716,6 +937,7 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "finalize_content_draft",
     "main",
     "materialize_agent_result",
     "project_status",

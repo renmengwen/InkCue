@@ -344,7 +344,7 @@ def probe_dependencies(
         raise RuntimeError("依赖批量探测未返回结构化结果")
     try:
         raw_results = json.loads(payload_line)
-    except json.JSONDecodeError as exc:
+    except json.JSONDecodeError:
         raise RuntimeError("依赖批量探测返回了无效 JSON") from exc
     if not isinstance(raw_results, list):
         raise RuntimeError("依赖批量探测结果必须是数组")
@@ -590,6 +590,18 @@ def _parse_arguments(arguments: list[str]) -> argparse.Namespace:
     return parser.parse_args(arguments)
 
 
+def _stderr_metadata(stderr: str) -> dict[str, object]:
+    """只报告 child stderr 的结构信息，避免回显配置、正文或凭据。"""
+
+    normalised = stderr.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line for line in normalised.split("\n") if line.strip()]
+    return {
+        "present": bool(normalised.strip()),
+        "nonEmptyLineCount": len(lines),
+        "utf8ReplacementCharacterCount": normalised.count("\ufffd"),
+    }
+
+
 def _bootstrap_content_draft(args: argparse.Namespace) -> tuple[int, dict[str, object]]:
     """复用既有预检和 fast-prepare，在一次 CLI 调用中返回可直接派发的 descriptor。"""
 
@@ -639,12 +651,39 @@ def _bootstrap_content_draft(args: argparse.Namespace) -> tuple[int, dict[str, o
         command.extend(("--visual-style-preset", args.visual_style_preset))
     if args.config is not None:
         command.extend(("--workspace-config", args.config))
-    prepared = subprocess.run(command, capture_output=True, text=True, env=env, check=False)
+    prepared = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        check=False,
+    )
+    stderr_metadata = _stderr_metadata(prepared.stderr)
     try:
         payload = json.loads(prepared.stdout)
     except json.JSONDecodeError as exc:
-        raise RuntimeError("fast content prepare 未返回有效 descriptor") from exc
+        return 2, {
+            "ok": False,
+            "reason": "fast_prepare_invalid_descriptor",
+            "childExitCode": prepared.returncode,
+            "stderr": stderr_metadata,
+        }
+    if not isinstance(payload, dict):
+        return 2, {
+            "ok": False,
+            "reason": "fast_prepare_invalid_descriptor",
+            "childExitCode": prepared.returncode,
+            "stderr": stderr_metadata,
+        }
     if prepared.returncode != 0 or not payload.get("ok"):
+        if stderr_metadata["present"]:
+            payload = dict(payload)
+            payload["bootstrapDiagnostics"] = {
+                "childExitCode": prepared.returncode,
+                "stderr": stderr_metadata,
+            }
         return 2, payload
     descriptor = payload["preparedTask"]
     return 0, {
@@ -655,6 +694,14 @@ def _bootstrap_content_draft(args: argparse.Namespace) -> tuple[int, dict[str, o
         "draftRoot": payload["draftRoot"],
         "runId": payload["runId"],
         "attempt": payload["attempt"],
+        "dispatchPolicy": {
+            "mode": "direct_spawn",
+            "forkTurns": "none",
+            "modelSelection": "fastest_available_capable",
+            "reasoningEffort": "medium",
+            "inheritParentContext": False,
+            "inheritParentReasoningEffort": False,
+        },
         "preparedTask": descriptor,
     }
 

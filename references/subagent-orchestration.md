@@ -4,6 +4,8 @@
 
 对正常 topic/text 新任务，入口在读取 `SKILL.md` 后只执行已记录的一次 `python <SKILL_ROOT>\scripts\prepare_env.py --bootstrap-content-draft ...` bootstrap；该单次调用已完成 workspace-access、环境 check、provider/preset/input/draft/task fast-prepare 并输出紧凑 descriptor。派发前不得预先另跑两条 `prepare_env` 或先落 `body-file`，并禁止 memory lookup、整份或分段重读本合同/其他 reference，以及 `prompt-writing.md` 预读。prepared descriptor 已含 canonical schema/skeleton、`agentPrompt` 与 argv；`nextAction=spawn_now` 是立刻 direct spawn 的充分条件。candidate、materialize、pending approval 及具体 revision 等阶段开始后，才按需读取相应 reference 小节。
 
+首版 `contentDrafting` 的 bootstrap descriptor 还必须提供宿主中立 `dispatchPolicy`：`mode=direct_spawn`、`forkTurns=none`、`modelSelection=fastest_available_capable`、`reasoningEffort=medium`，并显式禁止继承父任务上下文和 reasoning effort。coordinator 将其映射为真实 `spawn_agent` 参数时必须传 `fork_turns="none"` 与 `reasoning_effort="medium"`，模型从当前宿主实际可用且满足文本能力的候选中选择最快者；不得省略参数后继承主任务 `high`，也不得在 descriptor 中硬编码某个宿主可能没有的模型。
+
 宿主 collaboration 的 `spawn_agent` 是开发者工具定义中的顶层 direct tool，不属于 `functions.exec` 的嵌套 `tools.*`，也被有意排除在其 `ALL_TOOLS` 中。coordinator 不得通过检查嵌套工具列表来预判 child 不可用；普通会话不得因此提前进入 fallback 或报告 `BLOCKED`。prepared descriptor 为 `nextAction=spawn_now` 时，必须先真实发起 direct `spawn_agent` 调用。只有该 direct call 实际返回 tool error，才能认定本次派发失败，再依据当前用户约束决定准确报告 `BLOCKED` 或是否允许 fallback；不得把未调用、嵌套列表缺失或准备完成冒充派发失败/成功。
 
 ## 1. 唯一 Coordinator
@@ -127,13 +129,15 @@ formal.scenes[i].sceneId/name/coreIdea/visualSubject/cueRange = candidate 对应
 
 effective concurrency 取 configured、ready task 数、宿主已换算 child slots 与 coordinator resource budget 的最小值。coordinator 始终保留自己的槽位；总 slot 到 child slot 只换算一次。
 
-模型和 reasoning effort 属于宿主执行策略，不进入 task、candidate、result 或作品 identity。默认选择满足 role 必需文本/图像/视频能力的最快可用 child，并使用 `medium` effort；一次完整 schema 归一后仍失败、复杂实质修订或非结构业务 validator 失败时再升级更强模型或 effort。不得为了填写 SHA、路径或 result 字段使用高推理 child；这些机械字段由 materializer 完成。
+模型和 reasoning effort 属于宿主执行策略，不进入 task、candidate、result 或作品 identity。默认选择满足 role 必需文本/图像/视频能力的最快可用 child，并使用 `medium` effort；首版 `contentDrafting` 还必须使用 `fork_turns="none"`，不能继承 coordinator 历史或 reasoning effort。一次完整 schema 归一后仍失败、复杂实质修订或非结构业务 validator 失败时再升级更强模型或 effort。不得为了填写 SHA、路径或 result 字段使用高推理 child；这些机械字段由 materializer 完成。
 
 只有 coordinator 能从当前实际宿主状态、live agents 和任务状态得知 child slots 与 role capability，并据此直接调用顶层 `spawn_agent`、`followup` 和等待机制。Python prepare/validate 脚本只冻结 task descriptor 或有序 unit：不得接收/推断 runtime child slots、coordinator budget、宿主 capability，不得输出 `spawnAgentCall`/`spawnRequest`、`dispatchAllowed` 或替宿主选择 fallback。`spawn_agent` 不出现在 `functions.exec` 的 `tools.*` / `ALL_TOOLS` 是预期行为，不构成 unavailable 证据；必须以真实 direct call 的返回结果为准。只有 direct call 实际返回 tool error 后，coordinator 才能报告派发失败，并按用户约束决定 `BLOCKED` 或允许的 fallback。当前用户要求主代理只编排时，coordinator 不得生成、编写或修改任何生成式 candidate/findings，派发失败即停止该生成任务并准确报告。
 
 attempt 是 artifact 版本边界，不是 agent 生命周期边界。首次独立 draft/plan/review 使用短上下文 child；用户修订 content 草案仍创建新 attempt，但上一 attempt 的同 role child 仍存在、idle、上一结果 completed 且 role contract 兼容时，优先 followup 原 child，让它只读取新 task/base/revision 的路径与 SHA。原 child 不可用、失败、role 改变、修订升级为全面独立重写或用户明确要求换执行者时才 spawn 新 child。
 
 candidate validator 必须在一次运行中返回全部可确定的结构错误。首次结构失败属于同 attempt 执行性补正：只 followup 原 child 一次，传完整错误清单以及冻结 schema/skeleton 的定位，要求一次全量 canonical schema 归一，不重新附带正文、图片或长日志。若重验仍是结构失败，立即换用更强的短上下文 child 处理同一 attempt；不得逐字段 followup、重复试错或创建新 attempt。业务内容实质修订仍按 revision 规则创建新 attempt。无论是否复用或升级，磁盘 current 与 SHA 始终高于代理记忆，且不改变正式写入和批准边界。
+
+首版 `contentDrafting` child 返回 `candidate_ready` 后，coordinator 不再分别启动 validator、materializer、review renderer、source prepare 和 project create，也不搜索各脚本参数。只执行 descriptor 的 `contentDraftFinalizeArgv`，即一次稳定动作 `coordinator_cli.py finalize-content-draft`；该动作完成上述确定性步骤并创建唯一 `pending_initial_approval` 预项目。它不新增批准语义、identity 链、状态机或 Gate，任一步失败都按同一动作的结构化结果停止；成功摘要为 `status=待确认`、`technicalStatus=PASS`、`nextGate=initial_content_plan_approval`。
 
 `contentDrafting`、`storyboardPlanning` 和 global `visualReview` 使用一 task一 child。`annotationDrafting` 保持一幕一 task/attempt/candidate/result（child 只写 candidate，result 由 coordinator 生成），但把按 plan 连续的最多 3 个 task 组成一个 dispatch unit，由同一 child 顺序执行。prepare 根据 configured concurrency 平衡连续切分：5 task/4 configured 为 `2+1+1+1`，9/3 为 `3+3+3`，5/2 为 `3+2`。多个 ready unit 必须先填满 effective 并发再等待，不能串行伪装成并发。
 
