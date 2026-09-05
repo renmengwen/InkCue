@@ -696,6 +696,28 @@ def _bootstrap_content_draft(args: argparse.Namespace) -> tuple[int, dict[str, o
         "attempt": payload["attempt"],
         "dispatchPolicy": {
             "mode": "direct_spawn",
+            "nextToolCallMustBe": "collaboration.spawn_agent",
+            "directToolCall": {
+                "namespace": "collaboration",
+                "name": "spawn_agent",
+                "invocation": "top_level_direct_tool_call",
+                "argumentMapping": {
+                    "messageFrom": "preparedTask.agentPrompt",
+                    "taskName": "coordinator_generated_lowercase_identifier",
+                    "fork_turns": "none",
+                    "reasoning_effort": "medium",
+                    "model": "fastest_available_capable",
+                },
+            },
+            "forbiddenRoutes": [
+                "functions.exec",
+                "functions.exec tools.spawn_agent",
+                "ALL_TOOLS lookup",
+                "self-thrown availability probe",
+            ],
+            "unavailableOnlyOn": "direct collaboration.spawn_agent tool error",
+            "probeFailureCountsAsUnavailable": False,
+            "fallbackBeforeDirectToolError": "forbidden",
             "forkTurns": "none",
             "modelSelection": "fastest_available_capable",
             "reasoningEffort": "medium",
