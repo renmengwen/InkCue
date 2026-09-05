@@ -29,11 +29,11 @@ stale、checkpoint 与 approval。candidate/旧 attempt 失败时保留诊断证
 
 ### 1.1 Gate 决策模式
 
-新项目先以 `project.json.initialApproval.status=pending` 创建。项目 loader 将其投影为 `pending_initial_approval=true` / `initial_approval_completed=false`；旧正式项目缺少 `initialApproval` 时兼容为已完成。pending 项目只允许阶段 0 review、current 样音及修订、联合批准；完整旁白、图片、annotation、render、merge、burn、mux、final 的每个入口都必须硬拒绝。该 marker 是最小持久化边界，不引入第二套状态机。
+新项目先以 `project.json.initialApproval.status=pending` 创建。项目 loader 将其投影为 `pending_initial_approval=true` / `initial_approval_completed=false`；旧正式项目缺少 `initialApproval` 时兼容为已完成。pending 项目只允许阶段 0 review、修订与联合批准；完整旁白、图片、annotation、render、merge、burn、mux、final 的每个入口都必须硬拒绝。该 marker 是最小持久化边界，不引入第二套状态机。
 
-阶段 0 的一次用户回复必须绑定 current content identity 与旁白项目 current `SAMPLE_IDENTITY`。原子动作重验 pending、identity、完整句选项和能力条件，成功时一次写入 BGM、agent 模式、生图方式、sample approval 与 `initialApproval.status=approved`；失败不留部分状态。审计 basis 固定区分 `user_joint_content_and_sample`、`user_joint_initial_approval` 与静音 `user_joint_silent_plan`。
+阶段 0 的一次用户回复只绑定 current content identity。原子动作重验 pending、identity、完整句选项和能力条件，成功时一次写入 BGM、agent 模式、生图方式与 `initialApproval.status=approved`；失败不留部分状态。审计 basis 固定为 `user_joint_content_and_plan`。
 
-`project.json.agentApprovalEnabled` 缺失或为 `false` 时保持人工批准。为 `true` 时，用户已用 current 样音完成唯一声音主观 Gate；full/final 在严格技术证据 current 后用最小 `approvalBasis/reviewBasis` 记录“用户样音授权后的技术推进”。视觉 Gate 仍需要真实查看。该字段不跳过技术 validator、current/identity/stale、既有批准脚本，也不新增 identity、manifest、状态机或恢复协议；basis 不进入作品 identity。
+`project.json.agentApprovalEnabled` 缺失或为 `false` 时保持人工批准。为 `true` 时，full/final 在严格技术证据 current 后用最小 `approvalBasis/reviewBasis` 记录“阶段 0 授权后的技术推进”。视觉 Gate 仍需要真实查看。该字段不跳过技术 validator、current/identity/stale、既有批准脚本，也不新增 identity、manifest、状态机或恢复协议；basis 不进入作品 identity。
 
 - 人工模式：coordinator 交付 current artifact/identity，等待用户完成所需真实审阅并明确确认。
 - 自主视觉模式：coordinator 必须证明实际完成了本 Gate 要求的查看图像或观看视频，对
@@ -64,13 +64,13 @@ identity 是规范化业务输入与合同版本的 SHA-256，不包含创建时
 | --- | --- | --- |
 | topic/body/rewritePolicy/target/narration cue/scene mapping | content/source、voice plan、音频、timeline、SRT、图片/annotation/视频及批准 | 仅按新 identity 重新判定可复用段 |
 | 仅 `imagePrompt`/正式 `prompt` 改变，cue 与 scene boundary 不变 | generation plan、图片及视觉下游 | current 音频、timeline、narration SRT |
-| voice/rate/朗读文本/分段/provider synthesis contract | sample/full 批准、受影响音频、timeline、SRT、annotation、视频和最终批准 | identity 未变的其他 segment |
+| voice/rate/朗读文本/分段/provider synthesis contract | full 批准、受影响音频、timeline、SRT、annotation、视频和最终批准 | identity 未变的其他 segment |
 | source 仅改时间或 narration WAV 改变 | 时长决定、full approval、timeline、SRT、annotation 与视频下游；豆包 source timing 变化还使 scene 时间窗口 prompt 与整轨音频 stale | 未受影响的图片；Edge/MiniMax 可按 synthesis identity 保留合成段，豆包不复用旧音频 |
 | 仅 ASR/VAD 分段/局部语速 QA/对齐/语义切句合同或 narration SRT 改变，且 scene 全局边界逐项不变 | full approval、字幕烧录、captioned/final 与最终批准 | current canonical WAV、图片、annotation、scene bundle、clean master；按新 binding 重验 |
 | ASR/对齐修复使任一 scene 尾音边界改变 | full approval、timing plan、annotation 时序、scene bundle、clean master、字幕、final 与相关批准 | current canonical WAV、图片 generation plan/manifest |
 | timing plan、render profile、字幕源/样式/字体或编码 contract 改变 | 受影响 annotation、scene/video、subtitle/final 与批准 | 未绑定输入的上游候选，需重新 binding |
 | `backgroundMusic.enabled`、豆包纯文本音色/scene 时间窗口 prompt/provider-embedded 模式、内置 BGM 字节或固定混音参数改变 | final 与最终批准；豆包 prompt 变化同时使整轨音频、timeline、SRT 与声音批准 stale | 与变化无关的画面/字幕上游；固定混音模式下可保留 current 旁白 |
-| pending 预项目的 content identity、voice/rate 或 sample identity 改变 | 初始联合 choice、sample approval 及受影响下游 | 不受影响的历史候选仅作证据 |
+| pending 预项目的 content identity 改变 | 初始联合 choice 及受影响下游 | 不受影响的历史候选仅作证据 |
 
 stale 文件可留作历史证据，但不得作为 current 输入；批准必须重新绑定新 identity。
 
@@ -127,6 +127,6 @@ unit；不得把缺失/损坏状态升级成 failed 来绕过 fail-closed。
 ## 7. 阶段引用
 
 - 图片 provider、并发与候选发布：[`image-generation.md`](image-generation.md)
-- Edge/MiniMax/豆包样音、完整旁白和 timeline：[`voiceover.md`](voiceover.md)
+- Edge/MiniMax/豆包完整旁白和 timeline：[`voiceover.md`](voiceover.md)
 - 字幕、烧录与最终媒体：[`subtitles.md`](subtitles.md)
 - 阶段 0 草案和内容 identity：[`phase-0-content.md`](phase-0-content.md)

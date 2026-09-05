@@ -12,7 +12,6 @@ DOUBAO_PERFORMANCE_BRIEF_KIND = "performanceBrief"
 DOUBAO_PROMPT_SPEC_KIND = "textPromptPlan"
 DOUBAO_TEXT_PROMPT_MAX_CHARACTERS = 3000
 DOUBAO_MAX_AUDIO_DURATION_SECONDS = 120
-DOUBAO_SAMPLE_MAX_AUDIO_DURATION_SECONDS = 30
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _TOP_LEVEL_FIELDS = {
@@ -247,7 +246,6 @@ def render_doubao_text_prompt(
     speech_text: str,
     *,
     background_music_enabled: bool,
-    sample: bool = False,
     target_duration_seconds: float | None = None,
 ) -> str:
     """渲染唯一请求 prompt；创意来自 brief，正文由程序逐字装配。"""
@@ -261,8 +259,6 @@ def render_doubao_text_prompt(
         raise DoubaoPromptError("豆包 text_prompt 的已确认原稿不能为空")
     if not isinstance(background_music_enabled, bool):
         raise DoubaoPromptError("豆包 text_prompt BGM 开关必须是布尔值")
-    if sample and background_music_enabled:
-        raise DoubaoPromptError("豆包样音固定不生成 BGM")
     if target_duration_seconds is not None and (
         isinstance(target_duration_seconds, bool)
         or not isinstance(target_duration_seconds, (int, float))
@@ -278,95 +274,83 @@ def render_doubao_text_prompt(
     if not isinstance(music, Mapping):
         raise DoubaoPromptError("豆包 promptSpec.music 必须是对象")
     lines = [narrator]
-    if sample:
-        lines.extend(
-            [
-                (
-                    "样音只使用上述自然语言定义的旁白音色，只朗读「」内原稿，"
-                    "不增删改写，不朗读引号外说明；"
-                    "不生成音乐、环境音、拟音或额外人声。"
-                ),
-                f"旁白自然朗读：「{speech_text}」",
-            ]
+    if target_duration_seconds is None:
+        raise DoubaoPromptError("豆包整轨 text_prompt 缺少目标总时长")
+    target_duration_ms = round(float(target_duration_seconds) * 1000)
+    lines.append(
+        "整段音频总时长控制在约 "
+        f"{_format_seconds(target_duration_ms)} 秒；请尽量准确遵守每段标注的"
+        "人声开始和结束时间，段落之间保留自然停顿。只使用上述自然语言定义的"
+        "旁白音色，不使用预设或参考 speaker 音色。"
+    )
+    if background_music_enabled:
+        lines.append(
+            _direction(
+                music.get("enabledOpeningDirection"),
+                label="promptSpec.music.enabledOpeningDirection",
+            )
+        )
+        lines.append(
+            "只由这位旁白朗读「」内原稿，不增删改写，不朗读引号外说明；"
+            "音乐始终低于人声，不生成环境音、拟音或额外人声。"
         )
     else:
-        if target_duration_seconds is None:
-            raise DoubaoPromptError("豆包整轨 text_prompt 缺少目标总时长")
-        target_duration_ms = round(float(target_duration_seconds) * 1000)
         lines.append(
-            "整段音频总时长控制在约 "
-            f"{_format_seconds(target_duration_ms)} 秒；请尽量准确遵守每段标注的"
-            "人声开始和结束时间，段落之间保留自然停顿。只使用上述自然语言定义的"
-            "旁白音色，不使用预设或参考 speaker 音色。"
+            "只由这位旁白朗读「」内原稿，不增删改写，不朗读引号外说明；"
+            "不生成音乐、环境音、拟音或额外人声。"
         )
-        if background_music_enabled:
-            lines.append(
-                _direction(
-                    music.get("enabledOpeningDirection"),
-                    label="promptSpec.music.enabledOpeningDirection",
-                )
-            )
-            lines.append(
-                "只由这位旁白朗读「」内原稿，不增删改写，不朗读引号外说明；"
-                "音乐始终低于人声，不生成环境音、拟音或额外人声。"
-            )
-        else:
-            lines.append(
-                "只由这位旁白朗读「」内原稿，不增删改写，不朗读引号外说明；"
-                "不生成音乐、环境音、拟音或额外人声。"
-            )
-        passages = prompt_spec.get("passages")
-        scene_texts = speech_text.split("\n\n")
-        if not isinstance(passages, list) or len(scene_texts) != len(passages):
-            raise DoubaoPromptError("豆包整轨原稿段落数与 authored passages 不一致")
-        previous_end_ms = -1
-        for index, (scene_text, passage) in enumerate(
-            zip(scene_texts, passages), start=1
+    passages = prompt_spec.get("passages")
+    scene_texts = speech_text.split("\n\n")
+    if not isinstance(passages, list) or len(scene_texts) != len(passages):
+        raise DoubaoPromptError("豆包整轨原稿段落数与 authored passages 不一致")
+    previous_end_ms = -1
+    for index, (scene_text, passage) in enumerate(
+        zip(scene_texts, passages), start=1
+    ):
+        if not isinstance(passage, Mapping):
+            raise DoubaoPromptError(f"豆包 passage[{index}] 结构无效")
+        start_ms = passage.get("startMs")
+        end_ms = passage.get("endMs")
+        if (
+            isinstance(start_ms, bool)
+            or not isinstance(start_ms, int)
+            or isinstance(end_ms, bool)
+            or not isinstance(end_ms, int)
+            or start_ms < previous_end_ms
+            or end_ms <= start_ms
         ):
-            if not isinstance(passage, Mapping):
-                raise DoubaoPromptError(f"豆包 passage[{index}] 结构无效")
-            start_ms = passage.get("startMs")
-            end_ms = passage.get("endMs")
-            if (
-                isinstance(start_ms, bool)
-                or not isinstance(start_ms, int)
-                or isinstance(end_ms, bool)
-                or not isinstance(end_ms, int)
-                or start_ms < previous_end_ms
-                or end_ms <= start_ms
-            ):
-                raise DoubaoPromptError(
-                    f"豆包 passage[{index}] 人声时间窗口无效"
-                )
-            if background_music_enabled:
-                transition = _direction(
-                    passage.get("enabledMusicBefore"),
-                    label=f"promptSpec passage[{index}].enabledMusicBefore",
-                    allow_empty=True,
-                )
-                if transition:
-                    lines.append(transition)
-            voice_direction = _direction(
-                passage.get("voiceDirection"),
-                label=f"promptSpec passage[{index}].voiceDirection",
-            )
-            lines.append(
-                f"{voice_direction}："
-                f"[{_format_seconds(start_ms)}s:{_format_seconds(end_ms)}s]"
-                f"「{scene_text}」"
-            )
-            previous_end_ms = end_ms
-        if previous_end_ms != target_duration_ms:
             raise DoubaoPromptError(
-                "豆包最后一段人声时间窗口必须收口到整轨目标时长"
+                f"豆包 passage[{index}] 人声时间窗口无效"
             )
         if background_music_enabled:
-            lines.append(
-                _direction(
-                    music.get("enabledEndingDirection"),
-                    label="promptSpec.music.enabledEndingDirection",
-                )
+            transition = _direction(
+                passage.get("enabledMusicBefore"),
+                label=f"promptSpec passage[{index}].enabledMusicBefore",
+                allow_empty=True,
             )
+            if transition:
+                lines.append(transition)
+        voice_direction = _direction(
+            passage.get("voiceDirection"),
+            label=f"promptSpec passage[{index}].voiceDirection",
+        )
+        lines.append(
+            f"{voice_direction}："
+            f"[{_format_seconds(start_ms)}s:{_format_seconds(end_ms)}s]"
+            f"「{scene_text}」"
+        )
+        previous_end_ms = end_ms
+    if previous_end_ms != target_duration_ms:
+        raise DoubaoPromptError(
+            "豆包最后一段人声时间窗口必须收口到整轨目标时长"
+        )
+    if background_music_enabled:
+        lines.append(
+            _direction(
+                music.get("enabledEndingDirection"),
+                label="promptSpec.music.enabledEndingDirection",
+            )
+        )
     prompt = "\n\n".join(lines)
     if len(prompt) > DOUBAO_TEXT_PROMPT_MAX_CHARACTERS:
         raise DoubaoPromptError(
@@ -387,7 +371,6 @@ __all__ = [
     "DOUBAO_PERFORMANCE_BRIEF_KIND",
     "DOUBAO_PROMPT_SCHEMA_VERSION",
     "DOUBAO_PROMPT_SPEC_KIND",
-    "DOUBAO_SAMPLE_MAX_AUDIO_DURATION_SECONDS",
     "DOUBAO_TEXT_PROMPT_MAX_CHARACTERS",
     "DoubaoPromptError",
     "build_doubao_prompt_spec",

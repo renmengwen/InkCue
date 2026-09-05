@@ -40,17 +40,13 @@ class FinalDeliveryRunnerTests(unittest.TestCase):
             "paths": dict(project_workspace.PROJECT_PATHS_V2),
             "renderProfile": dict(project_workspace.FIXED_RENDER_PROFILE),
             "agentApprovalEnabled": autonomous,
+            "contentSource": {"inputIdentitySha256": "c" * 64},
         }
         if autonomous:
             metadata["initialApproval"] = {
                 "status": "approved",
                 "contentIdentitySha256": "c" * 64,
-                "sampleIdentityHash": "d" * 64 if mode != "disabled" else None,
-                "approvalBasis": (
-                    "user_joint_content_and_sample"
-                    if mode != "disabled"
-                    else "user_joint_silent_plan"
-                ),
+                "approvalBasis": "user_joint_content_and_plan",
                 "approvedAt": "2026-08-27T10:00:00+08:00",
             }
         plan = {
@@ -169,7 +165,7 @@ class FinalDeliveryRunnerTests(unittest.TestCase):
         self.assertFalse(result["userConfirmationRequired"])
         self.assertTrue(result["approvalActionRequired"])
         self.assertEqual(result["nextGate"], "final_technical_approval")
-        self.assertEqual(result["approvalBasis"], "technical_after_user_sample")
+        self.assertEqual(result["approvalBasis"], "technical_after_initial_approval")
         self.assertIn("不得表述为已完整听审", result["confirmationRequest"])
 
     def test_final_approval_audit_requires_technical_full_approval_chain(self) -> None:
@@ -180,19 +176,11 @@ class FinalDeliveryRunnerTests(unittest.TestCase):
             json.dumps(
                 {
                     "fullIdentityHash": "f" * 64,
-                    "sample": {
-                        "identityHash": "d" * 64,
-                        "approval": {
-                            "approved": True,
-                            "identityHash": "d" * 64,
-                            "approvalBasis": "user_joint_initial_approval",
-                        },
-                    },
                     "fullApproval": {
                         "approved": True,
                         "identityHash": "f" * 64,
-                        "approvalBasis": "technical_after_user_sample",
-                        "reviewBasis": "user_joint_initial_sample_authorization_and_current_technical_validation",
+                        "approvalBasis": "technical_after_initial_approval",
+                        "reviewBasis": "initial_content_plan_authorization_and_current_technical_validation",
                     },
                 }
             ),
@@ -200,7 +188,7 @@ class FinalDeliveryRunnerTests(unittest.TestCase):
         )
         self.assertEqual(
             approve_final_media._approval_audit({"project": project}),
-            ("technical_after_user_sample", "current_final_technical_validation"),
+            ("technical_after_initial_approval", "current_final_technical_validation"),
         )
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         payload["fullApproval"]["approvalBasis"] = "human_full_listening"

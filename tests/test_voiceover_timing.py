@@ -20,13 +20,11 @@ from scripts.generate_voiceover import main as voice_main
 from scripts.project_workspace import (
     DEFAULT_GLOBAL_PROMPT,
     FIXED_CANVAS,
-    FIXED_RENDER_PROFILE,
     ProjectWorkspace,
     load_project,
     sha256_file,
-    write_json_atomic,
 )
-from scripts.srt_timeline import build_source_timing_plan, parse_srt
+from scripts.srt_timeline import parse_srt
 from scripts.voiceover import FakeProviderAdapter, PermanentProviderError
 
 
@@ -157,11 +155,6 @@ class VoiceoverTimingTests(unittest.TestCase):
 
     def generate_full(self, project, *, wav_ms: int = 200) -> str:
         adapter = FakeProviderAdapter(canonical_wav_bytes(wav_ms), "audio/wav")
-        sample_output = io.StringIO()
-        with redirect_stdout(sample_output):
-            self.assertEqual(voice_main(["sample", "--project", str(project.root)], adapter=adapter), 0)
-        sample_identity = next(line.split("=", 1)[1] for line in sample_output.getvalue().splitlines() if line.startswith("SAMPLE_IDENTITY="))
-        self.assertEqual(voice_main(["approve-sample", "--project", str(project.root), "--identity-hash", sample_identity]), 0)
         source_cues = parse_srt(
             project.path("source/source.srt").read_text(encoding="utf-8-sig")
         )
@@ -303,61 +296,6 @@ class VoiceoverTimingTests(unittest.TestCase):
         self.assertEqual(current.timing_plan["activeTimeline"]["kind"], "edge-tts-audio-timeline")
         self.assertEqual(current.timing_plan["activeTimeline"]["sha256"], sha256_file(project.path("audio/timeline.json")))
         self.assertEqual(sha256_file(project.plan_path), generation_before)
-
-    def test_timing_only_source_change_reuses_validated_segments_but_stales_approvals(self) -> None:
-        project = self.make_project()
-        self.generate_full(project)
-        old_manifest = json.loads(project.path("manifests/voice-manifest.json").read_text(encoding="utf-8"))
-        old_segment_hashes = [segment["sha256"] for segment in old_manifest["segments"]]
-
-        source_path = project.path("source/source.srt")
-        source_path.write_text(
-            "1\n00:00:00,000 --> 00:00:00,150\n第一幕自然中文句子。\n\n"
-            "2\n00:00:00,200 --> 00:00:00,400\n第二幕自然中文句子。\n",
-            encoding="utf-8",
-        )
-        metadata = json.loads(project.path("project.json").read_text(encoding="utf-8"))
-        metadata["source"]["sha256"] = sha256_file(source_path)
-        write_json_atomic(project.path("project.json"), metadata)
-        source_timing = build_source_timing_plan(
-            project_id=project.project_id,
-            source_srt_path=source_path,
-            scene_specs=project.plan["scenes"],
-            render_profile=FIXED_RENDER_PROFILE,
-            voiceover_mode="edge-tts",
-        )
-        write_json_atomic(project.timing_plan_path, source_timing)
-
-        sample_output = io.StringIO()
-        with redirect_stdout(sample_output):
-            self.assertEqual(
-                voice_main(["sample", "--project", str(project.root)], adapter=FakeProviderAdapter(canonical_wav_bytes(), "audio/wav")),
-                0,
-            )
-        manifest = json.loads(project.path("manifests/voice-manifest.json").read_text(encoding="utf-8"))
-        self.assertFalse(manifest["sample"]["approval"]["approved"])
-        self.assertFalse(manifest["fullApproval"]["approved"])
-        self.assertEqual([segment["sha256"] for segment in manifest["segments"]], old_segment_hashes)
-        sample_identity = next(line.split("=", 1)[1] for line in sample_output.getvalue().splitlines() if line.startswith("SAMPLE_IDENTITY="))
-        self.assertEqual(voice_main(["approve-sample", "--project", str(project.root), "--identity-hash", sample_identity]), 0)
-        no_call = FakeProviderAdapter(outcomes=[PermanentProviderError("segment should be reused")])
-        self.assertEqual(voice_main(["full", "--project", str(project.root)], adapter=no_call), 0)
-        self.assertEqual(no_call.requests, [])
-
-    def test_voice_rate_change_invalidates_sample_approval_and_segment_reuse(self) -> None:
-        project = self.make_project()
-        self.generate_full(project)
-        output = io.StringIO()
-        with redirect_stdout(output):
-            self.assertEqual(
-                voice_main(["sample", "--project", str(project.root), "--rate", "10"], adapter=FakeProviderAdapter(canonical_wav_bytes(), "audio/wav")),
-                0,
-            )
-        manifest = json.loads(project.path("manifests/voice-manifest.json").read_text(encoding="utf-8"))
-        self.assertFalse(manifest["sample"]["approval"]["approved"])
-        self.assertTrue(all(segment["status"] == "pending" for segment in manifest["segments"]))
-        self.assertEqual(voice_main(["full", "--project", str(project.root)], adapter=FakeProviderAdapter(canonical_wav_bytes(), "audio/wav")), 5)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,7 +3,7 @@
 
 本模块只处理用户可见选项和结构化选择，不读取项目、不写批准，也不判断
 宿主能力。coordinator 必须把当前真实能力作为参数传入，并由项目层在原子
-批准前重新验证 content/sample identity 与能力条件。
+批准前重新验证 content identity 与能力条件。
 """
 from __future__ import annotations
 
@@ -33,21 +33,17 @@ def _choice(
     action: str,
     text: str,
     content_approved: bool,
-    sample_approved: bool,
-    sample_required: bool,
     background_music_enabled: bool | None = None,
     agent_approval_enabled: bool | None = None,
     image_generation_mode: str | None = None,
     requires_feedback: bool = False,
 ) -> dict[str, Any]:
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "number": number,
         "choiceId": choice_id,
         "action": action,
         "contentApproved": content_approved,
-        "sampleApproved": sample_approved,
-        "sampleApprovalRequired": sample_required,
         "backgroundMusicEnabled": background_music_enabled,
         "agentApprovalEnabled": agent_approval_enabled,
         "imageGenerationMode": image_generation_mode,
@@ -113,7 +109,7 @@ def build_initial_approval_options(
     options: list[dict[str, Any]] = []
     approval_number = 1
     if voiceover_mode == "disabled":
-        # 传统静音 SRT 不生成或批准样音，BGM 也必须保持关闭，避免改变静音交付。
+        # 传统静音 SRT 必须保持 BGM 关闭，避免改变静音交付。
         for agent_enabled in (True, False):
             for image_mode in image_modes:
                 clauses = ["字幕与分镜方案通过", "不使用 BGM"]
@@ -134,8 +130,6 @@ def build_initial_approval_options(
                         action="approve",
                         text="，".join(clauses) + "。",
                         content_approved=True,
-                        sample_approved=False,
-                        sample_required=False,
                         background_music_enabled=False,
                         agent_approval_enabled=agent_enabled,
                         image_generation_mode=image_mode,
@@ -149,8 +143,6 @@ def build_initial_approval_options(
                 action="revise_content",
                 text="字幕与分镜方案需要修改。修改意见：……",
                 content_approved=False,
-                sample_approved=False,
-                sample_required=False,
                 requires_feedback=True,
             )
         )
@@ -166,7 +158,7 @@ def build_initial_approval_options(
     for background_music_enabled, agent_enabled in approval_axes:
         for image_mode in image_modes:
             clauses = [
-                "草案和样音通过",
+                "草案与制作方案通过",
                 "使用 BGM" if background_music_enabled else "不使用 BGM",
             ]
             if image_mode_selectable:
@@ -186,8 +178,6 @@ def build_initial_approval_options(
                     action="approve",
                     text="，".join(clauses) + "。",
                     content_approved=True,
-                    sample_approved=True,
-                    sample_required=True,
                     background_music_enabled=background_music_enabled,
                     agent_approval_enabled=agent_enabled,
                     image_generation_mode=image_mode,
@@ -195,55 +185,24 @@ def build_initial_approval_options(
             )
             approval_number += 1
 
-    revision_specs = (
-        (
-            "revise-content",
-            "revise_content",
-            "草案需要修改，当前样音暂不批准。修改意见：……",
-            False,
-            False,
-        ),
-        (
-            "revise-sample",
-            "revise_sample",
-            "草案通过，样音需要调整，其他方案保持不变。调整意见：……",
-            True,
-            False,
-        ),
-        (
-            "revise-content-and-sample",
-            "revise_both",
-            "草案和样音都需要修改。修改意见：……",
-            False,
-            False,
-        ),
-    )
-    for choice_id, action, text, content_approved, sample_approved in revision_specs:
-        options.append(
-            _choice(
-                number=approval_number,
-                choice_id=choice_id,
-                action=action,
-                text=text,
-                content_approved=content_approved,
-                sample_approved=sample_approved,
-                sample_required=True,
-                requires_feedback=True,
-            )
+    options.append(
+        _choice(
+            number=approval_number,
+            choice_id="revise-content-plan",
+            action="revise_content",
+            text="草案与制作方案需要修改。修改意见：……",
+            content_approved=False,
+            requires_feedback=True,
         )
-        approval_number += 1
+    )
     return tuple(options)
 
 
-def _validate_identity(value: str | None, *, label: str, required: bool) -> str | None:
+def _validate_identity(value: str | None, *, label: str) -> str:
     if value is None:
-        if required:
-            raise InitialApprovalOptionError(f"{label} 缺失")
-        return None
+        raise InitialApprovalOptionError(f"{label} 缺失")
     if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
         raise InitialApprovalOptionError(f"{label} 必须是小写 64 位 SHA-256")
-    if not required:
-        raise InitialApprovalOptionError(f"{label} 在当前静音路径中必须为空")
     return value
 
 
@@ -260,8 +219,6 @@ def _validated_options(options: Sequence[Mapping[str, Any]]) -> tuple[Mapping[st
         "choiceId",
         "action",
         "contentApproved",
-        "sampleApproved",
-        "sampleApprovalRequired",
         "backgroundMusicEnabled",
         "agentApprovalEnabled",
         "imageGenerationMode",
@@ -271,8 +228,8 @@ def _validated_options(options: Sequence[Mapping[str, Any]]) -> tuple[Mapping[st
     for option in options:
         if not isinstance(option, Mapping) or set(option) != required:
             raise InitialApprovalOptionError("option 字段不符合 allowlist")
-        if option["schemaVersion"] != 1:
-            raise InitialApprovalOptionError("option schemaVersion 必须为 1")
+        if option["schemaVersion"] != 2:
+            raise InitialApprovalOptionError("option schemaVersion 必须为 2")
         number = option["number"]
         text = option["text"]
         choice_id = option["choiceId"]
@@ -325,7 +282,6 @@ def parse_initial_approval_response(
     *,
     options: Sequence[Mapping[str, Any]],
     content_identity_sha256: str,
-    sample_identity_sha256: str | None = None,
 ) -> dict[str, Any]:
     """把当前选项的完整句/编号解析为带 current identity 的结构化 choice。
 
@@ -338,28 +294,18 @@ def parse_initial_approval_response(
     content_identity = _validate_identity(
         content_identity_sha256,
         label="content_identity_sha256",
-        required=True,
-    )
-    sample_required = bool(option["sampleApprovalRequired"])
-    sample_identity = _validate_identity(
-        sample_identity_sha256,
-        label="sample_identity_sha256",
-        required=sample_required,
     )
     requires_feedback = bool(option["requiresFeedback"])
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "choiceId": option["choiceId"],
         "optionNumber": option["number"],
         "action": option["action"],
         "contentApproved": option["contentApproved"],
-        "sampleApproved": option["sampleApproved"],
-        "sampleApprovalRequired": sample_required,
         "backgroundMusicEnabled": option["backgroundMusicEnabled"],
         "agentApprovalEnabled": option["agentApprovalEnabled"],
         "imageGenerationMode": option["imageGenerationMode"],
         "contentIdentitySha256": content_identity,
-        "sampleIdentitySha256": sample_identity,
         "revisionInstructions": feedback,
         "requiresFeedback": requires_feedback,
         "readyForAtomicApproval": option["action"] == "approve",

@@ -30,7 +30,7 @@ elif __name__ == "voiceover":
 
 
 VOICE_PLAN_SCHEMA_VERSION = 2
-VOICE_MANIFEST_SCHEMA_VERSION = 2
+VOICE_MANIFEST_SCHEMA_VERSION = 3
 SEGMENTATION_MODE = "speech_units"
 FULL_TRACK_SEGMENTATION_MODE = "full_track"
 EDGE_TTS_PACKAGE_VERSION = "7.2.8"
@@ -46,12 +46,11 @@ SUPPORTED_PROVIDER_PROTOCOLS = {
 }
 SUPPORTED_AUDIO_PROVIDERS = set(SUPPORTED_PROVIDER_PROTOCOLS)
 REVIEW_POLICIES = frozenset({"user_first", "agent_first"})
-SAMPLE_APPROVAL_BASES = frozenset({"user_sample_listening", "user_joint_initial_approval"})
-FULL_APPROVAL_BASES = frozenset({"human_full_listening", "technical_after_user_sample"})
+FULL_APPROVAL_BASES = frozenset({"human_full_listening", "technical_after_initial_approval"})
 FULL_REVIEW_BASES = frozenset(
     {
         "current_full_audio_listening",
-        "user_joint_initial_sample_authorization_and_current_technical_validation",
+        "initial_content_plan_authorization_and_current_technical_validation",
     }
 )
 DEFAULT_OUTPUT_FORMAT = "audio-24khz-48kbitrate-mono-mp3"
@@ -78,12 +77,6 @@ SEGMENT_STATUSES = (
     "cancelled",
     "unknown_external_outcome",
 )
-SAMPLE_STATUSES = (
-    "pending",
-    "validated",
-    "unknown_external_outcome",
-)
-
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _RATE_VOLUME_RE = re.compile(r"^[+-]\d+%$")
 _PITCH_RE = re.compile(r"^[+-]\d+Hz$")
@@ -964,17 +957,6 @@ def create_voice_manifest(
             "sourceTextIdentityHash": plan["sourceTextIdentityHash"],
             "sourceTimingIdentityHash": plan["sourceTimingIdentityHash"],
         },
-        "sample": {
-            "status": "pending",
-            "identityHash": None,
-            "media": None,
-            "approval": {
-                "approved": False,
-                "identityHash": None,
-                "approvalBasis": None,
-                "approvedAt": None,
-            },
-        },
         "runs": [],
         "segments": [
             {
@@ -1155,63 +1137,12 @@ def validate_voice_manifest(
             raise VoiceoverValidationError(
                 "需要 provider 字幕的 validated segment 缺少正式字幕 binding"
             )
-    sample = manifest.get("sample")
     full_approval = manifest.get("fullApproval")
-    if not isinstance(sample, Mapping) or not isinstance(sample.get("approval"), Mapping):
-        raise VoiceoverValidationError("sample approval 结构无效")
-    sample_status = sample.get("status")
-    if sample_status not in SAMPLE_STATUSES:
-        raise VoiceoverValidationError("sample.status 无效")
-    if not isinstance(sample["approval"].get("approved"), bool):
-        raise VoiceoverValidationError("sample.approval.approved 必须是布尔值")
-    sample_prompt_sha = sample.get("providerTextPromptSha256")
-    if sample_prompt_sha is not None:
-        _require_sha256(
-            sample_prompt_sha, label="sample.providerTextPromptSha256"
-        )
-    if sample_status == "validated":
-        _require_sha256(sample.get("identityHash"), label="sample.identityHash")
-        if not isinstance(sample.get("media"), Mapping):
-            raise VoiceoverValidationError("validated sample 缺少 media")
-    elif sample_status == "unknown_external_outcome":
-        if sample.get("identityHash") is not None or sample.get("media") is not None:
-            raise VoiceoverValidationError(
-                "unknown_external_outcome sample 不得伪造 identity 或 media"
-            )
-        if sample["approval"].get("approved") is not False:
-            raise VoiceoverValidationError(
-                "unknown_external_outcome sample 不得保留批准"
-            )
-        failure = sample.get("failure")
-        if not isinstance(failure, Mapping):
-            raise VoiceoverValidationError(
-                "unknown_external_outcome sample 缺少 failure"
-            )
-        reason_code = failure.get("reasonCode")
-        if (
-            failure.get("stage") != "provider_evidence"
-            or not isinstance(reason_code, str)
-            or re.fullmatch(r"[a-z][a-z0-9_]*", reason_code) is None
-            or failure.get("providerResponseReceived") is not True
-            or failure.get("externalResultIncomplete") is not True
-            or failure.get("retryAllowed") is not False
-        ):
-            raise VoiceoverValidationError(
-                "unknown_external_outcome sample.failure 结构无效"
-            )
     if not isinstance(manifest.get("runs"), list):
         raise VoiceoverValidationError("voice manifest runs 必须是数组")
     if not isinstance(full_approval, Mapping) or not isinstance(full_approval.get("approved"), bool):
         raise VoiceoverValidationError("fullApproval.approved 必须是布尔值")
     # Technical validation is deliberately independent from human approval.
-    if sample["approval"]["approved"]:
-        identity = sample["approval"].get("identityHash")
-        _require_sha256(identity, label="sample approval identity")
-        if identity != sample.get("identityHash"):
-            raise VoiceoverValidationError("sample approval identity 与 current sample 不一致")
-        sample_basis = sample["approval"].get("approvalBasis")
-        if sample_basis is not None and sample_basis not in SAMPLE_APPROVAL_BASES:
-            raise VoiceoverValidationError("sample approvalBasis 无效")
     if full_approval["approved"]:
         full_identity = full_approval.get("identityHash")
         _require_sha256(full_identity, label="full approval identity")
@@ -1226,8 +1157,8 @@ def validate_voice_manifest(
             raise VoiceoverValidationError("fullApproval.approvalBasis 无效")
         if review_basis is not None and review_basis not in FULL_REVIEW_BASES:
             raise VoiceoverValidationError("fullApproval.reviewBasis 无效")
-        if approval_basis == "technical_after_user_sample" and review_basis != (
-            "user_joint_initial_sample_authorization_and_current_technical_validation"
+        if approval_basis == "technical_after_initial_approval" and review_basis != (
+            "initial_content_plan_authorization_and_current_technical_validation"
         ):
             raise VoiceoverValidationError("技术自主 fullApproval 缺少对应 reviewBasis")
         if manifest.get("fullIdentityHash") is not None and full_identity != manifest.get("fullIdentityHash"):
@@ -1325,7 +1256,6 @@ __all__ = [
     "ProviderError",
     "RawAudioResult",
     "RetryableProviderError",
-    "SAMPLE_STATUSES",
     "SEGMENTATION_MODE",
     "SEGMENT_STATUSES",
     "SUPPORTED_AUDIO_PROVIDERS",

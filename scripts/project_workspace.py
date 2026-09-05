@@ -1227,7 +1227,6 @@ def validate_project_metadata_data(root: Path, metadata: Any) -> dict[str, Any]:
             expected_fields = {
                 "status",
                 "contentIdentitySha256",
-                "sampleIdentityHash",
                 "approvalBasis",
                 "approvedAt",
             }
@@ -1237,15 +1236,7 @@ def validate_project_metadata_data(root: Path, metadata: Any) -> dict[str, Any]:
                 raise ProjectValidationError(
                     "initialApproval.contentIdentitySha256 无效"
                 )
-            sample_identity = initial_approval.get("sampleIdentityHash")
-            if sample_identity is not None and not _is_sha256(sample_identity):
-                raise ProjectValidationError("initialApproval.sampleIdentityHash 无效")
-            expected_basis = (
-                "user_joint_silent_plan"
-                if sample_identity is None
-                else "user_joint_content_and_sample"
-            )
-            if initial_approval.get("approvalBasis") != expected_basis:
+            if initial_approval.get("approvalBasis") != "user_joint_content_and_plan":
                 raise ProjectValidationError("initialApproval.approvalBasis 无效")
             approved_at = initial_approval.get("approvedAt")
             if not isinstance(approved_at, str):
@@ -1543,63 +1534,6 @@ def load_project(
             raise ProjectValidationError(
                 "initialApproval 绑定的 content identity 已 stale"
             )
-        sample_identity = initial_approval.get("sampleIdentityHash")
-        if project.voiceover_mode in AUDIO_VOICEOVER_MODES:
-            manifest_path = safe_project_path(root, "manifests/voice-manifest.json")
-            try:
-                voice_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                raise ProjectValidationError(
-                    "已初始批准的旁白项目缺少可读 voice manifest"
-                ) from exc
-            sample = voice_manifest.get("sample") if isinstance(voice_manifest, dict) else None
-            approval = sample.get("approval") if isinstance(sample, dict) else None
-            sample_binding_current = (
-                isinstance(sample, dict)
-                and _is_sha256(sample_identity)
-                and sample.get("identityHash") == sample_identity
-                and isinstance(approval, dict)
-                and approval.get("approved") is True
-                and approval.get("identityHash") == sample_identity
-                and approval.get("approvalBasis") == "user_joint_initial_approval"
-            )
-            if not sample_binding_current:
-                current_sample_identity = (
-                    sample.get("identityHash") if isinstance(sample, dict) else None
-                )
-                sample_reset_for_reapproval = (
-                    allow_pending_initial_approval
-                    and isinstance(sample, dict)
-                    and sample.get("status") == "validated"
-                    and _is_sha256(current_sample_identity)
-                    and isinstance(approval, dict)
-                    and approval.get("approved") is False
-                    and approval.get("identityHash") is None
-                    and approval.get("approvalBasis") is None
-                    and approval.get("approvedAt") is None
-                )
-                if sample_reset_for_reapproval:
-                    # 生成新的 voice/rate 样音后，磁盘上的旧联合批准会暂时
-                    # 指向旧 SAMPLE_IDENTITY。只有明确允许 pending 的阶段 0
-                    # coordinator/批准入口可以把这一严格可识别的状态投影成
-                    # pending 视图；普通下游仍 fail-closed。新的联合批准随后
-                    # 通过原子提交同时写回 current sample approval 与项目选择。
-                    metadata["initialApproval"] = {
-                        "status": INITIAL_APPROVAL_PENDING
-                    }
-                    for field in (
-                        "backgroundMusic",
-                        "agentApprovalEnabled",
-                        "imageGenerationMode",
-                    ):
-                        metadata.pop(field, None)
-                    validate_project_metadata_data(root, metadata)
-                else:
-                    raise ProjectValidationError(
-                        "initialApproval 未绑定 current 已联合批准样音"
-                    )
-        elif sample_identity is not None:
-            raise ProjectValidationError("静音项目 initialApproval 不得绑定样音")
     if project.pending_initial_approval and not allow_pending_initial_approval:
         raise ProjectValidationError(
             "项目仍为 pending_initial_approval；当前操作不允许越过初始联合批准"

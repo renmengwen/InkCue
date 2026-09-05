@@ -48,6 +48,12 @@ def _approval_audit(inspection: Mapping[str, Any]) -> tuple[str, str]:
     )
     if not autonomous:
         return "human_full_media_review", "current_final_full_playback"
+    if (
+        initial.get("approvalBasis") != "user_joint_content_and_plan"
+        or initial.get("contentIdentitySha256")
+        != project.current_content_identity_sha256
+    ):
+        raise FinalApprovalGateError("自主最终批准要求 current 初始内容与制作方案授权")
     if project.voiceover_mode == "disabled":
         return "technical_after_initial_approval", "current_final_technical_validation"
 
@@ -57,21 +63,15 @@ def _approval_audit(inspection: Mapping[str, Any]) -> tuple[str, str]:
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise FinalApprovalGateError(f"无法读取 current voice manifest: {exc}") from exc
     full_approval = _mapping(voice_manifest.get("fullApproval"), "fullApproval")
-    sample = _mapping(voice_manifest.get("sample"), "sample")
-    sample_approval = _mapping(sample.get("approval"), "sample.approval")
     if (
-        sample_approval.get("approved") is not True
-        or sample_approval.get("identityHash") != sample.get("identityHash")
-        or sample_approval.get("approvalBasis") != "user_joint_initial_approval"
-        or initial.get("sampleIdentityHash") != sample.get("identityHash")
-        or full_approval.get("approved") is not True
+        full_approval.get("approved") is not True
         or full_approval.get("identityHash") != voice_manifest.get("fullIdentityHash")
-        or full_approval.get("approvalBasis") != "technical_after_user_sample"
+        or full_approval.get("approvalBasis") != "technical_after_initial_approval"
         or full_approval.get("reviewBasis")
-        != "user_joint_initial_sample_authorization_and_current_technical_validation"
+        != "initial_content_plan_authorization_and_current_technical_validation"
     ):
-        raise FinalApprovalGateError("自主最终批准要求 current 用户样音与技术 fullApproval 授权链")
-    return "technical_after_user_sample", "current_final_technical_validation"
+        raise FinalApprovalGateError("自主最终批准要求 current 初始方案与技术 fullApproval 授权链")
+    return "technical_after_initial_approval", "current_final_technical_validation"
 
 
 def approve_final(project_root: str | Path, identity_hash: str) -> dict[str, Any]:

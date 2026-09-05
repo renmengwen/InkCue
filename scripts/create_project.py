@@ -62,7 +62,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pending-initial-approval",
         action="store_true",
-        help="创建仅允许阶段 0 草案/样音操作的待初始联合批准预项目",
+        help="创建仅允许阶段 0 内容与制作方案确认的待批准预项目",
     )
     parser.add_argument(
         "--source-input",

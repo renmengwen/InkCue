@@ -8,7 +8,7 @@ InkCue（墨序）可以把主题、正文或 SRT 制作为 1920x1080、60fps �
 
 [在 Bilibili 观看 InkCue 白板动画演示](https://www.bilibili.com/video/BV1ik836ME8B/)
 
-> 当前版本面向 Windows 本地工作流。阶段 0 先创建 `pending_initial_approval` 预项目并生成 current 样音；用户一次检查草案/制作方案、试听样音并回复一条完整选项，即可选择后续逐阶段确认，或授权 AI 按严格技术证据自主推进到成片。
+> 当前版本面向 Windows 本地工作流。阶段 0 先创建 `pending_initial_approval` 预项目；用户一次检查草案/制作方案并回复一条完整选项，即可选择后续逐阶段确认，或授权 AI 按严格技术证据自主推进到成片。完整音频在阶段 0 通过后生成。
 
 ## 核心能力
 
@@ -44,9 +44,9 @@ topic/text 的旁白 provider 不需要用户选择。skill 始终读取自身�
 
 非 SRT 输入的目标时长必须在 15 到 600 秒之间。Edge TTS 不需要 API Key，但需要访问微软在线语音服务。
 
-阶段 0 不使用斜杠填空模板。coordinator 按当前合法能力枚举完整自然语言句子；用户可直接复制一句或回复编号。固定生图方式时，旁白项目提供 BGM × 后续模式的 4 个通过组合；只有当前登录态 `image_gen` 和已配置图片供应商同时真实可用时，才把生图方式并入每句，枚举 8 个组合。active voice provider 只显示“当前已采用”，不把 Edge/MiniMax/豆包列为选项。传统静音 SRT 不要求样音，改用“字幕与分镜方案通过……”语义，并保持静音交付。
+阶段 0 不使用斜杠填空模板。coordinator 按当前合法能力枚举完整自然语言句子；用户可直接复制一句或回复编号。固定生图方式时，旁白项目提供 BGM × 后续模式的 4 个通过组合；只有当前登录态 `image_gen` 和已配置图片供应商同时真实可用时，才把生图方式并入每句，枚举 8 个组合。active voice provider 只显示“当前已采用”，不把 Edge/MiniMax/豆包列为选项。传统静音 SRT 使用“字幕与分镜方案通过……”语义，并保持静音交付。
 
-一次合法通过回复会绑定 current content identity 与 `SAMPLE_IDENTITY`，原子写入 `project.json.initialApproval=approved`、`backgroundMusic.enabled`、`agentApprovalEnabled`、`imageGenerationMode` 和样音批准。任一重验失败都不会留下半批准状态。预项目批准前只可用于阶段 0 审阅、样音技术验证和修订；完整旁白、生图、annotation、render、merge、burn、mux、final 均硬拒绝。旧正式项目缺少 `initialApproval` 时按已批准读取，缺少 `agentApprovalEnabled` 时按 `false`。
+一次合法通过回复只绑定 current content identity，原子写入 `project.json.initialApproval=approved`、`backgroundMusic.enabled`、`agentApprovalEnabled` 与 `imageGenerationMode`。任一重验失败都不会留下半批准状态。预项目批准前只可用于阶段 0 审阅和修订；完整旁白、生图、annotation、render、merge、burn、mux、final 均硬拒绝。旧正式项目缺少 `initialApproval` 时按已批准读取，缺少 `agentApprovalEnabled` 时按 `false`。
 
 ## 工作流程
 
@@ -57,10 +57,10 @@ topic/text 的旁白 provider 不需要用户选择。skill 始终读取自身�
 草案、cue/scene、分镜与制作方案候选
         |
         v
-pending 预项目 + current 样音
+pending 预项目
         |
         v
-用户一次联合确认（草案/样音/BGM/后续模式/生图方式）
+用户一次联合确认（草案/BGM/后续模式/生图方式）
         |
         v
 严格 SRT + generation plan + 完整旁白/真实 timing plan
@@ -75,7 +75,7 @@ pending 预项目 + current 样音
 output/final.mp4 最终确认
 ```
 
-技术校验通过不等于真实听审。逐阶段模式继续由用户完整试听旁白、看片听音最终成片。自主模式以用户已批准的 current 样音作为唯一声音主观 Gate；完整旁白仍须通过整轨单次 provider、canonical WAV、完整解码、原稿对齐、timeline/narration SRT/current identity 与时长偏差检查。Edge TTS 使用本地 FunASR token 时间证据；MiniMax 使用同次 T2A 响应返回的 `subtitle_enable=true`、`subtitle_type=word` 原生字幕证据；豆包 prompt-only 使用外部模型 `seed-audio-1.0` 同次响应返回的 `subtitle.sentences[].words[]` 原生字幕证据，并绑定纯文本音色、scene 时间窗口与完整导演式 prompt SHA。MiniMax 与豆包都不进行 FunASR 二次识别。final 仍须通过流结构、AAC、字幕、完整解码、帧数/时长/尾部、实际 BGM 模式和 `FINAL_IDENTITY`；Edge/MiniMax 启用 BGM 时验证固定混音，豆包启用时验证 `provider_embedded` 且不得重复混入内置曲目。通过后记录“用户样音授权后的技术推进”，绝不声称 AI 完整听过。视觉 Gate 仍要求宿主对 current artifact 实际检查。
+技术校验通过不等于真实听审。逐阶段模式继续由用户完整试听旁白、看片听音最终成片。自主模式下，完整旁白仍须通过整轨单次 provider、canonical WAV、完整解码、原稿对齐、timeline/narration SRT/current identity 与时长偏差检查。Edge TTS 使用本地 FunASR token 时间证据；MiniMax 使用同次 T2A 响应返回的 `subtitle_enable=true`、`subtitle_type=word` 原生字幕证据；豆包 prompt-only 使用外部模型 `seed-audio-1.0` 同次响应返回的 `subtitle.sentences[].words[]` 原生字幕证据，并绑定纯文本音色、scene 时间窗口与完整导演式 prompt SHA。MiniMax 与豆包都不进行 FunASR 二次识别。final 仍须通过流结构、AAC、字幕、完整解码、帧数/时长/尾部、实际 BGM 模式和 `FINAL_IDENTITY`；Edge/MiniMax 启用 BGM 时验证固定混音，豆包启用时验证 `provider_embedded` 且不得重复混入内置曲目。通过后记录“阶段 0 授权后的技术推进”，绝不声称 AI 完整听过。视觉 Gate 仍要求宿主对 current artifact 实际检查。
 
 正式多幕渲染会记录 `configuredSceneRenderConcurrency` 与 `readySceneCount`，并按 `effectiveSceneRenderConcurrency = min(configuredSceneRenderConcurrency, readySceneCount)` 计算有效 worker 数。worker 只生成并深验彼此独立的单幕 candidate；coordinator 即使收到乱序结果，也必须按 generation plan 顺序复核 current binding 并原子发布。任一必需幕失败时 batch 仍为 `FAIL`；即使已有部分幕成功发布，也不能进入全量 scene review。只有全部必需幕 current、并由项目当前批准主体明确批准 current 有序 scene bundle 后，才允许合并。
 
@@ -173,13 +173,13 @@ $envPy = "D:\SRTWhiteboard\runtime\.venv\Scripts\python.exe"
 制作约 60 秒、使用 Edge TTS 旁白的白板动画。
 ```
 
-若希望试听样音并完成一次联合确认后，由 AI 按技术证据继续到成片，可以直接复制阶段 0 展示的对应完整句，例如：
+若希望完成阶段 0 联合确认后，由 AI 按技术证据继续到成片，可以直接复制阶段 0 展示的对应完整句，例如：
 
 ```text
-草案和样音通过，不使用 BGM，后续由 AI 自主推进至成片。
+草案与制作方案通过，不使用 BGM，后续由 AI 自主推进至成片。
 ```
 
-Codex 会读取 [SKILL.md](SKILL.md)，在 pending 预项目中准备 current 样音，并用一次原子联合批准冻结 BGM、后续模式和生图方式。自主模式不会删除技术 Gate，也不会伪造听音；child 和 runner 都不会自行批准。
+Codex 会读取 [SKILL.md](SKILL.md)，在 pending 预项目中用一次原子联合批准冻结 BGM、后续模式和生图方式。完整音频在阶段 0 通过后生成；自主模式不会删除技术 Gate，也不会伪造听音，child 和 runner 都不会自行批准。
 
 ## 常用 CLI
 
@@ -196,23 +196,19 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 
 # 不传 --voiceover-mode 时，新项目读取 config/voice-providers.local.json 的 activeProvider；
 # 如果需要明确创建静音项目，请显式传 --voiceover-mode disabled。
-# 阶段 0 选择不传给 create_project；联合动作在重验 current identities 后原子冻结。
+# 阶段 0 选择不传给 create_project；联合动作在重验 current content identity 后原子冻结。
 # 省略 --pending-initial-approval 的旧调用仅用于兼容既有已批准工作流，不得用于新任务绕过阶段 0。
 
-# 在 pending 预项目中生成样音；豆包先由 coordinator 参考 current Seed Audio 示例生成 brief
-& $envPy scripts\generate_voiceover.py sample --project <豆包项目根目录> `
-  --voice <voice> --rate 0 `
-  --doubao-performance-brief <项目\.work\doubao-performance-brief.json>
-# Edge TTS / MiniMax 不使用 performance brief 参数
-& $envPy scripts\generate_voiceover.py sample --project <Edge或MiniMax项目根目录> `
-  --voice <voice> --rate 0
-# 不单独先写 sample approval；联合批准动作同时绑定 current content identity 与 SAMPLE_IDENTITY。
+# 阶段 0 只批准 current 内容与制作方案
 & $envPy scripts\approve_initial_project.py --project <项目根目录> `
   --selection <parser 输出的-selection.json> `
   --configured-image-provider-available
 
-# 生成并技术校验完整旁白；人工模式真实试听，自主模式按样音授权后的严格技术证据推进
+# 阶段 0 通过后生成并技术校验完整旁白
+# Edge/MiniMax 首次调用可省略 voice/rate 以读取 provider 配置；豆包首次调用需提供 current brief。
 & $envPy scripts\generate_voiceover.py full --project <项目根目录>
+& $envPy scripts\generate_voiceover.py full --project <豆包项目根目录> `
+  --doubao-performance-brief <项目\.work\doubao-performance-brief.json>
 & $envPy scripts\validate_voiceover.py --project <项目根目录>
 & $envPy scripts\generate_voiceover.py approve-full --project <项目根目录> `
   --identity-hash <current-FULL_IDENTITY> `
@@ -266,7 +262,7 @@ CLI 适合调试和确定性阶段；完整生产工作流建议交给 Codex 编
 
 上述三个视觉阶段都支持 `--review-policy user_first|agent_first`。`agentApprovalEnabled=true` 时确定性派生 `agent_first`；为 `false`/缺失时仍由用户选择。后续显式冲突值 fail-closed。线稿验证成功后生成 identity 绑定的 review；`agent_first` 只准备宿主可消费的视觉检查任务，不自动批准。只有 coordinator 重验 child 的真实看图/视频 scope、findings 和 current binding 后才能作视觉决定。声音和 final 的自主技术推进使用单独的最小 `approvalBasis/reviewBasis` 审计，不能写成 AI 完整试听/看片听音。
 
-Edge TTS / MiniMax / 豆包语音的样音、完整旁白和真实时长流程见 [语音合同](references/voiceover.md)。人工批准、annotation candidate 和恢复流程的完整命令见 [SKILL.md](SKILL.md)。
+Edge TTS / MiniMax / 豆包语音的完整旁白和真实时长流程见 [语音合同](references/voiceover.md)。人工批准、annotation candidate 和恢复流程的完整命令见 [SKILL.md](SKILL.md)。
 
 ### Phase 4 可选 coordinator runner
 
@@ -344,7 +340,7 @@ runner 使用显式模块 allowlist，并让每个模块在独立 Python 子进�
 
 自动测试通过不代表真实 provider、真实媒体、用户亲自验收或 AI 代理验收通过。
 
-fixture 的通过不能冒充真实 provider、真实媒体、用户亲自批准或 AI 代理批准。真实 provider 未执行时必须另报 `SKIP`；外部条件不可用则报 `BLOCKED`；质量 Gate 必须保留为“待确认”且 `approvalWritten=false`。其中人工模式中尚未完成的人工 Gate 以及 full/final Gate 保持不变；自主 runner 的技术 PASS 仍须交回 coordinator，在用户批准 current 样音后按技术证据与明确 basis 原子批准，不能改写成真实听审 PASS。
+fixture 的通过不能冒充真实 provider、真实媒体、用户亲自批准或 AI 代理批准。真实 provider 未执行时必须另报 `SKIP`；外部条件不可用则报 `BLOCKED`；质量 Gate 必须保留为“待确认”且 `approvalWritten=false`。其中人工模式中尚未完成的人工 Gate 以及 full/final Gate 保持不变；自主 runner 的技术 PASS 仍须交回 coordinator，在阶段 0 current 内容与制作方案获批后按技术证据与明确 basis 原子批准，不能改写成真实听审 PASS。
 
 如需单独测量纯 fixture 的 scene render 调度，可使用 `benchmarks\run_scene_render_benchmark.py --fixture fixture-medium`；它不属于质量验收，也不能启动真实 provider。
 

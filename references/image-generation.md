@@ -17,7 +17,7 @@
 
 ## 工作区与项目边界
 
-阶段 0 可以创建 `initialApproval.status=pending` 的受限预项目，以承载 current 草案、source/voice plan、真实样音与联合批准。正式图片生成在任何 provider client、attempt 或候选创建前必须调用 pending guard；只有原子联合动作把预项目提升为 approved 后才可继续。不能仅凭 coordinator 记忆或 review Markdown 越过该边界。默认工作区由 `config/workspace.local.json` 指向 `D:\SRTWhiteboard`，项目位于 `D:\SRTWhiteboard\projects\<项目名>`。
+阶段 0 可以创建 `initialApproval.status=pending` 的受限预项目，以承载 current 草案与联合批准；不生成样音或 voice plan。正式图片生成在任何 provider client、attempt 或候选创建前必须调用 pending guard；只有原子联合动作把预项目提升为 approved 后才可继续。不能仅凭 coordinator 记忆或 review Markdown 越过该边界。默认工作区由 `config/workspace.local.json` 指向 `D:\SRTWhiteboard`，项目位于 `D:\SRTWhiteboard\projects\<项目名>`。
 
 项目中的关键文件为：
 

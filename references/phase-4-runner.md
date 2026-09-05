@@ -36,7 +36,7 @@ runner 外层 stdout 使用严格白名单投影：保留状态、identity、并
 - current `FINAL_IDENTITY`、`output/final.mp4` 与 `nextGate=final_media_review`。
 
 任一步失败即停止后续步骤，保留正式 current 文件及失败工作目录供诊断；成功后状态仍投影为
-`WAITING_HUMAN_GATE`，进程退出码为 0。退出码 0 只表示技术链完成。人工模式等待用户完整看片听音；`agentApprovalEnabled=true` 时 runner 仍不自行批准，而是交回 coordinator 重验 current full audio、字幕、AAC、流结构、完整解码、时长/帧数/尾部、实际 BGM 模式与 `FINAL_IDENTITY`，再以用户样音授权后的技术推进 `reviewBasis` 调用原批准脚本。Edge/MiniMax 启用 BGM 时验证固定混音 receipt；豆包 prompt-only v3 启用时验证 `provider_embedded`、纯文本音色与 scene 时间窗口 prompt/audio identity binding，且不得出现固定曲目或 mix receipt。不得因宿主没有听音能力而再次阻塞，也不得声称 AI 完整听过 final。
+`WAITING_HUMAN_GATE`，进程退出码为 0。退出码 0 只表示技术链完成。人工模式等待用户完整看片听音；`agentApprovalEnabled=true` 时 runner 仍不自行批准，而是交回 coordinator 重验 current full audio、字幕、AAC、流结构、完整解码、时长/帧数/尾部、实际 BGM 模式与 `FINAL_IDENTITY`，再以阶段 0 授权后的技术推进 `reviewBasis` 调用原批准脚本。Edge/MiniMax 启用 BGM 时验证固定混音 receipt；豆包 prompt-only v3 启用时验证 `provider_embedded`、纯文本音色与 scene 时间窗口 prompt/audio identity binding，且不得出现固定曲目或 mix receipt。不得因宿主没有听音能力而再次阻塞，也不得声称 AI 完整听过 final。
 
 ## 逐步调试与恢复
 

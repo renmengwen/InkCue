@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""原子完成预项目的内容/样音联合批准并提升为正式项目。"""
+"""原子完成预项目的内容与制作方案批准并提升为正式项目。"""
 from __future__ import annotations
 
 import argparse
@@ -11,14 +11,13 @@ import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Mapping
 
 from initial_approval_options import (
     InitialApprovalOptionError,
     build_initial_approval_options,
 )
 from project_workspace import (
-    AUDIO_VOICEOVER_MODES,
     IMAGE_GENERATION_MODES,
     INITIAL_APPROVAL_APPROVED,
     Project,
@@ -70,50 +69,16 @@ def _restore_bytes_atomic(path: Path, payload: bytes) -> None:
         candidate.unlink(missing_ok=True)
 
 
-def _validate_current_sample(project: Project) -> tuple[dict[str, Any], str, bool]:
-    # 延迟导入，避免 project_workspace 的共享加载器形成模块加载环。
-    from generate_voiceover import validate_current_voiceover
-
-    result = validate_current_voiceover(project, require_full=False)
-    current_identity = result.get("sampleIdentityHash")
-    if not _is_sha256(current_identity):
-        raise InitialApprovalError("current 样音 identity 无效")
-    manifest = _read_json(
-        project.path("manifests/voice-manifest.json"),
-        "voice manifest",
-    )
-    approval = manifest.get("sample", {}).get("approval")
-    if not isinstance(approval, dict):
-        raise InitialApprovalError("预项目样音批准结构无效")
-    if approval.get("approved") is False:
-        return manifest, current_identity, False
-    if (
-        approval.get("approved") is True
-        and approval.get("identityHash") == current_identity
-        and approval.get("approvalBasis") == "user_joint_initial_approval"
-        and isinstance(approval.get("approvedAt"), str)
-        and approval["approvedAt"]
-    ):
-        # project.json 仍为 pending 时，这只能是上次进程在提交点前退出留下的
-        # 联合批准准备态；默认 loader 仍会阻止所有下游。identity 完整匹配时
-        # 本次调用可直接完成 project.json 提交点。
-        return manifest, current_identity, True
-    raise InitialApprovalError("pending 项目存在非 current 或非联合 basis 的样音批准")
-
-
 _SELECTION_FIELDS = {
     "schemaVersion",
     "choiceId",
     "optionNumber",
     "action",
     "contentApproved",
-    "sampleApproved",
-    "sampleApprovalRequired",
     "backgroundMusicEnabled",
     "agentApprovalEnabled",
     "imageGenerationMode",
     "contentIdentitySha256",
-    "sampleIdentitySha256",
     "revisionInstructions",
     "requiresFeedback",
     "readyForAtomicApproval",
@@ -159,8 +124,6 @@ def _match_current_option(
         "optionNumber": "number",
         "action": "action",
         "contentApproved": "contentApproved",
-        "sampleApproved": "sampleApproved",
-        "sampleApprovalRequired": "sampleApprovalRequired",
         "backgroundMusicEnabled": "backgroundMusicEnabled",
         "agentApprovalEnabled": "agentApprovalEnabled",
         "imageGenerationMode": "imageGenerationMode",
@@ -184,8 +147,7 @@ def _validate_selection(
     gpt_login_image_generation_available: bool,
     configured_image_provider_available: bool,
     fixed_image_generation_mode: str | None,
-    sample_loader: Callable[[Project], tuple[dict[str, Any], str, bool]],
-) -> tuple[dict[str, Any] | None, str | None, bool]:
+) -> None:
     _match_current_option(
         project,
         selection,
@@ -195,8 +157,8 @@ def _validate_selection(
         configured_image_provider_available=configured_image_provider_available,
         fixed_image_generation_mode=fixed_image_generation_mode,
     )
-    if selection.get("schemaVersion") != 1:
-        raise InitialApprovalError("联合选择 schemaVersion 必须为 1")
+    if selection.get("schemaVersion") != 2:
+        raise InitialApprovalError("联合选择 schemaVersion 必须为 2")
     if selection.get("action") != "approve":
         raise InitialApprovalError("联合批准动作只接受通过选项")
     if selection.get("readyForAtomicApproval") is not True:
@@ -221,40 +183,8 @@ def _validate_selection(
     if image_mode not in IMAGE_GENERATION_MODES:
         raise InitialApprovalError("选择中的 imageGenerationMode 无效")
 
-    sample_required = project.voiceover_mode in AUDIO_VOICEOVER_MODES
-    if selection.get("sampleApprovalRequired") is not sample_required:
-        raise InitialApprovalError("选择的样音要求与 current 项目模式不一致")
-    if selection.get("sampleApproved") is not sample_required:
-        raise InitialApprovalError("联合选择未按 current 项目模式批准样音")
-    if selection["backgroundMusicEnabled"] and not sample_required:
+    if selection["backgroundMusicEnabled"] and project.voiceover_mode == "disabled":
         raise InitialApprovalError("静音项目不能启用 BGM")
-
-    if not sample_required:
-        if selection.get("sampleIdentitySha256") not in (None, ""):
-            raise InitialApprovalError("静音项目不得绑定样音 identity")
-        return None, None, False
-
-    supplied_sample_identity = selection.get("sampleIdentitySha256")
-    if not _is_sha256(supplied_sample_identity):
-        raise InitialApprovalError("旁白项目选择缺少有效 sampleIdentitySha256")
-    manifest, current_sample_identity, sample_prepared = sample_loader(project)
-    if supplied_sample_identity != current_sample_identity:
-        raise InitialApprovalError("选择绑定的样音 identity 已 stale")
-    approval = manifest.get("sample", {}).get("approval")
-    if not isinstance(approval, Mapping):
-        raise InitialApprovalError("current 样音批准结构无效")
-    if sample_prepared:
-        if (
-            approval.get("approved") is not True
-            or approval.get("identityHash") != current_sample_identity
-            or approval.get("approvalBasis") != "user_joint_initial_approval"
-            or not isinstance(approval.get("approvedAt"), str)
-            or not approval["approvedAt"]
-        ):
-            raise InitialApprovalError("联合批准准备态未绑定 current 样音")
-    elif approval.get("approved") is not False:
-        raise InitialApprovalError("预项目样音必须尚未批准")
-    return manifest, current_sample_identity, sample_prepared
 
 
 def approve_initial_project(
@@ -264,9 +194,6 @@ def approve_initial_project(
     gpt_login_image_generation_available: bool = False,
     configured_image_provider_available: bool = False,
     fixed_image_generation_mode: str | None = None,
-    sample_loader: Callable[
-        [Project], tuple[dict[str, Any], str, bool]
-    ] = _validate_current_sample,
 ) -> Project:
     """重验并提交一次联合选择；校验失败或提交失败不保留半批准状态。"""
     if not isinstance(selection, Mapping):
@@ -278,7 +205,7 @@ def approve_initial_project(
     if not project.pending_initial_approval:
         raise InitialApprovalError("项目已完成初始批准，不能重复联合批准")
 
-    manifest, sample_identity, sample_prepared = _validate_selection(
+    _validate_selection(
         project,
         selection,
         gpt_login_image_generation_available=(
@@ -286,13 +213,8 @@ def approve_initial_project(
         ),
         configured_image_provider_available=configured_image_provider_available,
         fixed_image_generation_mode=fixed_image_generation_mode,
-        sample_loader=sample_loader,
     )
-    approved_at = (
-        str(manifest["sample"]["approval"]["approvedAt"])
-        if sample_prepared and manifest is not None
-        else _now()
-    )
+    approved_at = _now()
     metadata = copy.deepcopy(project.metadata)
     metadata.update(
         {
@@ -302,40 +224,20 @@ def approve_initial_project(
             "initialApproval": {
                 "status": INITIAL_APPROVAL_APPROVED,
                 "contentIdentitySha256": project.current_content_identity_sha256,
-                "sampleIdentityHash": sample_identity,
-                "approvalBasis": (
-                    "user_joint_content_and_sample"
-                    if sample_identity is not None
-                    else "user_joint_silent_plan"
-                ),
+                "approvalBasis": "user_joint_content_and_plan",
                 "approvedAt": approved_at,
             },
         }
     )
     validate_project_metadata_data(project.root, metadata)
 
-    updated_manifest = None
-    manifest_path = project.path("manifests/voice-manifest.json")
-    if manifest is not None and not sample_prepared:
-        updated_manifest = copy.deepcopy(manifest)
-        updated_manifest["sample"]["approval"] = {
-            "approved": True,
-            "identityHash": sample_identity,
-            "approvalBasis": "user_joint_initial_approval",
-            "approvedAt": approved_at,
-        }
-
     project_path = project.path("project.json")
     project_before = project_path.read_bytes()
-    manifest_before = manifest_path.read_bytes() if manifest is not None else None
     run_dir = project.path(".work") / f"initial-approval-{uuid.uuid4().hex}"
     run_dir.mkdir(parents=True, exist_ok=False)
     project_candidate = run_dir / "project.json.candidate"
-    manifest_candidate = run_dir / "voice-manifest.json.candidate"
     try:
         _write_candidate(project_candidate, metadata)
-        if updated_manifest is not None:
-            _write_candidate(manifest_candidate, updated_manifest)
         rechecked = load_project(
             project.root,
             allow_pending_initial_approval=True,
@@ -346,28 +248,14 @@ def approve_initial_project(
             != project.current_content_identity_sha256
         ):
             raise InitialApprovalError("提交前 project/content identity 已 stale")
-        if (
-            manifest_before is not None
-            and manifest_path.read_bytes() != manifest_before
-        ):
-            raise InitialApprovalError("提交前 current 样音状态已 stale")
-        # project.json 是提交点：先写样音批准，最后移除 pending marker。
-        if updated_manifest is not None:
-            os.replace(manifest_candidate, manifest_path)
         os.replace(project_candidate, project_path)
         committed = load_project(project.root)
     except Exception as exc:
         rollback_errors: list[str] = []
-        for target, payload in (
-            (project_path, project_before),
-            (manifest_path, manifest_before),
-        ):
-            if payload is None:
-                continue
-            try:
-                _restore_bytes_atomic(target, payload)
-            except OSError as rollback_exc:
-                rollback_errors.append(f"{target.name}: {rollback_exc}")
+        try:
+            _restore_bytes_atomic(project_path, project_before)
+        except OSError as rollback_exc:
+            rollback_errors.append(f"{project_path.name}: {rollback_exc}")
         if rollback_errors:
             raise InitialApprovalError(
                 "联合批准提交失败且回滚不完整: " + "; ".join(rollback_errors)
@@ -376,8 +264,7 @@ def approve_initial_project(
             raise
         raise InitialApprovalError("联合批准提交失败，已恢复 pending 状态") from exc
     finally:
-        for candidate in (project_candidate, manifest_candidate):
-            candidate.unlink(missing_ok=True)
+        project_candidate.unlink(missing_ok=True)
         try:
             run_dir.rmdir()
         except OSError:
@@ -387,7 +274,7 @@ def approve_initial_project(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="使用已绑定 current identities 的结构化选择原子提升预项目",
+        description="使用已绑定 current content identity 的结构化选择原子提升预项目",
     )
     parser.add_argument("--project", required=True, type=Path)
     parser.add_argument(
@@ -438,8 +325,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"PROJECT_ROOT={project.root}")
     print(f"INITIAL_APPROVAL={approval['status']}")
     print(f"CONTENT_IDENTITY={approval['contentIdentitySha256']}")
-    if approval["sampleIdentityHash"] is not None:
-        print(f"SAMPLE_APPROVED_IDENTITY={approval['sampleIdentityHash']}")
     print(
         "AGENT_APPROVAL="
         + ("enabled" if project.agent_approval_enabled else "disabled")

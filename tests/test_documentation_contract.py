@@ -32,10 +32,10 @@ class DocumentationContractTests(unittest.TestCase):
         for required in (
             "pending_initial_approval",
             "initialApproval",
-            "SAMPLE_IDENTITY",
-            "user_joint_content_and_sample",
-            "user_joint_initial_approval",
-            "user_joint_silent_plan",
+            "user_joint_content_and_plan",
+            "阶段 0 不生成或试听样音",
+            "完整旁白",
+            "FULL_IDENTITY",
             "原子",
             "旧项目",
             "完整自然语言",
@@ -46,18 +46,16 @@ class DocumentationContractTests(unittest.TestCase):
                 self.assertIn(required, documents)
 
         for sentence in (
-            "草案和样音通过，使用 BGM，后续由 AI 自主推进至成片。",
-            "草案和样音通过，不使用 BGM，后续由 AI 自主推进至成片。",
-            "草案和样音通过，使用 BGM，后续由我逐阶段确认。",
-            "草案和样音通过，不使用 BGM，后续由我逐阶段确认。",
-            "草案需要修改，当前样音暂不批准。修改意见：……",
-            "草案通过，样音需要调整，其他方案保持不变。调整意见：……",
-            "草案和样音都需要修改。修改意见：……",
+            "草案与制作方案通过，使用 BGM，后续由 AI 自主推进至成片。",
+            "草案与制作方案通过，不使用 BGM，后续由 AI 自主推进至成片。",
+            "草案与制作方案通过，使用 BGM，后续由我逐阶段确认。",
+            "草案与制作方案通过，不使用 BGM，后续由我逐阶段确认。",
+            "草案与制作方案需要修改。修改意见：……",
         ):
             with self.subTest(sentence=sentence):
                 self.assertIn(sentence, documents)
 
-    def test_autonomous_audio_contract_uses_sample_authorization_without_fake_listening(self) -> None:
+    def test_autonomous_audio_contract_uses_initial_authorization_without_fake_listening(self) -> None:
         documents = "\n".join(
             read_document(path)
             for path in (
@@ -73,8 +71,7 @@ class DocumentationContractTests(unittest.TestCase):
             )
         )
         for required in (
-            "唯一声音主观 Gate",
-            "用户样音授权后的技术推进",
+            "阶段 0 授权后的技术推进",
             "approvalBasis",
             "reviewBasis",
             "canonical WAV",
@@ -116,7 +113,6 @@ class DocumentationContractTests(unittest.TestCase):
     def test_readme_formal_path_keeps_joint_initial_and_downstream_approval_commands(self) -> None:
         readme = normalized_command_text(read_document("README.md"))
         required_commands = (
-            "scripts\\generate_voiceover.py sample",
             "scripts\\approve_initial_project.py",
             "scripts\\generate_voiceover.py full",
             "scripts\\generate_voiceover.py approve-full",
@@ -130,6 +126,9 @@ class DocumentationContractTests(unittest.TestCase):
         for command in required_commands:
             with self.subTest(command=command):
                 self.assertIn(command, readme)
+
+        self.assertNotIn("scripts\\generate_voiceover.py sample", readme)
+        self.assertNotIn("scripts\\generate_voiceover.py approve-sample", readme)
 
         self.assertIn("current approved scene review bundle", readme)
 

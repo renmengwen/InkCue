@@ -2,7 +2,7 @@
 
 本合同定义 coordinator 如何以 artifact-first 方式准备、真实派发、校验和回收候选任务。child 不拥有正式写入、批准或用户交互权限。
 
-对正常 topic/text 新任务，入口在读取 `SKILL.md` 后只执行已记录的一次 `python <SKILL_ROOT>\scripts\prepare_env.py --bootstrap-content-draft ...` bootstrap；该单次调用已完成 workspace-access、环境 check、provider/preset/input/draft/task fast-prepare 并输出紧凑 descriptor。派发前不得预先另跑两条 `prepare_env` 或先落 `body-file`，并禁止 memory lookup、整份或分段重读本合同/其他 reference，以及 `prompt-writing.md` 预读。prepared descriptor 已含 canonical schema/skeleton、`agentPrompt` 与 argv；`nextAction=spawn_now` 是立刻 direct spawn 的充分条件。candidate、materialize、pending approval、样音及具体 revision 等阶段开始后，才按需读取相应 reference 小节。
+对正常 topic/text 新任务，入口在读取 `SKILL.md` 后只执行已记录的一次 `python <SKILL_ROOT>\scripts\prepare_env.py --bootstrap-content-draft ...` bootstrap；该单次调用已完成 workspace-access、环境 check、provider/preset/input/draft/task fast-prepare 并输出紧凑 descriptor。派发前不得预先另跑两条 `prepare_env` 或先落 `body-file`，并禁止 memory lookup、整份或分段重读本合同/其他 reference，以及 `prompt-writing.md` 预读。prepared descriptor 已含 canonical schema/skeleton、`agentPrompt` 与 argv；`nextAction=spawn_now` 是立刻 direct spawn 的充分条件。candidate、materialize、pending approval 及具体 revision 等阶段开始后，才按需读取相应 reference 小节。
 
 宿主 collaboration 的 `spawn_agent` 是开发者工具定义中的顶层 direct tool，不属于 `functions.exec` 的嵌套 `tools.*`，也被有意排除在其 `ALL_TOOLS` 中。coordinator 不得通过检查嵌套工具列表来预判 child 不可用；普通会话不得因此提前进入 fallback 或报告 `BLOCKED`。prepared descriptor 为 `nextAction=spawn_now` 时，必须先真实发起 direct `spawn_agent` 调用。只有该 direct call 实际返回 tool error，才能认定本次派发失败，再依据当前用户约束决定准确报告 `BLOCKED` 或是否允许 fallback；不得把未调用、嵌套列表缺失或准备完成冒充派发失败/成功。
 
@@ -179,7 +179,7 @@ Phase 4 只能在线稿已获用户明确确认后开始。coordinator 先构建
 生图消费验证、annotation preview bundle 和 scene review bundle 都接受 `--review-policy user_first|agent_first`。两种策略都必须先完成当前阶段的确定性技术验证，并保留对应 Gate 批准；策略只决定是否准备 AI 语义审阅，不进入作品内容 identity，也不得直接写批准。
 
 - `agentApprovalEnabled` 缺失或为 `false`：在交付完整旁白、等待用户确认的同一条消息中征询策略，使用户一次回复即可同时表达完整旁白与真实时长决定以及 `user_first|agent_first` 选择。用户确认旁白但未指定时继续停在 Gate 追问，禁止静默默认。
-- `agentApprovalEnabled=true`：审阅策略确定性为 `agent_first`，不再询问。coordinator 无需伪造完整听音，但必须重验阶段 0 current 样音授权，以及整轨 provider、canonical WAV 完整解码、对应 provider 的词级时间证据（Edge TTS 为本地 FunASR；MiniMax 为同次 T2A 响应原生 word 字幕；豆包为同次 Seed Audio 响应的 `subtitle.sentences[].words[]`，并绑定完整导演式 prompt SHA）、原稿对齐、timeline/narration SRT、current `FULL_IDENTITY` 和时长偏差等技术证据，按技术推进 basis 成功执行 `approve-full --review-policy agent_first` 后才能开始视觉阶段。
+- `agentApprovalEnabled=true`：审阅策略确定性为 `agent_first`，不再询问。coordinator 无需伪造完整听音，但必须重验阶段 0 current 内容与制作方案授权，以及整轨 provider、canonical WAV 完整解码、对应 provider 的词级时间证据（Edge TTS 为本地 FunASR；MiniMax 为同次 T2A 响应原生 word 字幕；豆包为同次 Seed Audio 响应的 `subtitle.sentences[].words[]`，并绑定完整导演式 prompt SHA）、原稿对齐、timeline/narration SRT、current `FULL_IDENTITY` 和时长偏差等技术证据，按技术推进 basis 成功执行 `approve-full --review-policy agent_first` 后才能开始视觉阶段。
 
 两种模式都不得在旁白未获 current Gate 批准时仅凭策略选择启动生图。
 
@@ -189,12 +189,12 @@ Phase 4 只能在线稿已获用户明确确认后开始。coordinator 先构建
 
 ## 9. Gate 决策与自动代理
 
-topic/text 内容草案与传统 SRT 的初始分镜/策略属于阶段 0 用户意图冻结；旁白项目还必须由用户试听 current 样音。它们通过一次绑定 current content/sample identity 的联合回复原子批准 pending 预项目。阶段 0 之后，coordinator 读取 `project.json.agentApprovalEnabled`：
+topic/text 内容草案与传统 SRT 的初始分镜/策略属于阶段 0 用户意图冻结。它们通过一次绑定 current content identity 的联合回复原子批准 pending 预项目；阶段 0 不生成或试听样音。阶段 0 之后，coordinator 读取 `project.json.agentApprovalEnabled`：
 
-- 缺失或 `false`：阶段 0 样音已联合批准，后续继续等待用户确认完整旁白/真实时长、视觉 bundle 和最终成片。
-- `true`：full/final 以用户样音授权后的严格技术推进 basis 继续，不能声称 AI 完整听音；视觉 bundle 仍由具备真实查看能力的 coordinator/child 审阅 current artifact。
+- 缺失或 `false`：后续继续等待用户确认完整旁白/真实时长、视觉 bundle 和最终成片。
+- `true`：full/final 以阶段 0 授权后的严格技术推进 basis 继续，不能声称 AI 完整听音；视觉 bundle 仍由具备真实查看能力的 coordinator/child 审阅 current artifact。
 
-技术 PASS 不能冒充真实听审；自主 full/final 只能在完整技术证据 current 且样音授权 current 时写明确 basis。视觉 agent findings/candidate/批次完成也不能替代真实查看与决定。`unknown_external_outcome`、额外费用/服务/凭据、版权授权和实质改变阶段 0 意图仍须询问用户。
+技术 PASS 不能冒充真实听审；自主 full/final 只能在完整技术证据与阶段 0 授权均 current 时写明确 basis。视觉 agent findings/candidate/批次完成也不能替代真实查看与决定。`unknown_external_outcome`、额外费用/服务/凭据、版权授权和实质改变阶段 0 意图仍须询问用户。
 
 ## 10. 状态边界
 

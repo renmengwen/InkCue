@@ -301,7 +301,7 @@ class DoubaoAdapter:
             )
         except _DoubaoEvidenceValidationError as exc:
             raise DoubaoEvidenceUnavailable(exc.reason_code) from exc
-        except (TypeError, ValueError, KeyError) as exc:
+        except Exception as exc:
             raise DoubaoEvidenceUnavailable(
                 "unclassified_native_evidence_failure"
             ) from exc
@@ -331,14 +331,13 @@ class DoubaoAdapter:
             raise _DoubaoEvidenceValidationError(reason_code)
         return value
 
-    @classmethod
     def _subtitle_sidecar(
-        cls, value: Mapping[str, Any], *, text_prompt: str
+        self, value: Mapping[str, Any], *, text_prompt: str
     ) -> tuple[bytes, dict[str, Any]]:
-        duration_ms = cls._duration_ms(
+        duration_ms = self._duration_ms(
             value.get("duration"), reason_code="invalid_duration"
         )
-        original_duration_ms = cls._duration_ms(
+        original_duration_ms = self._duration_ms(
             value.get("original_duration"),
             reason_code="invalid_original_duration",
         )
@@ -358,10 +357,10 @@ class DoubaoAdapter:
         for sentence in sentences:
             if not isinstance(sentence, Mapping):
                 raise _DoubaoEvidenceValidationError("invalid_sentence")
-            start_ms = cls._timestamp(
+            start_ms = self._timestamp(
                 sentence.get("start_time"), reason_code="invalid_sentence_timing"
             )
-            end_ms = cls._timestamp(
+            end_ms = self._timestamp(
                 sentence.get("end_time"), reason_code="invalid_sentence_timing"
             )
             sentence_text = sentence.get("text")
@@ -381,11 +380,11 @@ class DoubaoAdapter:
             for word in words:
                 if not isinstance(word, Mapping):
                     raise _DoubaoEvidenceValidationError("invalid_word")
-                word_start = cls._timestamp(
+                word_start = self._timestamp(
                     word.get("start_time"),
                     reason_code="invalid_word_timing",
                 )
-                word_end = cls._timestamp(
+                word_end = self._timestamp(
                     word.get("end_time"),
                     reason_code="invalid_word_timing",
                 )

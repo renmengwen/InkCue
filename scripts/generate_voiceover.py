@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""语音旁白样音、完整生成、恢复与人工批准 CLI。"""
+"""语音旁白完整生成、恢复与批准 CLI。"""
 from __future__ import annotations
 
 import argparse
@@ -23,7 +23,6 @@ try:
         AudioValidationError,
         CanonicalAudioResult,
         atomic_publish_wav,
-        normalize_and_publish,
         normalize_to_candidate,
         validate_canonical_wav,
     )
@@ -40,10 +39,7 @@ try:
         write_json_atomic,
     )
     from .srt_timeline import parse_srt, serialize_srt
-    from .content_source import (
-        DOUBAO_MAX_SPOKEN_CHARACTERS_PER_SECOND,
-        spoken_text_weight,
-    )
+    from .content_source import DOUBAO_MAX_SPOKEN_CHARACTERS_PER_SECOND
     from .voiceover import (
         CancelledError,
         DOUBAO_PROMPT_VOICE_ID,
@@ -69,7 +65,6 @@ try:
     from .edge_tts_adapter import EDGE_TTS_PACKAGE_VERSION, EdgeTtsAdapter
     from .doubao_adapter import (
         DoubaoAdapter,
-        DoubaoEvidenceUnavailable,
         DOUBAO_ENDPOINT,
         DOUBAO_SUBTITLE_KIND,
         DOUBAO_SUBTITLE_SCHEMA_VERSION,
@@ -97,14 +92,12 @@ except ImportError:  # pragma: no cover - direct script execution
         AudioValidationError,
         CanonicalAudioResult,
         atomic_publish_wav,
-        normalize_and_publish,
         normalize_to_candidate,
         validate_canonical_wav,
     )
     from edge_tts_adapter import EDGE_TTS_PACKAGE_VERSION, EdgeTtsAdapter
     from doubao_adapter import (
         DoubaoAdapter,
-        DoubaoEvidenceUnavailable,
         DOUBAO_ENDPOINT,
         DOUBAO_SUBTITLE_KIND,
         DOUBAO_SUBTITLE_SCHEMA_VERSION,
@@ -138,10 +131,7 @@ except ImportError:  # pragma: no cover - direct script execution
         write_json_atomic,
     )
     from srt_timeline import parse_srt, serialize_srt
-    from content_source import (
-        DOUBAO_MAX_SPOKEN_CHARACTERS_PER_SECOND,
-        spoken_text_weight,
-    )
+    from content_source import DOUBAO_MAX_SPOKEN_CHARACTERS_PER_SECOND
     from voiceover import (
         CancelledError,
         DOUBAO_PROMPT_VOICE_ID,
@@ -252,7 +242,6 @@ def _voice_paths(project: Project) -> dict[str, Path]:
     return {
         "plan": project.path("planning/voice-plan.json"),
         "manifest": project.path("manifests/voice-manifest.json"),
-        "sample": project.path("previews/voice-sample.wav"),
         "composite": project.path("audio/narration.wav"),
         "timeline": project.path("audio/timeline.json"),
         "srt": project.path("audio/narration.srt"),
@@ -404,12 +393,76 @@ def _load_current_plan_units(project: Project) -> tuple[dict[str, Any], list[dic
     return plan, units
 
 
+def _prepare_full_plan(
+    project: Project,
+    *,
+    voice: str | None,
+    rate: int | None,
+    doubao_performance_brief: Path | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """在首次完整旁白请求前冻结 voice plan；已有 plan 只做 current 重验。"""
+
+    paths = _voice_paths(project)
+    plan_exists = paths["plan"].is_file()
+    manifest_exists = paths["manifest"].is_file()
+    if plan_exists != manifest_exists:
+        raise VoiceoverStateError("voice plan/manifest 只存在其一，不能开始完整旁白")
+    if plan_exists:
+        if voice is not None or rate is not None or doubao_performance_brief is not None:
+            raise VoiceoverStateError("current voice plan 已冻结；不得在 full 命令中覆盖 voice/rate/brief")
+        return _load_current_plan_units(project)
+
+    provider_id = active_provider_id()
+    if provider_id != project.voiceover_mode:
+        raise VoiceoverStateError(
+            "activeProvider 必须与项目 voiceoverMode 一致；请使用匹配的项目"
+        )
+    provider_config = load_voice_provider_config(provider_id=provider_id)
+    if provider_id == "doubao":
+        if voice is not None:
+            raise VoiceoverStateError(
+                "豆包 prompt-only 模式禁止 --voice；音色只由 text_prompt 定义"
+            )
+        if doubao_performance_brief is None:
+            raise VoiceoverStateError(
+                "豆包完整旁白首次生成需要 --doubao-performance-brief；"
+                "请由 coordinator 参考 current Seed Audio 示例生成"
+            )
+        selected_voice = DOUBAO_PROMPT_VOICE_ID
+        brief = _read_json(doubao_performance_brief, "doubao performance brief")
+    else:
+        if doubao_performance_brief is not None:
+            raise VoiceoverStateError(
+                "--doubao-performance-brief 只允许用于豆包项目"
+            )
+        selected_voice = voice or str(
+            provider_config.get("voice", "zh-CN-YunjianNeural")
+        )
+        brief = None
+    selected_rate = rate if rate is not None else provider_config.get("rate", 0)
+    plan, units = _build_plan_and_units(
+        project,
+        voice=selected_voice,
+        rate=selected_rate,
+        provider_id=provider_id,
+        provider_config=provider_config,
+        doubao_performance_brief=brief,
+    )
+    manifest = create_voice_manifest(
+        project_id=project.project_id,
+        voice_plan=plan,
+        speech_units=units,
+    )
+    write_json_atomic(paths["plan"], plan)
+    _write_manifest(paths["manifest"], manifest, plan, units)
+    return _load_current_plan_units(project)
+
+
 def _doubao_text_prompt(
     plan: Mapping[str, Any],
     speech_text: str,
     *,
     background_music_enabled: bool,
-    sample: bool,
     target_duration_seconds: float | None,
 ) -> str:
     options = plan["provider"].get("options", {})
@@ -421,7 +474,6 @@ def _doubao_text_prompt(
             prompt_spec,
             speech_text,
             background_music_enabled=background_music_enabled,
-            sample=sample,
             target_duration_seconds=target_duration_seconds,
         )
     except DoubaoPromptError as exc:
@@ -458,37 +510,12 @@ def _bind_current_synthesis_units(
                 plan,
                 str(unit["speechText"]),
                 background_music_enabled=project.background_music_enabled,
-                sample=False,
                 target_duration_seconds=duration_seconds,
             )
             unit["providerTextPromptSha256"] = text_prompt_sha256(prompt)
             unit["providerTextPromptCharacterCount"] = len(prompt)
             unit["_providerTextPrompt"] = prompt
     return bind_synthesis_identities(prepared, plan)
-
-
-def _sample_text(units: Sequence[Mapping[str, Any]]) -> str:
-    natural: list[str] = []
-    for unit in units:
-        text = str(unit["speechText"]).strip()
-        if not text:
-            continue
-        # full-track unit 只改变完整合成粒度；样音仍选取一条代表性自然句。
-        starts = 0
-        for match in re.finditer(r"[。！？!?；;]+|\n+", text):
-            candidate = text[starts : match.end()].strip()
-            if candidate:
-                natural.append(candidate)
-            starts = match.end()
-        tail = text[starts:].strip()
-        if tail:
-            natural.append(tail)
-    if not natural:
-        raise VoiceoverStateError("没有可用于样音的自然中文文本")
-    chinese = [text for text in natural if any("\u4e00" <= character <= "\u9fff" for character in text)]
-    candidates = chinese or natural
-    # Prefer a representative sentence near 24 code points, deterministically.
-    return min(enumerate(candidates), key=lambda item: (abs(len(item[1]) - 24), item[0]))[1]
 
 
 def _request(
@@ -576,118 +603,6 @@ def _media_dict(result: CanonicalAudioResult) -> dict[str, Any]:
     }
 
 
-def _sample_identity(
-    plan: Mapping[str, Any],
-    text: str,
-    media: Mapping[str, Any],
-    *,
-    provider_text_prompt_sha256: str | None = None,
-) -> str:
-    return sha256_json(
-        {
-            "schemaVersion": VOICE_IDENTITY_SCHEMA_VERSION,
-            "kind": "voiceSampleIdentity",
-            "voicePlanAuditHash": voice_plan_audit_hash(plan),
-            "text": text,
-            "mediaSha256": media["sha256"],
-            "mediaRecipe": media["recipe"],
-            "providerTextPromptSha256": provider_text_prompt_sha256,
-        }
-    )
-
-
-def _sample_review_paths(
-    paths: Mapping[str, Path], plan: Mapping[str, Any], identity: str
-) -> tuple[Path, Path]:
-    voice = str(plan["selection"]["voice"])
-    safe_voice = re.sub(r"[^A-Za-z0-9._-]+", "_", voice).strip("._-")[:64] or "voice"
-    review_audio = paths["sample"].with_name(
-        f"voice-sample-{safe_voice}-{identity[:12]}.wav"
-    )
-    return review_audio, review_audio.with_suffix(".audit.json")
-
-
-def _publish_sample_review_artifacts(
-    paths: Mapping[str, Path],
-    plan: Mapping[str, Any],
-    media: Mapping[str, Any],
-    identity: str,
-    provider_request_id: str | None,
-    *,
-    provider_text_prompt_sha256: str | None = None,
-    provider_metadata: Mapping[str, Any] | None = None,
-) -> tuple[Path, Path]:
-    """发布不可变样音试听副本，避免播放器按 canonical 路径缓存旧音频。"""
-
-    review_audio, audit_path = _sample_review_paths(paths, plan, identity)
-    source = paths["sample"]
-    expected_sha = str(media["sha256"])
-    expected_bytes = int(media["bytes"])
-    if review_audio.exists():
-        if review_audio.stat().st_size != expected_bytes or sha256_file(review_audio) != expected_sha:
-            raise VoiceoverStateError("样音 review identity 文件发生字节冲突")
-    else:
-        review_audio.parent.mkdir(parents=True, exist_ok=True)
-        temporary = review_audio.with_name(f".{review_audio.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            with source.open("rb") as input_handle, temporary.open("xb") as output_handle:
-                shutil.copyfileobj(input_handle, output_handle)
-                output_handle.flush()
-                os.fsync(output_handle.fileno())
-            if temporary.stat().st_size != expected_bytes or sha256_file(temporary) != expected_sha:
-                raise VoiceoverStateError("样音 review 临时副本与 current WAV 不一致")
-            os.replace(temporary, review_audio)
-        finally:
-            temporary.unlink(missing_ok=True)
-    if review_audio.stat().st_size != expected_bytes or sha256_file(review_audio) != expected_sha:
-        raise VoiceoverStateError("样音 review 发布后 SHA/bytes 核对失败")
-
-    selection = plan["selection"]
-    provider = plan["provider"]
-    prompt_voice = provider["id"] == "doubao"
-    audit = {
-        "schemaVersion": 1,
-        "kind": "sampleRequestAudit",
-        "provider": provider["id"],
-        "model": provider.get("options", {}).get("model"),
-        "request": {
-            "voiceId": None if prompt_voice else selection["voice"],
-            "voiceControlMode": "text_prompt" if prompt_voice else "speaker_id",
-            "rate": selection["rate"],
-            "volume": selection["volume"],
-            "pitch": selection["pitch"],
-            "textPromptSha256": provider_text_prompt_sha256,
-        },
-        "providerResponse": {
-            "voiceIdEchoAvailable": False,
-            "voiceIdEcho": None,
-            **_provider_receipt(
-                provider_request_id,
-                provider_metadata=provider_metadata,
-                text_prompt_sha256=provider_text_prompt_sha256,
-            ),
-        },
-        "sample": {
-            "identitySha256": identity,
-            "canonicalFile": "previews/voice-sample.wav",
-            "reviewFile": f"previews/{review_audio.name}",
-            "audioSha256": expected_sha,
-            "bytes": expected_bytes,
-            "durationMs": media["durationMs"],
-            "approved": False,
-        },
-        "containsCredentials": False,
-        "containsNarrationText": False,
-    }
-    if audit_path.exists():
-        current_audit = _read_json(audit_path, "sample request audit")
-        if current_audit != audit:
-            raise VoiceoverStateError("样音 request audit identity 文件发生内容冲突")
-    else:
-        write_json_atomic(audit_path, audit)
-    return review_audio, audit_path
-
-
 def _write_manifest(path: Path, manifest: Mapping[str, Any], plan: Mapping[str, Any], units: Sequence[Mapping[str, Any]]) -> None:
     candidate = copy.deepcopy(dict(manifest))
     candidate["updatedAt"] = _now()
@@ -747,185 +662,6 @@ def _fresh_manifest_with_reuse(
         ):
             segment[field] = copy.deepcopy(prior.get(field))
     return manifest
-
-
-def _sample(
-    project: Project,
-    *,
-    voice: str,
-    rate: int,
-    provider_id: str = "edge-tts",
-    provider_config: Mapping[str, Any] | None = None,
-    doubao_performance_brief: Mapping[str, Any] | None = None,
-    authorize_new_request_after_unknown: bool = False,
-    adapter: ProviderAdapter,
-    normalizer: Callable[..., CanonicalAudioResult],
-) -> tuple[str, str, str, str, str]:
-    plan, units = _build_plan_and_units(
-        project,
-        voice=voice,
-        rate=rate,
-        provider_id=provider_id,
-        provider_config=provider_config,
-        doubao_performance_brief=doubao_performance_brief,
-    )
-    paths = _voice_paths(project)
-    old = _read_json(paths["manifest"], "voice manifest") if paths["manifest"].is_file() else None
-    manifest = _fresh_manifest_with_reuse(project, plan, units, old)
-    text = _sample_text(units)
-    provider_text_prompt = None
-    provider_prompt_sha = None
-    if provider_id == "doubao":
-        provider_text_prompt = _doubao_text_prompt(
-            plan,
-            text,
-            background_music_enabled=False,
-            sample=True,
-            target_duration_seconds=None,
-        )
-        provider_prompt_sha = text_prompt_sha256(provider_text_prompt)
-        old_sample = old.get("sample") if isinstance(old, Mapping) else None
-        if (
-            isinstance(old_sample, Mapping)
-            and old_sample.get("status") == "unknown_external_outcome"
-            and not authorize_new_request_after_unknown
-        ):
-            raise VoiceoverStateError(
-                "current 豆包样音已经是 unknown_external_outcome；"
-                "普通 sample 不得重复发送可能计费的请求。"
-                "只有用户明确承担一次新外部调用后，才可使用 "
-                "--authorize-new-request-after-unknown"
-            )
-        # 在任何外部请求前先冻结 authored brief、current source/scene binding
-        # 与确定性 prompt identity。恢复不得重新读取参考附件或重新创作 brief；
-        # 已收到音频但原生证据无效时会在下方改写为 unknown_external_outcome。
-        write_json_atomic(paths["plan"], plan)
-        _write_manifest(paths["manifest"], manifest, plan, units)
-    run_dir = project.create_run_dir(f"voice-sample-{uuid.uuid4().hex}")
-    sample_started_at = _now()
-    try:
-        raw = adapter.synthesize(
-            _request(plan, text, provider_text_prompt=provider_text_prompt)
-        )
-    except DoubaoEvidenceUnavailable as exc:
-        if provider_id != "doubao":
-            raise
-        finished_at = _now()
-        manifest["sample"] = {
-            "status": "unknown_external_outcome",
-            "identityHash": None,
-            "media": None,
-            "providerTextPromptSha256": provider_prompt_sha,
-            "failure": {
-                "stage": "provider_evidence",
-                "reasonCode": exc.reason_code,
-                "providerResponseReceived": True,
-                "externalResultIncomplete": True,
-                "retryAllowed": False,
-            },
-            "approval": {
-                "approved": False,
-                "identityHash": None,
-                "approvalBasis": None,
-                "approvedAt": None,
-            },
-        }
-        manifest["runs"].append(
-            {
-                "kind": "sample",
-                "provider": "doubao",
-                "status": "unknown_external_outcome",
-                "reasonCode": exc.reason_code,
-                "providerResponseReceived": True,
-                "externalResultIncomplete": True,
-                "retryAllowed": False,
-                "startedAt": sample_started_at,
-                "finishedAt": finished_at,
-            }
-        )
-        _write_manifest(paths["manifest"], manifest, plan, units)
-        raise
-    result = normalizer(
-        raw.bytes,
-        paths["sample"],
-        work_dir=run_dir,
-        declared_format=raw.declaredFormat,
-    )
-    media = _media_dict(result)
-    media["file"] = "previews/voice-sample.wav"
-    identity = _sample_identity(
-        plan,
-        text,
-        media,
-        provider_text_prompt_sha256=provider_prompt_sha,
-    )
-    full_text = "\n\n".join(str(unit["speechText"]) for unit in units)
-    sample_weight = spoken_text_weight(text)
-    full_weight = spoken_text_weight(full_text)
-    estimated_full_ms = max(1, round(media["durationMs"] * full_weight / sample_weight))
-    source_duration_ms = parse_srt(
-        project.path("source/source.srt").read_text(encoding="utf-8-sig")
-    )[-1]["endMs"]
-    duration_estimate = {
-        "estimatedFullDurationMs": estimated_full_ms,
-        "targetDurationMs": source_duration_ms,
-        "estimatedDeltaMs": estimated_full_ms - source_duration_ms,
-        "estimatedDeviationRatio": round(
-            abs(estimated_full_ms - source_duration_ms) / source_duration_ms,
-            6,
-        ),
-        "estimateBasis": "sample_weight_ratio_v1",
-        "sampleTextWeight": sample_weight,
-        "fullNarrationWeight": full_weight,
-        "authoritative": False,
-    }
-    review_audio, audit_path = _publish_sample_review_artifacts(
-        paths,
-        plan,
-        media,
-        identity,
-        raw.providerRequestId,
-        provider_text_prompt_sha256=provider_prompt_sha,
-        provider_metadata=raw.providerMetadata,
-    )
-    manifest["sample"] = {
-        "status": "validated",
-        "text": text,
-        "identityHash": identity,
-        "media": media,
-        "providerReceipt": _provider_receipt(
-            raw.providerRequestId,
-            provider_metadata=raw.providerMetadata,
-            text_prompt_sha256=provider_prompt_sha,
-        ),
-        "providerTextPromptSha256": provider_prompt_sha,
-        "durationEstimate": duration_estimate,
-        "approval": {
-            "approved": False,
-            "identityHash": None,
-            "approvalBasis": None,
-            "approvedAt": None,
-        },
-    }
-    sample_run: dict[str, Any] = {
-        "kind": "sample",
-        "provider": provider_id,
-        "status": "validated",
-        "startedAt": sample_started_at,
-        "finishedAt": _now(),
-    }
-    if authorize_new_request_after_unknown:
-        sample_run["authorizedNewRequestAfterUnknown"] = True
-    manifest["runs"].append(sample_run)
-    write_json_atomic(paths["plan"], plan)
-    _write_manifest(paths["manifest"], manifest, plan, units)
-    return (
-        str(paths["sample"].resolve()),
-        identity,
-        str(review_audio.resolve()),
-        str(audit_path.resolve()),
-        str(media["sha256"]),
-    )
 
 
 def _canonical_validator_receipt(result: CanonicalAudioResult) -> dict[str, Any]:
@@ -1036,58 +772,6 @@ def _validate_media_ref(project: Project, ref: Mapping[str, Any], *, expected_fi
         if ref.get(key) != value:
             raise ApprovalGateError(f"{expected_file} 的 {key} 与登记身份不一致")
     return result
-
-
-def _validate_current_sample(project: Project, plan: Mapping[str, Any], manifest: Mapping[str, Any]) -> str:
-    sample = manifest.get("sample")
-    if not isinstance(sample, Mapping) or sample.get("status") != "validated":
-        raise ApprovalGateError("current 样音尚未技术验证")
-    media = sample.get("media")
-    if not isinstance(media, Mapping):
-        raise ApprovalGateError("current 样音缺少媒体身份")
-    _validate_media_ref(project, media, expected_file="previews/voice-sample.wav")
-    provider_prompt_sha = sample.get("providerTextPromptSha256")
-    if plan["provider"]["id"] == "doubao":
-        sample_prompt = _doubao_text_prompt(
-            plan,
-            str(sample.get("text", "")),
-            background_music_enabled=False,
-            sample=True,
-            target_duration_seconds=None,
-        )
-        expected_prompt_sha = text_prompt_sha256(sample_prompt)
-        if provider_prompt_sha != expected_prompt_sha:
-            raise ApprovalGateError("豆包样音 text_prompt identity 已 stale")
-    elif provider_prompt_sha is not None:
-        raise ApprovalGateError("非豆包样音不得绑定 provider text_prompt")
-    identity = _sample_identity(
-        plan,
-        str(sample.get("text", "")),
-        media,
-        provider_text_prompt_sha256=provider_prompt_sha,
-    )
-    if sample.get("identityHash") != identity:
-        raise ApprovalGateError("样音 identity 已 stale")
-    return identity
-
-
-def _approve_sample(project: Project, identity_hash: str) -> str:
-    plan, units = _load_current_plan_units(project)
-    paths = _voice_paths(project)
-    manifest = validate_voice_manifest(
-        _read_json(paths["manifest"], "voice manifest"), voice_plan=plan, speech_units=units
-    )
-    current = _validate_current_sample(project, plan, manifest)
-    if identity_hash != current:
-        raise ApprovalGateError("提交的样音 identity 与 current sample 不一致")
-    manifest["sample"]["approval"] = {
-        "approved": True,
-        "identityHash": current,
-        "approvalBasis": "user_sample_listening",
-        "approvedAt": _now(),
-    }
-    _write_manifest(paths["manifest"], manifest, plan, units)
-    return current
 
 
 def _checkpoint_segment(
@@ -2033,18 +1717,12 @@ def _full(
         plan["segmentation"]["mode"] != FULL_TRACK_SEGMENTATION_MODE
         or len(units) != 1
     ):
-        raise ApprovalGateError("旧逐句 voice plan 已 stale；请重新生成并批准 full-track 样音")
+        raise ApprovalGateError("旧逐句 voice plan 已 stale；请重新准备 full-track voice plan")
     paths = _voice_paths(project)
     old = _read_json(paths["manifest"], "voice manifest")
     manifest = _fresh_manifest_with_reuse(project, plan, units, old)
-    current_sample = _validate_current_sample(project, plan, old)
-    approval = old.get("sample", {}).get("approval", {})
-    if not approval.get("approved") or approval.get("identityHash") != current_sample:
-        raise ApprovalGateError("未获得 current 样音 voice/rate 人工批准")
     if project.voiceover_mode == "edge-tts":
         asr_preflight()
-    # Preserve only the current sample approval; full/timeline approvals are reset.
-    manifest["sample"] = copy.deepcopy(old["sample"])
     if isinstance(configured_concurrency, bool) or not isinstance(configured_concurrency, int):
         raise VoiceoverStateError("voiceGeneration concurrency 必须是整数")
     if not 1 <= configured_concurrency <= 16:
@@ -2854,10 +2532,6 @@ def _publish_alignment(
     manifest = validate_voice_manifest(
         _read_json(paths["manifest"], "voice manifest"), voice_plan=plan, speech_units=units
     )
-    current_sample = _validate_current_sample(project, plan, manifest)
-    approval = manifest["sample"]["approval"]
-    if not approval.get("approved") or approval.get("identityHash") != current_sample:
-        raise ApprovalGateError("未获得 current 样音 voice/rate 人工批准")
     if len(manifest["segments"]) != 1 or not _segment_is_reusable(
         project, manifest["segments"][0], units[0]
     ):
@@ -2922,10 +2596,6 @@ def _publish_minimax_alignment(project: Project) -> str:
         voice_plan=plan,
         speech_units=units,
     )
-    current_sample = _validate_current_sample(project, plan, manifest)
-    approval = manifest["sample"]["approval"]
-    if not approval.get("approved") or approval.get("identityHash") != current_sample:
-        raise ApprovalGateError("未获得 current 样音 voice/rate 人工批准")
     segment = manifest["segments"][0] if len(manifest["segments"]) == 1 else None
     attempt = segment.get("currentAttempt") if isinstance(segment, Mapping) else None
     if (
@@ -3073,10 +2743,6 @@ def _publish_doubao_alignment(project: Project) -> str:
         voice_plan=plan,
         speech_units=units,
     )
-    current_sample = _validate_current_sample(project, plan, manifest)
-    approval = manifest["sample"]["approval"]
-    if not approval.get("approved") or approval.get("identityHash") != current_sample:
-        raise ApprovalGateError("未获得 current 样音 voice/rate 人工批准")
     segment = manifest["segments"][0] if len(manifest["segments"]) == 1 else None
     attempt = segment.get("currentAttempt") if isinstance(segment, Mapping) else None
     if (
@@ -3219,12 +2885,8 @@ def validate_current_voiceover(
     manifest = validate_voice_manifest(
         _read_json(paths["manifest"], "voice manifest"), voice_plan=plan, speech_units=units
     )
-    sample_identity = _validate_current_sample(project, plan, manifest)
     result: dict[str, Any] = {
         "voicePlanAuditHash": voice_plan_audit_hash(plan),
-        "sampleIdentityHash": sample_identity,
-        "sampleApproved": bool(manifest["sample"]["approval"]["approved"]),
-        "sampleApprovalBasis": manifest["sample"]["approval"].get("approvalBasis"),
     }
     if not require_full:
         return result
@@ -3529,7 +3191,7 @@ def _approve_full(
     current = validate_current_voiceover(project, require_full=True)
     if identity_hash != current["fullIdentityHash"]:
         raise ApprovalGateError("提交的完整旁白 identity 与 current WAV/timeline/SRT 不一致")
-    autonomous = _technical_audio_progress_authorized(project, current)
+    autonomous = _technical_audio_progress_authorized(project)
     review = current.get("durationReview")
     if not isinstance(review, Mapping):
         raise VoiceoverStateError("完整旁白缺少 duration review")
@@ -3586,10 +3248,10 @@ def _approve_full(
         "durationDecision": recorded_decision,
         "reviewPolicy": review_policy,
         "approvalBasis": (
-            "technical_after_user_sample" if autonomous else "human_full_listening"
+            "technical_after_initial_approval" if autonomous else "human_full_listening"
         ),
         "reviewBasis": (
-            "user_joint_initial_sample_authorization_and_current_technical_validation"
+            "initial_content_plan_authorization_and_current_technical_validation"
             if autonomous
             else "current_full_audio_listening"
         ),
@@ -3655,26 +3317,24 @@ def _resolve_full_approval_review_policy(
 
 def _technical_audio_progress_authorized(
     project: Project,
-    current: Mapping[str, Any],
 ) -> bool:
-    """Validate the user-sample authorization required for audio-only autonomy."""
+    """Validate the initial content/plan authorization required for autonomy."""
 
     if not (project.initial_approval_completed and project.agent_approval_enabled):
         return False
     initial = project.metadata.get("initialApproval")
     # Missing initialApproval is a legacy-formal-project compatibility view,
-    # not evidence that the user granted the new sample-based autonomy policy.
+    # not evidence that the user granted the autonomous approval policy.
     if initial is None:
         return False
     if not isinstance(initial, Mapping) or initial.get("status") != "approved":
         raise ApprovalGateError("技术自主推进要求可审计的 current 初始联合批准")
-    sample_identity = current.get("sampleIdentityHash")
     if (
-        current.get("sampleApproved") is not True
-        or current.get("sampleApprovalBasis") != "user_joint_initial_approval"
-        or initial.get("sampleIdentityHash") != sample_identity
+        initial.get("approvalBasis") != "user_joint_content_and_plan"
+        or initial.get("contentIdentitySha256")
+        != project.current_content_identity_sha256
     ):
-        raise ApprovalGateError("技术自主推进要求用户联合批准的 current 样音 identity")
+        raise ApprovalGateError("技术自主推进要求 current 内容与制作方案批准")
     return True
 
 
@@ -3684,7 +3344,6 @@ def _status(project: Project) -> dict[str, Any]:
         "projectId": project.project_id,
         "voiceoverMode": project.voiceover_mode,
         "voicePlan": "missing",
-        "sample": "missing",
         "segments": {},
         "full": "missing",
         "pendingAudioTimeline": project.pending_audio_timeline,
@@ -3693,11 +3352,6 @@ def _status(project: Project) -> dict[str, Any]:
         return payload
     manifest = _read_json(paths["manifest"], "voice manifest")
     payload["voicePlan"] = manifest.get("voicePlan", {}).get("voicePlanAuditHash", "invalid")
-    payload["sample"] = {
-        "status": manifest.get("sample", {}).get("status"),
-        "approved": manifest.get("sample", {}).get("approval", {}).get("approved", False),
-        "identityHash": manifest.get("sample", {}).get("identityHash"),
-    }
     counts: dict[str, int] = {}
     for segment in manifest.get("segments", []):
         status = str(segment.get("status", "invalid"))
@@ -3719,35 +3373,19 @@ def _status(project: Project) -> dict[str, Any]:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="生成、批准和检查语音旁白")
     sub = parser.add_subparsers(dest="command", required=True)
-    sample = sub.add_parser("sample", help="生成 canonical 样音，但不自动批准")
-    sample.add_argument("--project", required=True, type=Path)
-    sample.add_argument(
-        "--voice",
-        help="仅 Edge/MiniMax 可用；豆包 prompt-only 模式禁止指定 speaker",
-    )
-    sample.add_argument("--rate", type=int)
-    sample.add_argument(
-        "--doubao-performance-brief",
-        type=Path,
-        help=(
-            "coordinator 参考 current Seed Audio 示例生成的 JSON；"
-            "豆包样音必填，其他 provider 禁止"
-        ),
-    )
-    sample.add_argument(
-        "--authorize-new-request-after-unknown",
-        action="store_true",
-        help=(
-            "仅在用户明确承担一次可能重复计费的新豆包请求后使用；"
-            "普通恢复不得设置"
-        ),
-    )
-    approve_sample = sub.add_parser("approve-sample", help="持久化用户已试听的 current 样音批准")
-    approve_sample.add_argument("--project", required=True, type=Path)
-    approve_sample.add_argument("--identity-hash", required=True)
     full = sub.add_parser("full", help="生成/恢复整篇单次请求的 canonical 旁白音频")
     full.add_argument("--project", required=True, type=Path)
     full.add_argument("--retry-failed", action="store_true")
+    full.add_argument(
+        "--voice",
+        help="首次生成时仅 Edge/MiniMax 可用；省略读取 provider 配置",
+    )
+    full.add_argument("--rate", type=int, help="首次生成时可覆盖 provider 默认语速")
+    full.add_argument(
+        "--doubao-performance-brief",
+        type=Path,
+        help="豆包首次完整旁白生成必填；已有 current voice plan 时必须省略",
+    )
     publish_alignment = sub.add_parser(
         "publish-alignment",
         help="仅为 Edge 导入 FunASR token SRT 并发布 timeline/FULL_IDENTITY",
@@ -3756,7 +3394,7 @@ def _parser() -> argparse.ArgumentParser:
     publish_alignment.add_argument("--asr-srt", required=True, type=Path)
     approve_full = sub.add_parser(
         "approve-full",
-        help="持久化完整旁白批准；自主模式基于用户样音授权和 current 技术证据推进",
+        help="持久化完整旁白批准；自主模式基于阶段 0 授权和 current 技术证据推进",
     )
     approve_full.add_argument("--project", required=True, type=Path)
     approve_full.add_argument("--identity-hash", required=True)
@@ -3794,100 +3432,19 @@ def main(
             args.project,
             allow_pending_audio_timeline=args.command
             in {"publish-alignment", "approve-full", "status"},
-            allow_pending_initial_approval=args.command in {"sample", "status"},
+            allow_pending_initial_approval=args.command == "status",
         )
         execution = workspace_config
         if execution is None and argv is None:
             execution = load_workspace_config()
         concurrency = execution.concurrency if execution is not None else ExecutionConcurrency()
-        if args.command == "sample":
-            # Provider selection has one source of truth: activeProvider.
-            provider_id = active_provider_id()
-            if provider_id == "disabled":
-                raise VoiceoverStateError("disabled 项目不能生成旁白样音")
-            provider_config = load_voice_provider_config(provider_id=provider_id)
-            if provider_id == "doubao":
-                if args.voice is not None:
-                    raise VoiceoverStateError(
-                        "豆包 prompt-only 模式禁止 --voice；音色只由 text_prompt 定义"
-                    )
-                voice = DOUBAO_PROMPT_VOICE_ID
-            else:
-                voice = args.voice or str(
-                    provider_config.get("voice", "zh-CN-YunjianNeural")
-                )
-            rate = args.rate if args.rate is not None else provider_config.get("rate", 0)
-            if provider_id != project.voiceover_mode:
-                raise VoiceoverStateError(
-                    "activeProvider 必须与项目 voiceoverMode 一致；请使用匹配的项目"
-                )
-            doubao_performance_brief = None
-            if provider_id == "doubao":
-                if args.doubao_performance_brief is None:
-                    raise VoiceoverStateError(
-                        "豆包样音需要 --doubao-performance-brief；"
-                        "请由 coordinator 参考 current Seed Audio 示例生成"
-                    )
-                doubao_performance_brief = _read_json(
-                    args.doubao_performance_brief,
-                    "doubao performance brief",
-                )
-            elif args.doubao_performance_brief is not None:
-                raise VoiceoverStateError(
-                    "--doubao-performance-brief 只允许用于豆包项目"
-                )
-            if (
-                provider_id != "doubao"
-                and args.authorize_new_request_after_unknown
-            ):
-                raise VoiceoverStateError(
-                    "--authorize-new-request-after-unknown 只允许用于豆包项目"
-                )
-            audio, identity, review_audio, request_audit, audio_sha256 = _sample(
-                project, voice=voice, rate=rate, provider_id=provider_id,
-                provider_config=provider_config,
-                doubao_performance_brief=doubao_performance_brief,
-                authorize_new_request_after_unknown=(
-                    args.authorize_new_request_after_unknown
-                ),
-                adapter=adapter or _adapter_from_plan(
-                    _build_plan_and_units(
-                        project,
-                        voice=voice,
-                        rate=rate,
-                        provider_id=provider_id,
-                        provider_config=provider_config,
-                        doubao_performance_brief=doubao_performance_brief,
-                    )[0],
-                    single_doubao_attempt=(
-                        provider_id == "doubao"
-                        and args.authorize_new_request_after_unknown
-                    ),
-                ),
-                normalizer=normalizer or normalize_and_publish,
+        if args.command == "full":
+            current_plan, _ = _prepare_full_plan(
+                project,
+                voice=args.voice,
+                rate=args.rate,
+                doubao_performance_brief=args.doubao_performance_brief,
             )
-            print(f"SAMPLE_AUDIO={audio}")
-            print(f"SAMPLE_REVIEW_AUDIO={review_audio}")
-            print(f"SAMPLE_REQUEST_AUDIT={request_audit}")
-            if provider_id == "doubao":
-                print("SAMPLE_VOICE_CONTROL=text_prompt")
-            else:
-                print(f"SAMPLE_VOICE_ID={voice}")
-            print(f"SAMPLE_AUDIO_SHA256={audio_sha256}")
-            print(f"SAMPLE_IDENTITY={identity}")
-            estimate = _read_json(
-                project.path("manifests/voice-manifest.json"), "voice manifest"
-            )["sample"]["durationEstimate"]
-            print(f"ESTIMATED_FULL_DURATION_MS={estimate['estimatedFullDurationMs']}")
-            print(f"TARGET_DURATION_MS={estimate['targetDurationMs']}")
-            print(f"ESTIMATED_DEVIATION_RATIO={estimate['estimatedDeviationRatio']}")
-            print("ESTIMATE_BASIS=sample_weight_ratio_v1")
-            print("ESTIMATE_AUTHORITATIVE=0")
-        elif args.command == "approve-sample":
-            identity = _approve_sample(project, args.identity_hash)
-            print(f"SAMPLE_APPROVED_IDENTITY={identity}")
-        elif args.command == "full":
-            current_plan, _ = _load_current_plan_units(project)
             native_subtitle_provider = (
                 project.voiceover_mode
                 if project.voiceover_mode in {"minimax", "doubao"}

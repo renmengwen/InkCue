@@ -1,6 +1,6 @@
 # 语音旁白合同
 
-本文说明 `voiceoverMode=edge-tts | minimax | doubao` 的 provider、配置、样音、完整旁白、canonical WAV、真实时间轴、恢复/stale 和外部验收边界。Disabled 模式不安装、不调用语音 provider；其正式交付仍需按 [字幕合同](subtitles.md) 烧录 source SRT。topic/text 的 provider 不由用户选择，而是唯一读取 `config/voice-providers.local.json` 的 `activeProvider`；其内容确认和 source package 合同见 [内容入口合同](content-input.md)。
+本文说明 `voiceoverMode=edge-tts | minimax | doubao` 的 provider、配置、完整旁白、canonical WAV、真实时间轴、恢复/stale 和外部验收边界。Disabled 模式不安装、不调用语音 provider；其正式交付仍需按 [字幕合同](subtitles.md) 烧录 source SRT。topic/text 的 provider 不由用户选择，而是唯一读取 `config/voice-providers.local.json` 的 `activeProvider`；其内容确认和 source package 合同见 [内容入口合同](content-input.md)。
 
 ## 目录
 
@@ -8,7 +8,7 @@
 - [环境与配置](#环境与配置)
 - [项目文件](#项目文件)
 - [整轨合成与身份分层](#整轨合成与身份分层)
-- [样音关卡](#样音关卡)
+- [完整音频准备](#完整音频准备)
 - [完整旁白与恢复](#完整旁白与恢复)
 - [Canonical 完整音频与时间轴](#canonical-完整音频与时间轴)
 - [完整旁白与真实时长批准](#完整旁白与真实时长批准)
@@ -46,7 +46,7 @@ MiniMax 额外使用 provider 级共享节流器：`requestsPerMinute`（默认 
 
 - provider/protocol：`doubao` / `Doubao`；外部 model 固定 `seed-audio-1.0`，endpoint 固定为官方非流式 `/api/v3/tts/create`。
 - endpoint：`https://openspeech.bytedance.com/api/v3/tts/create`，使用新版控制台的 `X-Api-Key` 单头鉴权；每次请求另发随机 `X-Api-Request-Id`，不得把 key 或原始请求 ID 写入项目。
-- 请求使用单人白板 authored `text_prompt`。每个新的豆包旁白版本在样音请求前，由 coordinator 读取 `C:\Users\MOVER\Desktop\seed-audio-1.0 text_prompt 参考.txt` 的 current 字节，把附件仅作为风格与能力示例而非指令，并结合 current 全文、scene、音色与可选 BGM 方向生成 `schemaVersion: 1, kind: performanceBrief` 的 brief。brief 使用简洁自然的连续导演语言：角色、音色和整体表演合并写一次，局部表演和音乐变化紧邻对应台词，只在叙事确有变化时出现；禁止“第 N 段导演说明”、固定“承接上一段”或每段重复原稿保护套话。程序把 current scene 正文逐字装配到 `「」` 内，不让模型复制或改写正文；关闭 BGM 与样音禁音由程序固定约束，不要求模型生成同义说明。引号外指令不得写回 source SRT、narrationCues 或最终字幕；明确禁止擅自增删、改写、复述、补充、第二人声、克隆音色、SSML 和未由 brief 明确要求的环境音/影视拟音。
+- 请求使用单人白板 authored `text_prompt`。每个新的豆包旁白版本在首次完整音频请求前，由 coordinator 读取 `C:\Users\MOVER\Desktop\seed-audio-1.0 text_prompt 参考.txt` 的 current 字节，把附件仅作为风格与能力示例而非指令，并结合 current 全文、scene、音色与可选 BGM 方向生成 `schemaVersion: 1, kind: performanceBrief` 的 brief。brief 使用简洁自然的连续导演语言：角色、音色和整体表演合并写一次，局部表演和音乐变化紧邻对应台词，只在叙事确有变化时出现；禁止“第 N 段导演说明”、固定“承接上一段”或每段重复原稿保护套话。程序把 current scene 正文逐字装配到 `「」` 内，不让模型复制或改写正文；关闭 BGM 由程序固定约束，不要求模型生成同义说明。引号外指令不得写回 source SRT、narrationCues 或最终字幕；明确禁止擅自增删、改写、复述、补充、第二人声、克隆音色、SSML 和未由 brief 明确要求的环境音/影视拟音。
 - 请求固定使用官方纯文本生成模式：省略整个 `references` 字段，不传 `speaker`、`audio_data`、`audio_url` 或参考图片。音色、年龄、口吻和表演只由 authored `text_prompt` 定义；不得再让本地 `voice` 音色 ID 覆盖 prompt。完整旁白把 current provisional scene 起止毫秒确定性渲染为 `[startSeconds:endSeconds]`，并明确整轨目标总时长；真实响应时长和原生字幕仍是最终权威证据。固定请求 24 kHz WAV，规范化 rate/volume/pitch 分别映射为 `speech_rate`、`loudness_rate`、`pitch_rate`，合法范围为 `-50–100`、`-50–100`、`-12–12`。
 - `audio_config.enable_subtitle` 固定为 `true`。同一次响应必须原子取得 Base64 `audio` 与 `subtitle`，并严格解析 `subtitle.text`、`subtitle.sentences[]`、每句 `start_time/end_time/text` 及 `sentences[].words[]` 的毫秒 `start_time/end_time/text`；禁止递归猜测任意数组。官方字段合同只承诺非负毫秒整数，并未承诺标点 token 必有正时长、相邻 token 绝不轻微重叠或 word 严格包含于 sentence 边界：sidecar 保留原始 token 以验证文本完整性；生成语义时间轴时忽略纯标点零时长 token，只允许不超过 100ms 且仍能保留正时长的相邻语义 token 交叠裁切，其他倒序、越界、语义 token 零时长或大幅重叠继续 fail-closed。
 - `duration` 是后处理音频时长，`original_duration` 是计费原始时长；两者都必须为正且不超过 120 秒。只读取 Base64 `audio`，不消费或持久化有效期两小时的 `url`；`X-Tt-Logid` 仅保存不可逆摘要。原始 WAV 仍须经过共享 FFmpeg/ffprobe 规范化与 canonical 24 kHz mono 校验。
@@ -54,7 +54,7 @@ MiniMax 额外使用 provider 级共享节流器：`requestsPerMinute`（默认 
 - 完整 `text_prompt` 在任何外部请求前 fail-closed 检查 3000 字符上限；完整旁白 provisional 时长在请求前检查 120 秒上限。不得截断 prompt、拆成逐句请求、退回裸文本或自动换 provider。
 - 文档未给出完整业务错误码语义，因此只把 DNS/连接/timeout、HTTP 429/502/503/504 和明确限流消息作为有界可重试错误；鉴权、参数/音色、业务错误、协议或媒体错误均永久失败，不自动切换 provider。
 
-豆包 adapter 与 MiniMax 一样只使用 Python 标准库，不增加 provider 包。它复用 `queueIntervalMs` 与 `maxRetries`，共享 adapter 实例在全部 `voiceGeneration` worker 间串行计算请求启动间隔。若响应已经包含可能计费的 audio，但 subtitle 缺失、无效或不能形成完整同请求证据，attempt 必须进入 `unknown_external_outcome`，禁止普通重发或用 FunASR 补齐。样音清单只记录稳定的去敏原因码（如 `invalid_duration`、`missing_subtitle`、`invalid_word_timing`、`sentence_words_text_mismatch`），不记录响应体、Base64 音频、正文、完整 prompt、临时 URL、原始请求 ID 或 provider 自由文本。
+豆包 adapter 与 MiniMax 一样只使用 Python 标准库，不增加 provider 包。它复用 `queueIntervalMs` 与 `maxRetries`，共享 adapter 实例在全部 `voiceGeneration` worker 间串行计算请求启动间隔。若响应已经包含可能计费的 audio，但 subtitle 缺失、无效或不能形成完整同请求证据，attempt 必须进入 `unknown_external_outcome`，禁止普通重发或用 FunASR 补齐。manifest 只记录稳定的去敏原因码（如 `invalid_duration`、`missing_subtitle`、`invalid_word_timing`、`sentence_words_text_mismatch`），不记录响应体、Base64 音频、正文、完整 prompt、临时 URL、原始请求 ID 或 provider 自由文本。
 
 Edge TTS 不需要 API Key 或 Base URL，但不是离线模型。它依赖外网和微软语音服务，可能受服务规则、可用性、限流、音色和返回格式变化影响。不得把“无 Key”写成“无需网络”，也不得在失败后自动改 voice/rate、切换 provider 或降级到其他 TTS。
 
@@ -90,13 +90,12 @@ python scripts/prepare_env.py
 
 MiniMax 请求策略字段为 `queueIntervalMs`、`requestsPerMinute`、`rateLimitBackoffMs` 与 `maxRetries`。`requestsPerMinute` 必须位于 1–600，`rateLimitBackoffMs` 必须位于 1000–300000；缺失时分别采用 20 RPM 与 35000ms。豆包使用 `queueIntervalMs` 与 `maxRetries`，并要求本地配置包含 `apiKey`、`model=seed-audio-1.0`；本地旧 `voice` 和 `contractVersion` 即使仍存在也会在 loader 边界丢弃，不能进入 plan、identity 或请求。降低 `voiceGeneration` 只能减少在途请求和本地资源占用，不能替代 provider 自身限流。
 
-当前样音 CLI 的 provider 永远读取 `config/voice-providers.local.json` 的 `activeProvider`，不提供 `--provider` 覆盖入口；activeProvider 必须与项目已经冻结的 `voiceoverMode` 一致。CLI 仍支持整数百分点 `--rate`；`--voice` 仅允许 Edge/MiniMax，豆包 prompt-only 模式传入该参数会在请求前拒绝。`--rate 0` 规范化为 `+0%`，`10` 为 `+10%`，`-10` 为 `-10%`。持久化 identity 使用规范化字符串，不依赖调用点猜单位。全局示例配置不能自动覆盖项目中已经生成或批准的 `planning/voice-plan.json`。
+完整音频 CLI 的 provider 永远读取 `config/voice-providers.local.json` 的 `activeProvider`，不提供 `--provider` 覆盖入口；activeProvider 必须与项目已经冻结的 `voiceoverMode` 一致。首次 `full` 支持整数百分点 `--rate`；`--voice` 仅允许 Edge/MiniMax，豆包 prompt-only 模式传入该参数会在请求前拒绝。`--rate 0` 规范化为 `+0%`，`10` 为 `+10%`，`-10` 为 `-10%`。持久化 identity 使用规范化字符串，不依赖调用点猜单位。已有 current `planning/voice-plan.json` 时，`full` 不允许覆盖 voice/rate/brief。
 
 ## 项目文件
 
 ```text
 planning/voice-plan.json
-previews/voice-sample.wav
 manifests/voice-manifest.json
 audio/segments/unit-0001.wav
 audio/narration.wav
@@ -118,7 +117,6 @@ planning/timing-plan.json
 - 不再按 12/24/36 code point 拆分，也不因 provider 或 ASR 失败回退成逐句请求。
 - 豆包、MiniMax 与 Edge 共用同一整轨 planner；各 provider 若拒绝当前全文长度或请求，按永久 provider 错误 fail-closed，不自动切换 provider 或重新拆句。豆包另在请求前同时检查完整导演式 prompt 不超过 3000 字符、provisional 整轨不超过 120 秒。
 - cue/scene mapping 仍进入整轨 unit 的审计与 identity；真正的 cue/scene 毫秒边界在成品 WAV 生成后由 ASR 对齐派生。
-- 样音仍从全文中确定性选择一条代表性自然句，不会拿全文生成样音。
 
 身份分为三层，避免源 SRT 只改时间时无意义地重请求音频：
 
@@ -130,16 +128,15 @@ voiceSynthesisIdentityHash
 
 `voiceSynthesisIdentityHash` 覆盖完整规范化朗读文本、稳定 ordinal/range、scene 段落、voice、rate、language、`segmentation.mode`、provider id/protocol/options。options 中外部真实 package/model/endpoint 与 prompt capability 参数进入 identity，不再复制一个内部 provider 合同名。豆包的 `voice` 固定为内部审计标记 `text-prompt-authored`，不得是 speaker ID；豆包还显式覆盖 `voiceControlMode=text_prompt`、`timeControlMode=scene_windows` 和确定性渲染后的完整 `text_prompt` SHA，因此 scene 时间、情绪/停顿方向、BGM 开关或纯文本音色方向变化都不能复用旧音频。source 原文件 SHA 仍用于审计；它不是判断整轨音频是否可复用的唯一依据。
 
-voice plan 另有 `voicePlanAuditHash`，覆盖完整 plan。豆包的 `provider.options.promptSpec` 使用 `schemaVersion: 1, kind: textPromptPlan`，在这里冻结 coordinator authored 的单段角色/整体表演方向、可选 BGM 的开头与结尾、与 current scene 一一对应的局部导演方向、参考文件 SHA 及硬限制，但不复制原稿。关闭 BGM 和样音禁音由渲染器确定性执行。`sample` 通过 `--doubao-performance-brief` 一次导入该 brief；`full`、状态恢复和 provider 重试只消费已冻结 plan，不重新调用模型或重读参考文件。audit hash 变化会使样音/完整批准、时长决定、timeline、narration SRT 和下游重新判定，但只有 synthesis identity 或正式 WAV recipe/字节变化的 segment 才必须重新请求。
+voice plan 另有 `voicePlanAuditHash`，覆盖完整 plan。豆包的 `provider.options.promptSpec` 使用 `schemaVersion: 1, kind: textPromptPlan`，在这里冻结 coordinator authored 的单段角色/整体表演方向、可选 BGM 的开头与结尾、与 current scene 一一对应的局部导演方向、参考文件 SHA 及硬限制，但不复制原稿。关闭 BGM 由渲染器确定性执行。首次 `full` 通过 `--doubao-performance-brief` 导入该 brief；状态恢复和 provider 重试只消费已冻结 plan，不重新调用模型或重读参考文件。audit hash 变化会使完整批准、时长决定、timeline、narration SRT 和下游重新判定，但只有 synthesis identity 或正式 WAV recipe/字节变化的 segment 才必须重新请求。
 
-## pending 预项目中的样音与联合关卡
+## 完整音频准备
 
-从已确认文本中确定性选择代表性中文自然句，生成并规范化样音。豆包样音使用同一 authored brief 的角色/整体人声方向，但阶段 0 的 BGM 选择尚未冻结，所以样音固定只验证人声方向，不带 BGM、不生成两份样音，也不增加前置选择。豆包 brief 必须在请求前由 coordinator 生成到项目 `.work/`；它不是新 Gate，CLI 在发出任何外部请求前把 brief 和 current prompt identity 冻结进既有 voice plan，并把 manifest 置为 pending：
+阶段 0 只确认内容与制作方案，不生成、试听或批准任何短样音。初始联合批准完成后，首次 `full` 在发出任何外部请求前确定性冻结 voice plan 与空的 voice manifest。Edge/MiniMax 可从 active provider 配置读取 voice/rate，也可在首次调用显式传入；豆包必须由 coordinator 先生成项目 `.work/` 下的 current performance brief：
 
 ```powershell
-<ENV_PY> scripts/generate_voiceover.py sample `
+<ENV_PY> scripts/generate_voiceover.py full `
   --project <项目根目录> `
-  --rate 0 `
   --doubao-performance-brief <项目\.work\doubao-performance-brief.json>
 ```
 
@@ -173,29 +170,7 @@ coordinator 生成 brief 时必须完整读取 current 参考附件，但按当�
 - `enabledMusicBefore` 默认为空；只有配器、张力、音量或留白确实发生变化时才写一句，不为凑 scene 数重复近义过渡。
 - `enabledEndingDirection` 只写人声结束后的一个简洁收束动作。禁止“第 N 段导演说明”、固定“承接上一段”、机械位置标签和每段重复的原稿保护套话。
 
-正文不进入 brief，由程序从 current source 逐字插入。若附件缺失/不可读、brief 与 current scene 不一致或渲染后超过 3000 字符，样音在外部请求前失败；超限时只精简导演说明，禁止截断正文、退回旧硬编码模板或更换 provider。
-
-若豆包已经返回 audio，但同请求原生字幕或时长证据无效，CLI 在退出前把 `sample.status` 原子写为 `unknown_external_outcome`，保存去敏 `reasonCode`，并固定 `providerResponseReceived=true`、`externalResultIncomplete=true`、`retryAllowed=false`；不得生成或伪造样音媒体与 identity。此后普通 `sample` 必须在外部请求前拒绝。只有用户明确承担一次可能重复计费的新请求时，coordinator 才能在同一命令上追加 `--authorize-new-request-after-unknown`，且 run 审计必须记录该授权；该参数不是恢复命令的默认组成部分。该显式恢复请求固定 `max_attempts=1`，不继承配置中的自动重试次数，保证一次授权只产生一次新的 HTTP 尝试。
-
-成功输出：
-
-```text
-SAMPLE_AUDIO=<项目根目录>\previews\voice-sample.wav
-SAMPLE_REVIEW_AUDIO=<项目根目录>\previews\voice-sample-<voice>-<identity前12位>.wav
-SAMPLE_REQUEST_AUDIT=<同名脱敏审计 JSON>
-SAMPLE_VOICE_CONTROL=text_prompt
-SAMPLE_AUDIO_SHA256=<current WAV SHA-256>
-SAMPLE_IDENTITY=<64位 sha256>
-```
-
-`SAMPLE_AUDIO` 仍是供批准合同使用的 canonical current 文件；`SAMPLE_REVIEW_AUDIO`
-是字节完全相同、按 prompt-voice 标记与 identity 唯一命名的不可变试听副本，交付用户时必须优先使用它，
-避免桌面播放器或浏览器按固定路径缓存上一版样音。脱敏审计只记录 provider/model、规范化
-voiceControlMode/rate/volume/pitch、identity、媒体 SHA/bytes/duration；豆包 prompt-only 审计必须记录 `voiceId=null`、`voiceControlMode=text_prompt`，不得把内部 `text-prompt-authored` 标记表述为已发送的 speaker。不得保存 API Key、Authorization、正文或完整 provider 响应。
-
-样音成功后同时输出非权威整轨时长预测：按 sample/current 全文的确定性可朗读权重比例缩放样音实测时长，记录 `estimatedFullDurationMs`、`targetDurationMs`、`estimatedDeviationRatio`、`estimateBasis=sample_weight_ratio_v1` 与 `authoritative=false`。它只用于阶段 0 提前提示明显偏差，绑定 current voice/rate/sample；不得进入作品 identity、替代完整旁白真实时钟或新增 Gate。
-
-技术校验只说明 WAV 可读、媒体合同正确，不代表 voice/rate 已获接受。样音在 `pending_initial_approval` 预项目中生成，用户必须在检查草案/制作方案的同一次阶段 0 交互中完整试听 current 样音。不得先用独立 `approve-sample` 把样音批准，再等待另一条内容选择。
+正文不进入 brief，由程序从 current source 逐字插入。若附件缺失/不可读、brief 与 current scene 不一致或渲染后超过 3000 字符，`full` 在外部请求前失败；超限时只精简导演说明，禁止截断正文、退回旧硬编码模板或更换 provider。
 
 ```powershell
 <ENV_PY> scripts/approve_initial_project.py `
@@ -203,7 +178,7 @@ voiceControlMode/rate/volume/pitch、identity、媒体 SHA/bytes/duration；豆�
   --choice <结构化联合选择>
 ```
 
-联合动作必须重验 current content identity、current `SAMPLE_IDENTITY`、pending 状态、完整句所对应组合与当前能力，然后原子冻结 BGM、后续模式、生图方式、`initialApproval` 和 sample approval。样音审计使用 `approvalBasis=user_joint_initial_approval`；任一失败不留下半批准状态。内容或 voice/rate 改变使受影响样音批准 stale。传统 `disabled` SRT 不生成、不要求样音。未完成初始批准时，`full` 必须返回 5。
+联合动作必须重验 current content identity、pending 状态、完整句所对应组合与当前能力，然后原子冻结 BGM、后续模式、生图方式和 `initialApproval`。任一失败不留下半批准状态。未完成初始批准时，`full` 必须返回 5。
 
 ## 完整旁白与恢复
 
@@ -312,18 +287,18 @@ FULL_IDENTITY=<64位 sha256>
 <ENV_PY> scripts/validate_voiceover.py --project <项目根目录> --force-deep
 ```
 
-`status` 输出 voice plan、sample、各 segment 状态计数和 full approval 摘要；它不修改项目。`validate_voiceover.py` 验证 current WAV、timeline 与 narration SRT，成功输出 `VOICEOVER_VALIDATED=1` 和 current identity，也不会写人工批准。
+`status` 输出 voice plan、各 segment 状态计数和 full approval 摘要；它不修改项目。`validate_voiceover.py` 验证 current WAV、timeline 与 narration SRT，成功输出 `VOICEOVER_VALIDATED=1` 和 current identity，也不会写人工批准。
 
 ## 完整旁白与真实时长批准
 
-完整旁白生成后分两种批准 basis。人工模式仍由用户完整试听 `audio/narration.wav` 并完成两项明确判断；自主模式不要求 coordinator 冒充完整听音，而是重验用户已批准的 current 样音授权与以下严格技术证据后推进。
+完整旁白生成后分两种批准 basis。人工模式仍由用户完整试听 `audio/narration.wav` 并完成两项明确判断；自主模式不要求 coordinator 冒充完整听音，而是重验阶段 0 current 内容与制作方案授权及以下严格技术证据后推进。
 
 1. 配音内容、音色、语速与完整听感可接受，没有漏读、重复、断裂或奇怪停顿；同时抽查字幕与旁白同步、语义切句和停顿留白，不得出现词中断开。
 2. 查看 target/source provisional duration 与真实 audio duration 的差值和比例，决定是否接受真实时长。
 
 `agentApprovalEnabled` 缺失或为 `false` 时，同一条完整旁白确认请求还必须展示本次运行的生成后审阅策略：`user_first` 直接把各阶段通过技术校验的 current artifact 交给用户，`agent_first` 在交付用户前为各阶段准备一次辅助 AI 语义预审。用户应能在一次回复中同时确认完整旁白、作出所需的真实时长决定并选择策略，例如“确认完整旁白，选择 user_first”；不得先完成 `approve-full`，再设置一次只用于选择策略的独立聊天关卡。用户未指定策略时必须继续停在本 Gate 询问，禁止静默默认。
 
-`agentApprovalEnabled=true` 时，审阅策略确定性为 `agent_first`，不再询问 `user_first|agent_first`。coordinator 必须确认：整轨单次 provider 请求、canonical WAV recipe 与完整解码、对应 provider 的 current 词级时间证据（Edge 为 FunASR，MiniMax 与豆包为各自同次响应原生 word 字幕）、原稿对齐、cue/scene/timeline/narration SRT binding、current `FULL_IDENTITY`、时长与偏差证据全部通过；豆包还必须确认完整 prompt SHA 和实际 BGM 模式。然后使用同一原子动作并记录 `approvalBasis=user_sample_authorization_technical_validation`（或实现定义的等价固定值）。不得记录或表述为 AI 已完整试听。
+`agentApprovalEnabled=true` 时，审阅策略确定性为 `agent_first`，不再询问 `user_first|agent_first`。coordinator 必须确认：整轨单次 provider 请求、canonical WAV recipe 与完整解码、对应 provider 的 current 词级时间证据（Edge 为 FunASR，MiniMax 与豆包为各自同次响应原生 word 字幕）、原稿对齐、cue/scene/timeline/narration SRT binding、current `FULL_IDENTITY`、时长与偏差证据全部通过；豆包还必须确认完整 prompt SHA 和实际 BGM 模式。然后使用同一原子动作并记录 `approvalBasis=technical_after_initial_approval`。不得记录或表述为 AI 已完整试听。
 
 `audio/narration.srt` 继续作为 current 权威字幕源和技术证据，但此时尚无真实画面，因此不做字幕视觉批准。换行、对比度、遮挡与安全区统一在正式字幕 contact sheet 和最终成片中审查。
 
@@ -344,9 +319,9 @@ FULL_IDENTITY=<64位 sha256>
   --review-policy agent_first
 ```
 
-`--identity-hash` 必须是 current full identity；不匹配时返回 5，且不得修改旧批准。`--review-policy` 必填并持久化到 `fullApproval.reviewPolicy`。人工模式超 10% 仍要求用户 `accept_actual`；自主模式按阶段 0 样音授权记录 `accept_actual` 并采用真实音频时钟，不再询问用户。alignment 失败、stale、媒体失败或 `unknown_external_outcome` 仍 fail-closed。
+`--identity-hash` 必须是 current full identity；不匹配时返回 5，且不得修改旧批准。`--review-policy` 必填并持久化到 `fullApproval.reviewPolicy`。人工模式超 10% 仍要求用户 `accept_actual`；自主模式按阶段 0 授权记录 `accept_actual` 并采用真实音频时钟，不再询问用户。alignment 失败、stale、媒体失败或 `unknown_external_outcome` 仍 fail-closed。
 
-coordinator 在人工模式收到完整听审与时长决定后，或在自主模式完成样音授权/current 技术证据复核后，必须先核对 `FULL_IDENTITY` 并成功执行 `approve-full`，再开始视觉阶段。identity stale、alignment/媒体失败或超阈值策略不满足时不得只凭 `agent_first` 启动生图。自主返工只重做受影响技术阶段；需实质改写阶段 0 文本或已冻结策略时仍回到用户确认。review policy 不进入作品 identity，也不能替代视觉 Gate。
+coordinator 在人工模式收到完整听审与时长决定后，或在自主模式完成阶段 0 授权/current 技术证据复核后，必须先核对 `FULL_IDENTITY` 并成功执行 `approve-full`，再开始视觉阶段。identity stale、alignment/媒体失败或超阈值策略不满足时不得只凭 `agent_first` 启动生图。自主返工只重做受影响技术阶段；需实质改写阶段 0 文本或已冻结策略时仍回到用户确认。review policy 不进入作品 identity，也不能替代视觉 Gate。
 
 批准成功输出 `FULL_APPROVED_IDENTITY` 和 `TIMING_PLAN`，并原子更新 `planning/timing-plan.json`，使 current audio timeline 成为正式时钟。此操作不能修改图片 `generation-plan.json` 或 generation manifest。
 
@@ -377,7 +352,7 @@ mux 允许 Edge、MiniMax 或豆包语音模式，要求 current full approval�
 
 若 `project.json.backgroundMusic.enabled=true`：Edge/MiniMax 的同一个 mux 命令继续读取 skill 内置 CC0 曲目，按结构化 `background_music_mix` recipe 固定 `-15 dB` 混入旁白，应用 1.2 秒淡入和 1.8 秒淡出，并在曲目短于成片时循环；豆包 prompt-only 的 canonical `narration.wav` 已由导演式 prompt 生成“人声+克制器乐”，mux 必须识别 `renderMode=provider_embedded`，禁止读取或混入《First Light Particles》，只做目标 AAC 封装。最终仍只有一路 AAC；delivery manifest 的 `final.backgroundMusic` 对固定混音记录资产、参数和 recipe，对豆包记录 `provider=doubao`、`model=seed-audio-1.0`、完整 prompt SHA、voice synthesis/full audio identity 和 canonical audio SHA，并拒绝重复固定 BGM receipt。若字段为 `false` 或旧项目缺少该字段，保持纯旁白封装。BGM 不新增人工 Gate，最终完整看片听音批准同时验收其听感。
 
-完整旁白批准和技术验证都不自动等于 final approval。人工模式仍由用户完整看片听音。自主模式不能因宿主缺少听音能力再次阻塞，也不能声称 AI 完整听过；它必须重验 current full audio、权威字幕、AAC、流结构、完整解码、时长/帧数/尾部、实际 BGM 模式（固定混音或豆包 provider-embedded）与 `FINAL_IDENTITY`，然后以 `reviewBasis=user_sample_authorization_technical_validation`（或实现定义的等价固定值）写 final approval。视觉阶段若宿主具备查看能力仍实际检查 current 视觉 artifact。
+完整旁白批准和技术验证都不自动等于 final approval。人工模式仍由用户完整看片听音。自主模式不能因宿主缺少听音能力再次阻塞，也不能声称 AI 完整听过；它必须重验 current full audio、权威字幕、AAC、流结构、完整解码、时长/帧数/尾部、实际 BGM 模式（固定混音或豆包 provider-embedded）与 `FINAL_IDENTITY`，然后以 `approvalBasis=technical_after_initial_approval`、`reviewBasis=current_final_technical_validation` 写 final approval。视觉阶段若宿主具备查看能力仍实际检查 current 视觉 artifact。
 
 ```powershell
 <ENV_PY> scripts/approve_final_media.py `
@@ -397,7 +372,7 @@ final identity 覆盖 clean video、audio、timeline、权威字幕、样式 rec
 |---|---|---|
 | topic/body/rewritePolicy/target/narration cue/scene mapping 改变 | content/source package、voice plan、full 批准、音频、timeline、narration SRT 和全部相关下游 | 仅按 current identity 重新判定可复用 segment |
 | 仅 imagePrompt 改变，cue/scene boundary 不变 | generation plan、图片和视觉下游 | current 音频、timeline 与 narration SRT |
-| voice/rate/朗读文本/分段边界/provider model、endpoint 或请求参数 | sample/full 批准、受影响段、WAV、timeline、narration SRT、annotation、场景视频、captioned/final、最终批准 | synthesis identity 未变的其他段；图片需语义复核 |
+| voice/rate/朗读文本/分段边界/provider model、endpoint 或请求参数 | full 批准、受影响段、WAV、timeline、narration SRT、annotation、场景视频、captioned/final、最终批准 | synthesis identity 未变的其他段；图片需语义复核 |
 | source 仅改时间，朗读文本与分段不变 | 时长决定、full 批准、timeline、narration SRT、annotation 和下游；豆包另 stale scene 时间窗口 prompt 与整轨音频 | Edge/MiniMax synthesis identity/current WAV 合法的 segments；豆包不复用旧音频 |
 | narration WAV 改变 | full 批准、timeline、annotation 和全部下游 | 图片 |
 | ASR/对齐 recipe 或 narration SRT 改变，scene 边界不变 | full approval、字幕烧录、captioned/final、最终批准 | current canonical WAV、图片、annotation、scene bundle 与 clean master；按 binding 重验 |
@@ -424,13 +399,11 @@ stale 文件可作为历史证据保留，但不得作为 current 输入进入�
 
 真实 Edge 验收只能在 fixture 通过后单独进行：
 
-1. 用 `zh-CN-YunjianNeural` 与默认 rate 生成短中文样音。
-2. 用户完整试听并批准 sample identity。
-3. 用短 SRT 生成完整旁白、timeline 和 narration SRT。
-4. 用户完整试听 narration WAV、查看真实时长偏差并批准 current full identity；不生成无画面的预审视频。
-5. 按 audio-authoritative 时钟渲染，烧录 narration SRT，封装 AAC。
-6. 验证 H.264/AAC、1920×1080、60fps、yuv420p、24kHz mono、帧数/时长、字幕像素和完整解码。
-7. 用户完整看片听音并批准 final identity。
+1. 用短 SRT、`zh-CN-YunjianNeural` 与默认 rate 生成完整旁白、timeline 和 narration SRT。
+2. 用户完整试听 narration WAV、查看真实时长偏差并批准 current full identity；不生成无画面的预审视频。
+3. 按 audio-authoritative 时钟渲染，烧录 narration SRT，封装 AAC。
+4. 验证 H.264/AAC、1920×1080、60fps、yuv420p、24kHz mono、帧数/时长、字幕像素和完整解码。
+5. 用户完整看片听音并批准 final identity。
 
 如果外网、DNS、Edge 服务或音色不可用，必须报告：
 

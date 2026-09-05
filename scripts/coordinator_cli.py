@@ -408,18 +408,10 @@ def parse_initial(args: argparse.Namespace) -> dict[str, Any]:
         configured_image_provider_available=args.configured_image_provider_available,
         fixed_image_generation_mode=args.fixed_image_generation_mode,
     )
-    sample_identity = None
-    if project.voiceover_mode != "disabled":
-        manifest = _read_json(project.path("manifests/voice-manifest.json"))
-        sample = manifest.get("sample")
-        if not isinstance(sample, dict) or not isinstance(sample.get("identityHash"), str):
-            raise ValueError("current 样音 identity 不可用")
-        sample_identity = sample["identityHash"]
     selection = parse_initial_approval_response(
         args.reply,
         options=options,
         content_identity_sha256=project.current_content_identity_sha256,
-        sample_identity_sha256=sample_identity,
     )
     output = args.output.resolve(strict=False)
     try:
@@ -454,21 +446,23 @@ def project_status(project_path: Path) -> dict[str, Any]:
     skill_root = Path(__file__).resolve().parents[1]
     python = sys.executable
     if project.pending_initial_approval:
-        next_gate = "initial_joint_approval"
+        next_gate = "initial_content_plan_approval"
         next_command = None
-        if project.voiceover_mode != "disabled" and not project.path("previews/voice-sample.wav").is_file():
-            next_gate = "sample_generation"
-            next_command = [python, str(skill_root / "scripts/generate_voiceover.py"), "sample", "--project", str(project.root)]
     elif project.voiceover_mode != "disabled":
         if not project.path("audio/timeline.json").is_file():
             next_gate = "full_voiceover_alignment"
-            next_command = [
-                python,
-                str(skill_root / "scripts/generate_voiceover.py"),
-                "full",
-                "--project",
-                str(project.root),
-            ]
+            next_command = None
+            if not (
+                project.voiceover_mode == "doubao"
+                and not project.path("planning/voice-plan.json").is_file()
+            ):
+                next_command = [
+                    python,
+                    str(skill_root / "scripts/generate_voiceover.py"),
+                    "full",
+                    "--project",
+                    str(project.root),
+                ]
         else:
             manifest = _read_json(project.path("manifests/voice-manifest.json"))
             full_approval = manifest.get("fullApproval")

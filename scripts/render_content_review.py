@@ -207,10 +207,10 @@ def render_review_markdown(draft: Mapping[str, Any]) -> str:
             f"- provisional SRT 使用 `{PROVISIONAL_TIMING_ALGORITHM}` 算法第 {PROVISIONAL_TIMING_ALGORITHM_VERSION} 版，参数与输入哈希由 source manifest 冻结。",
             f"- 当前目标时长只用于内容预算与 provisional source SRT；{provider_label} 获批后的真实音频时间轴才是权威时钟。",
             "- 正式字幕将来自获批真实音频时间轴派生的 narration SRT。",
-            "- 当前仍待用户完成“内容与制作方案联合确认”；在新流程中，这次确认还必须包含对 pending 预项目 current 样音的试听与联合批准。",
-            "- 当前草案只允许进入标记为 `pending_initial_approval` 的预项目，用于阶段 0 审阅、current 样音、修订与联合批准；不得生成完整旁白、生图、annotation、render 或 final。",
-            "- coordinator 必须在预项目内生成并技术验证绑定 current 草案/voice plan 的真实样音，再按当前真实生图能力展示完整自然语言选项；active voice provider 只是“当前已采用”，不是用户选择项。",
-            "- 用户的一次合法回复必须绑定 current content identity 与 current `SAMPLE_IDENTITY`，并由项目层重验后原子批准/冻结；本 Markdown 与技术 PASS 都不会自行写批准。",
+            "- 当前仍待用户完成“内容与制作方案联合确认”；阶段 0 不生成或试听样音。",
+            "- 当前草案只允许进入标记为 `pending_initial_approval` 的预项目，用于阶段 0 审阅、修订与联合批准；不得生成完整旁白、生图、annotation、render 或 final。",
+            "- coordinator 按当前真实生图能力展示完整自然语言选项；active voice provider 只是“当前已采用”，不是用户选择项。",
+            "- 用户的一次合法回复必须绑定 current content identity，并由项目层重验后原子批准/冻结；本 Markdown 与技术 PASS 都不会自行写批准。",
             "",
         ]
     )

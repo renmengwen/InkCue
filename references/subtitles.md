@@ -34,7 +34,7 @@ Disabled 的画面与字幕从全局 0 开始，以 source SRT 最后一条 cue 
 
 ## 旁白阶段与正式字幕的边界
 
-Edge/MiniMax/豆包 `full` 生成 current `audio/narration.srt`，但此时尚未生图。人工模式只有用户完整试听后才绑定 `FULL_IDENTITY`；自主模式以阶段 0 用户批准的 current 样音为声音主观依据，在 canonical WAV 完整解码、对应 provider 的 current 词级时间证据、原稿对齐、timeline/narration SRT/current identity 与时长偏差等严格技术证据通过后写“用户样音授权后的技术推进” basis，不声称 AI 完整试听。
+Edge/MiniMax/豆包 `full` 生成 current `audio/narration.srt`，但此时尚未生图。人工模式只有用户完整试听后才绑定 `FULL_IDENTITY`；自主模式在阶段 0 current 内容与制作方案已批准，且 canonical WAV 完整解码、对应 provider 的 current 词级时间证据、原稿对齐、timeline/narration SRT/current identity 与时长偏差等严格技术证据通过后写“阶段 0 授权后的技术推进” basis，不声称 AI 完整试听。
 
 Edge TTS 字幕文本/时序必须先通过 15 秒 VAD 分段 token/timestamp 重建、顶层逐项一致性和局部语速 QA。MiniMax 必须通过同次响应的 provider-native word 字幕文件 SHA、外部 model/endpoint、合成 identity 与 canonical audio SHA binding；豆包必须通过独立 `audio/doubao-subtitles.json` 的 SHA/bytes、`provider=doubao`、`model=seed-audio-1.0`、纯文本音色与 scene 时间窗口 prompt SHA、合成/full audio identity、canonical audio SHA、响应 duration/original duration 与 timeline binding。MiniMax 与豆包都不运行 FunASR 二次识别，也不应用本地 ASR 的局部语速经验阈值。全部路径仍须通过权威原稿覆盖、语义切句、断词、caption 阅读上限、scene 尾音边界和真实 gap QA，再由 current binding 保证；视觉判断统一留给下列有真实画面的步骤：
 

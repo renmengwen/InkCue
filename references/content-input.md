@@ -14,7 +14,7 @@ memory lookup、整份/分段 reference 重读、源码/tests/examples/CLI `--he
 materialize argv；`nextAction=spawn_now` 即直接 direct spawn。
 
 这些 reference 只在 child 已真实派发后，按 candidate 校验、result materialize、受限预项目、
-pending approval、样音或具体 revision 的当前需要读取相应小节。该时序优化不改变输入、
+pending approval 或具体 revision 的当前需要读取相应小节。该时序优化不改变输入、
 批准或恢复合同，也不新增 Gate。
 
 ## 首版能力边界
@@ -49,14 +49,14 @@ topic/text 的权威顺序是：
 1. 正常 topic/text 新任务直接运行一次入口已记录的 `prepare_env.py --bootstrap-content-draft`。它在一次调用中完成 workspace-access、环境 check、provider/preset/input/draft/task fast-prepare，输出紧凑 descriptor 并冻结 active provider、具体 preset、managed input、唯一不覆盖既有内容的 `draft-root` 与 `preparedTask`；用户明确要求“新任务”时绝不恢复或覆盖旧任务。派发前不另跑两条 `prepare_env`、provider status/recommend，不先落 `body-file`、不手写 `content-input.json`、不试名称，也不做 memory/reference/`prompt-writing.md` 预读。仅当用户主动要求浏览模板时才运行 `visual-style-catalog`；目录不新增批准选择轴。BGM、后续模式和生图方式仍只由联合动作原子冻结。
 2. descriptor 为 `nextAction=spawn_now` 时，coordinator 使用其 `agentPrompt` 立即按宿主状态调用 `spawn_agent` 或 `followup`。task 自带 schema/skeleton，descriptor 自带校验与 materialize argv；无需搜索 schema 或重读 reference。脚本不参与 dispatch/fallback 决策；首次草案默认使用短上下文 child，真实派发不可用时才由具备相同能力的 coordinator fallback。
 3. task 必须自带该 role 的 canonical `candidateSchema` 和 `candidateSkeleton`。child 只读取冻结 task/role/input 并按它们一次生成 `candidate.content-draft.json`（及可选 `agent.log`），不得猜 schema，不写 `result.json`。candidate validator 一次返回完整结构错误清单；首次结构失败只允许同 attempt followup 原 child 一次，要求按完整清单和 schema/skeleton 做一次全量归一。若仍结构失败，直接换更强的短上下文 child，不逐字段反复修。coordinator 随后执行 descriptor 的 candidate 校验 argv 和 result materialize argv，重验 result/task/input/SHA/current binding，并从 canonical candidate 确定性生成不可变 Markdown 审阅 artifact。
-4. coordinator 确定性派生 source package，并创建 `initialApproval.status=pending` 的预项目。它只能承载阶段 0 review、current 样音、技术验证、草案/样音修订和联合动作；完整旁白、生图、annotation、render、merge、burn、mux 与 final 都必须调用 pending guard。
-5. 旁白项目在预项目中生成绑定 current content/voice plan 的真实样音。固定生图方式时展示 4 个完整通过句；仅登录态 `image_gen` 与已配置图片供应商同时可用时展示 8 个。active provider 不进入选项。传统 `disabled` SRT 不生成或要求样音，使用“字幕与分镜方案通过……”语义。
-6. 用户复制当前完整句或回复编号；parser 只接受当前选项及规定修改前缀，不猜自由文本，并绑定 current `contentDraftIdentitySha256` 与 `SAMPLE_IDENTITY`。项目层重验 pending、identity、能力和组合后原子提升，任一失败不部分写 BGM、agent、生图方式或批准。
-7. 用户要求实质修改时，把意见冻结为 revision request，绑定 current base identity并创建新 attempt。content 变化使受影响 source/sample 和下游 stale；voice/rate 变化使 sample/full 和下游 stale，旧批准不能静默复用。
+4. coordinator 确定性派生 source package，并创建 `initialApproval.status=pending` 的预项目。它只能承载阶段 0 review、草案修订和联合动作；阶段 0 不生成或试听样音，完整旁白、生图、annotation、render、merge、burn、mux 与 final 都必须调用 pending guard。
+5. 固定生图方式时展示 BGM × 后续模式共 4 个完整通过句；仅登录态 `image_gen` 与已配置图片供应商同时可用时展示 8 个。active provider 不进入选项。传统 `disabled` SRT 使用“字幕与分镜方案通过……”语义。
+6. 用户复制当前完整句或回复编号；parser 只接受当前选项及规定修改前缀，不猜自由文本，并只绑定 current `contentDraftIdentitySha256`。项目层重验 pending、identity、能力和组合后原子提升，任一失败不部分写 BGM、agent、生图方式或批准。
+7. 用户要求实质修改时，把意见冻结为 revision request，绑定 current base identity并创建新 attempt。content 变化使受影响 source 和下游 stale；voice/rate 变化使 full 和下游 stale，旧批准不能静默复用。
 
 内容准备脚本不批准草案，也不能从 JSON 或 Markdown 推断用户同意。联合确认前允许存在受限预项目，但 `initialApproval.status=pending` 必须由 loader 暴露为 `pending_initial_approval=true`，并由下游入口 fail-closed。技术验证不能冒充联合批准；不因此新增第二套 preview identity 或 manifest。
 
-联合确认后，`agentApprovalEnabled=false` 或字段缺失继续使用人工 full/final Gate；为 `true` 时，current 样音是唯一由用户完成的声音主观 Gate。后续 full/final 仅在全部严格技术证据 current 后以明确 `approvalBasis/reviewBasis` 推进，不能声称 AI 完整听音。视觉 Gate 仍实际检查 current artifact，`reviewPolicy` 确定性派生为 `agent_first`。
+联合确认后，`agentApprovalEnabled=false` 或字段缺失继续使用人工 full/final Gate；为 `true` 时，后续 full/final 仅在全部严格技术证据 current 后以明确 `approvalBasis/reviewBasis` 推进，不能声称 AI 完整听音。视觉 Gate 仍实际检查 current artifact，`reviewPolicy` 确定性派生为 `agent_first`。
 
 即使启用代理批准，`unknown_external_outcome` 后可能重复的新外部请求、冻结计划之外的新费用/凭据/服务授权、版权授权，以及必须实质改变已冻结用户意图的修订，仍须单独询问用户。计划内正常有界调用和常规返工不打断用户；不为此增加 identity、manifest、状态机或专用恢复协议。
 
@@ -249,7 +249,7 @@ content draft scenes[i].imagePrompt
 
 ## 确定性 source package
 
-current candidate 通过确定性校验后执行，用于创建 pending 预项目并生成样音；它不表示用户已经批准：
+current candidate 通过确定性校验后执行，用于创建 pending 预项目；它不表示用户已经批准：
 
 ```powershell
 <ENV_PY> scripts/prepare_source.py `
@@ -321,7 +321,7 @@ source/source.srt
 
 `project.json` 可增加 `contentSource` 绑定 input/manifest hash，但实际下游 source 仍是 `source/source.srt`。续接项目只读取项目内冻结证据；不得回到外部 draft 目录重新推断 current state。创建失败只回滚本次唯一新项目目录，保留准备包供修复后重试。
 
-传统 SRT 新任务同样先建 pending 预项目；旁白路径随后生成样音，disabled 路径直接展示静音联合选项：
+传统 SRT 新任务同样先建 pending 预项目，并直接展示阶段 0 联合选项：
 
 ```powershell
 <ENV_PY> scripts/create_project.py --name <项目名> `
@@ -337,7 +337,7 @@ source/source.srt
   --configured-image-provider-available [--gpt-login-capable]
 ```
 
-`--pending-initial-approval` 与 `--background-music/--agent-approval/--image-generation-mode` 互斥；新任务不得省略 pending flag 来创建兼容已批准项目。联合动作消费结构化 choice 并原子写成 approved，调用者不得依次改多个字段模拟事务。旧 v1/v2 项目缺少 `initialApproval` 时兼容为已批准，缺少 `agentApprovalEnabled` 时为 false，缺少 `imageGenerationMode` 时为 provider。传统 `disabled` SRT 没有 sample approval，使用 `approvalBasis=user_joint_silent_plan` 并保持 H.264/0 音频交付。
+`--pending-initial-approval` 与 `--background-music/--agent-approval/--image-generation-mode` 互斥；新任务不得省略 pending flag 来创建兼容已批准项目。联合动作消费结构化 choice 并原子写成 approved，调用者不得依次改多个字段模拟事务。新批准统一使用 `approvalBasis=user_joint_content_and_plan`。旧项目缺少 `initialApproval` 时兼容为已批准，缺少 `agentApprovalEnabled` 时为 false，缺少 `imageGenerationMode` 时为 provider。传统 `disabled` SRT 保持 H.264/0 音频交付。
 
 ## stale、恢复与失败语义
 
@@ -346,7 +346,7 @@ source/source.srt
 [`recovery-and-identity.md`](recovery-and-identity.md) 定义。下列条目仅说明阶段 0 的
 受影响产物，不得作为另一套 retry 或 identity 规则。
 
-- topic/body/rewritePolicy/target/narration cue/scene mapping 改变：content draft、source SRT、current 样音批准、generation/timing plan、voice plan/segments/audio/timeline/narration SRT、annotation、场景视频、字幕、final 与最终批准全部重新判定。
+- topic/body/rewritePolicy/target/narration cue/scene mapping 改变：content draft、source SRT、generation/timing plan、voice plan/segments/audio/timeline/narration SRT、annotation、场景视频、字幕、final 与最终批准全部重新判定。
 - 只有 imagePrompt 改变且 narration cue/scene boundary 不变：音频可复用；generation plan、图片及视觉下游 stale。
 - provisional SRT 排时算法版本改变：source identity/timing 重新判定；synthesis identity 未变的已验证 Edge segments 可按现有规则复用，但 duration decision、timing plan 与下游重新验证。
 - 准备包任一文件或 manifest hash 被篡改：正式建项拒绝，不得修补 hash 后静默继续。
@@ -375,4 +375,4 @@ fixture PASS 不证明以下事项已经通过：
 - 真实图片 provider 可用或线稿审美合格；
 - 完整旁白、最终字幕 contact sheet 或最终成片已经过用户亲自批准或 AI 代理批准。
 
-未实际执行的真实 provider 和质量 Gate 必须明确写为 SKIP、BLOCKED 或待确认，不能声称 PASS。阶段 0 的一次联合确认原子覆盖 current content/sample、BGM、后续模式和生图方式。它不替代 full/final 技术证据、线稿、annotation review bundle 或 scene review bundle；自主模式只让 full/final 使用用户样音授权后的技术推进 basis，人工模式仍保留真实听审。clean master 只作为技术中间工件。
+未实际执行的真实 provider 和质量 Gate 必须明确写为 SKIP、BLOCKED 或待确认，不能声称 PASS。阶段 0 的一次联合确认原子覆盖 current content、BGM、后续模式和生图方式。它不替代 full/final 技术证据、线稿、annotation review bundle 或 scene review bundle；自主模式只让 full/final 使用阶段 0 授权后的技术推进 basis，人工模式仍保留真实听审。clean master 只作为技术中间工件。

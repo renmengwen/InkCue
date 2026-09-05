@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import copy
-import json
 import os
 import sys
 import tempfile
@@ -22,7 +20,6 @@ from initial_approval_options import (  # noqa: E402
     parse_initial_approval_response,
 )
 from project_workspace import (  # noqa: E402
-    ProjectValidationError,
     ProjectWorkspace,
     WorkspaceConfig,
     load_project,
@@ -64,7 +61,6 @@ class InitialApprovalTests(unittest.TestCase):
     def selection(
         project,
         *,
-        sample_identity: str | None = None,
         background_music_enabled: bool | None = None,
         agent_approval_enabled: bool = True,
         image_generation_mode: str = "provider",
@@ -72,9 +68,8 @@ class InitialApprovalTests(unittest.TestCase):
         provider_available: bool = True,
         fixed_image_generation_mode: str | None = None,
     ):
-        sample_required = sample_identity is not None
         if background_music_enabled is None:
-            background_music_enabled = sample_required
+            background_music_enabled = project.voiceover_mode != "disabled"
         options = build_initial_approval_options(
             voiceover_mode=project.voiceover_mode,
             gpt_login_image_generation_available=gpt_login_available,
@@ -93,29 +88,7 @@ class InitialApprovalTests(unittest.TestCase):
             str(option["number"]),
             options=options,
             content_identity_sha256=project.current_content_identity_sha256,
-            sample_identity_sha256=sample_identity,
         )
-
-    @staticmethod
-    def install_unapproved_sample(project, identity: str) -> dict:
-        manifest = {
-            "projectId": project.project_id,
-            "sample": {
-                "status": "validated",
-                "identityHash": identity,
-                "approval": {
-                    "approved": False,
-                    "identityHash": None,
-                    "approvedAt": None,
-                },
-            },
-        }
-        path = project.path("manifests/voice-manifest.json")
-        path.write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        return manifest
 
     def test_silent_joint_approval_promotes_and_freezes_once(self) -> None:
         project = self.pending_project(voiceover_mode="disabled")
@@ -131,8 +104,11 @@ class InitialApprovalTests(unittest.TestCase):
         self.assertFalse(committed.background_music_enabled)
         self.assertEqual(committed.image_generation_mode, "provider")
         approval = committed.metadata["initialApproval"]
-        self.assertEqual(approval["approvalBasis"], "user_joint_silent_plan")
-        self.assertIsNone(approval["sampleIdentityHash"])
+        self.assertEqual(approval["approvalBasis"], "user_joint_content_and_plan")
+        self.assertEqual(
+            set(approval),
+            {"status", "contentIdentitySha256", "approvalBasis", "approvedAt"},
+        )
         self.assertEqual(
             approval["contentIdentitySha256"],
             committed.current_content_identity_sha256,
@@ -144,127 +120,37 @@ class InitialApprovalTests(unittest.TestCase):
                 configured_image_provider_available=True,
             )
 
-    def test_voiced_joint_approval_binds_same_current_sample(self) -> None:
+    def test_voiced_joint_approval_binds_current_content_and_plan(self) -> None:
         project = self.pending_project(voiceover_mode="edge-tts")
-        sample_identity = "a" * 64
-        manifest = self.install_unapproved_sample(project, sample_identity)
         committed = approve_initial_project(
             project.root,
-            self.selection(project, sample_identity=sample_identity),
+            self.selection(project),
             configured_image_provider_available=True,
-            sample_loader=lambda _project: (
-                copy.deepcopy(manifest),
-                sample_identity,
-                False,
-            ),
         )
 
         approval = committed.metadata["initialApproval"]
-        self.assertEqual(approval["sampleIdentityHash"], sample_identity)
-        self.assertEqual(approval["approvalBasis"], "user_joint_content_and_sample")
-        persisted = json.loads(
-            project.path("manifests/voice-manifest.json").read_text(encoding="utf-8")
-        )
+        self.assertEqual(approval["approvalBasis"], "user_joint_content_and_plan")
         self.assertEqual(
-            persisted["sample"]["approval"],
-            {
-                "approved": True,
-                "identityHash": sample_identity,
-                "approvalBasis": "user_joint_initial_approval",
-                "approvedAt": approval["approvedAt"],
-            },
+            approval["contentIdentitySha256"],
+            committed.current_content_identity_sha256,
         )
+        self.assertFalse(project.path("planning/voice-plan.json").exists())
+        self.assertFalse(project.path("manifests/voice-manifest.json").exists())
         self.assertTrue(load_project(project.root).initial_approval_completed)
 
-    def test_changed_sample_can_reopen_and_atomically_reapprove(self) -> None:
+    def test_stale_content_identity_leaves_pending_bytes_unchanged(self) -> None:
         project = self.pending_project(voiceover_mode="edge-tts")
-        first_identity = "8" * 64
-        first_manifest = self.install_unapproved_sample(project, first_identity)
-        committed = approve_initial_project(
-            project.root,
-            self.selection(project, sample_identity=first_identity),
-            configured_image_provider_available=True,
-            sample_loader=lambda _project: (
-                copy.deepcopy(first_manifest),
-                first_identity,
-                False,
-            ),
-        )
-
-        second_identity = "9" * 64
-        second_manifest = self.install_unapproved_sample(committed, second_identity)
-        with self.assertRaisesRegex(
-            ProjectValidationError,
-            "initialApproval 未绑定 current 已联合批准样音",
-        ):
-            load_project(committed.root)
-
-        reopened = load_project(
-            committed.root,
-            allow_pending_initial_approval=True,
-        )
-        self.assertTrue(reopened.pending_initial_approval)
-        self.assertNotIn("backgroundMusic", reopened.metadata)
-        self.assertNotIn("agentApprovalEnabled", reopened.metadata)
-        self.assertNotIn("imageGenerationMode", reopened.metadata)
-
-        reapproved = approve_initial_project(
-            reopened.root,
-            self.selection(
-                reopened,
-                sample_identity=second_identity,
-                background_music_enabled=True,
-                agent_approval_enabled=False,
-            ),
-            configured_image_provider_available=True,
-            sample_loader=lambda _project: (
-                copy.deepcopy(second_manifest),
-                second_identity,
-                False,
-            ),
-        )
-        self.assertEqual(
-            reapproved.metadata["initialApproval"]["sampleIdentityHash"],
-            second_identity,
-        )
-        self.assertTrue(reapproved.background_music_enabled)
-        self.assertFalse(reapproved.agent_approval_enabled)
-        self.assertEqual(reapproved.image_generation_mode, "provider")
-
-    def test_stale_content_or_sample_identity_leaves_pending_bytes_unchanged(self) -> None:
-        project = self.pending_project(voiceover_mode="edge-tts")
-        sample_identity = "b" * 64
-        manifest = self.install_unapproved_sample(project, sample_identity)
         project_path = project.path("project.json")
-        manifest_path = project.path("manifests/voice-manifest.json")
-        before = (project_path.read_bytes(), manifest_path.read_bytes())
-
-        stale_values = (
-            {"contentIdentitySha256": "c" * 64},
-            {"sampleIdentitySha256": "d" * 64},
-        )
-        for changes in stale_values:
-            selection = self.selection(
-                project,
-                sample_identity=sample_identity,
+        before = project_path.read_bytes()
+        selection = self.selection(project)
+        selection["contentIdentitySha256"] = "c" * 64
+        with self.assertRaisesRegex(InitialApprovalError, "stale"):
+            approve_initial_project(
+                project.root,
+                selection,
+                configured_image_provider_available=True,
             )
-            selection.update(changes)
-            with self.subTest(changes=changes), self.assertRaisesRegex(
-                InitialApprovalError,
-                "stale",
-            ):
-                approve_initial_project(
-                    project.root,
-                    selection,
-                    configured_image_provider_available=True,
-                    sample_loader=lambda _project: (
-                        copy.deepcopy(manifest),
-                        sample_identity,
-                        False,
-                    ),
-                )
-            self.assertEqual(project_path.read_bytes(), before[0])
-            self.assertEqual(manifest_path.read_bytes(), before[1])
+        self.assertEqual(project_path.read_bytes(), before)
 
     def test_gpt_login_requires_current_host_capability(self) -> None:
         project = self.pending_project(voiceover_mode="disabled")
@@ -330,85 +216,10 @@ class InitialApprovalTests(unittest.TestCase):
                 )
             self.assertEqual(project.path("project.json").read_bytes(), before)
 
-    def test_prepared_joint_sample_approval_recovers_project_commit_idempotently(self) -> None:
+    def test_project_commit_failure_restores_pending_project(self) -> None:
         project = self.pending_project(voiceover_mode="edge-tts")
-        sample_identity = "f" * 64
-        manifest = self.install_unapproved_sample(project, sample_identity)
-        prepared_at = "2026-08-27T12:00:00+08:00"
-        manifest["sample"]["approval"] = {
-            "approved": True,
-            "identityHash": sample_identity,
-            "approvalBasis": "user_joint_initial_approval",
-            "approvedAt": prepared_at,
-        }
-        manifest_path = project.path("manifests/voice-manifest.json")
-        manifest_path.write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        prepared_bytes = manifest_path.read_bytes()
-
-        committed = approve_initial_project(
-            project.root,
-            self.selection(project, sample_identity=sample_identity),
-            configured_image_provider_available=True,
-            sample_loader=lambda _project: (
-                copy.deepcopy(manifest),
-                sample_identity,
-                True,
-            ),
-        )
-
-        self.assertTrue(committed.initial_approval_completed)
-        self.assertEqual(
-            committed.metadata["initialApproval"]["approvedAt"],
-            prepared_at,
-        )
-        self.assertEqual(manifest_path.read_bytes(), prepared_bytes)
-
-    def test_non_joint_prepared_sample_approval_cannot_be_adopted(self) -> None:
-        project = self.pending_project(voiceover_mode="edge-tts")
-        sample_identity = "1" * 64
-        manifest = self.install_unapproved_sample(project, sample_identity)
-        manifest["sample"]["approval"] = {
-            "approved": True,
-            "identityHash": sample_identity,
-            "approvalBasis": "manual_sample_review",
-            "approvedAt": "2026-08-27T12:00:00+08:00",
-        }
-        manifest_path = project.path("manifests/voice-manifest.json")
-        manifest_path.write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        before = (
-            project.path("project.json").read_bytes(),
-            manifest_path.read_bytes(),
-        )
-
-        with self.assertRaisesRegex(InitialApprovalError, "准备态"):
-            approve_initial_project(
-                project.root,
-                self.selection(project, sample_identity=sample_identity),
-                configured_image_provider_available=True,
-                sample_loader=lambda _project: (
-                    copy.deepcopy(manifest),
-                    sample_identity,
-                    True,
-                ),
-            )
-
-        self.assertEqual(project.path("project.json").read_bytes(), before[0])
-        self.assertEqual(manifest_path.read_bytes(), before[1])
-
-    def test_second_commit_failure_rolls_back_manifest_and_project(self) -> None:
-        project = self.pending_project(voiceover_mode="edge-tts")
-        sample_identity = "e" * 64
-        manifest = self.install_unapproved_sample(project, sample_identity)
         project_path = project.path("project.json")
-        manifest_path = project.path("manifests/voice-manifest.json")
         project_before = project_path.read_bytes()
-        manifest_before = manifest_path.read_bytes()
         real_replace = os.replace
         failed = False
 
@@ -429,17 +240,11 @@ class InitialApprovalTests(unittest.TestCase):
         ):
             approve_initial_project(
                 project.root,
-                self.selection(project, sample_identity=sample_identity),
+                self.selection(project),
                 configured_image_provider_available=True,
-                sample_loader=lambda _project: (
-                    copy.deepcopy(manifest),
-                    sample_identity,
-                    False,
-                ),
             )
 
         self.assertEqual(project_path.read_bytes(), project_before)
-        self.assertEqual(manifest_path.read_bytes(), manifest_before)
         pending = load_project(
             project.root,
             allow_pending_initial_approval=True,

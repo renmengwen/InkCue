@@ -369,8 +369,6 @@ def run_final_delivery(
         ),
         "approvalBasis": (
             "technical_after_initial_approval"
-            if autonomous and project.voiceover_mode == "disabled"
-            else "technical_after_user_sample"
             if autonomous
             else "human_full_media_review"
         ),
@@ -383,7 +381,7 @@ def run_final_delivery(
         "confirmationRequest": (
             (
                 f"current final identity {final_identity} 已通过技术链；"
-                "coordinator 可按用户样音授权调用 approve_final_media，"
+                "coordinator 可按阶段 0 内容与制作方案授权调用 approve_final_media，"
                 "不得表述为已完整听审。"
                 if project.voiceover_mode != "disabled"
                 else f"current final identity {final_identity} 已通过技术链；"

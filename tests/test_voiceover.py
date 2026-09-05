@@ -278,7 +278,7 @@ class VoiceManifestTests(unittest.TestCase):
             timestamp="2026-08-14T00:00:00Z",
         )
         self.assertTrue(all(segment["status"] == "pending" for segment in manifest["segments"]))
-        self.assertFalse(manifest["sample"]["approval"]["approved"])
+        self.assertNotIn("sample", manifest)
         self.assertFalse(manifest["fullApproval"]["approved"])
         self.assertNotIn("review", manifest)
         self.assertNotIn("reviewIdentityHash", manifest["fullApproval"])
@@ -321,7 +321,7 @@ class VoiceManifestTests(unittest.TestCase):
             }
         )
         validated = validate_voice_manifest(manifest)
-        self.assertFalse(validated["sample"]["approval"]["approved"])
+        self.assertNotIn("sample", validated)
         self.assertFalse(validated["fullApproval"]["approved"])
 
     def test_stale_voice_plan_audit_hash_is_rejected_without_mutation(self) -> None:

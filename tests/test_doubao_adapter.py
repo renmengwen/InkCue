@@ -69,6 +69,36 @@ def request(
     )
 
 
+def successful_payload(*, include_code: bool = True) -> dict:
+    payload = {
+        "message": "success",
+        "audio": base64.b64encode(b"RIFF").decode("ascii"),
+        "duration": 1.25,
+        "original_duration": 1.2,
+        "subtitle": {
+            "text": "霓虹映在雨后的街道上。",
+            "sentences": [
+                {
+                    "start_time": 0,
+                    "end_time": 1200,
+                    "text": "霓虹映在雨后的街道上。",
+                    "words": [
+                        {
+                            "start_time": 0,
+                            "end_time": 1100,
+                            "text": "霓虹映在雨后的街道上",
+                        },
+                        {"start_time": 1100, "end_time": 1100, "text": "。"},
+                    ],
+                }
+            ],
+        },
+    }
+    if include_code:
+        payload["code"] = 0
+    return payload
+
+
 class DoubaoAdapterTests(unittest.TestCase):
     def test_builds_seed_audio_request_and_decodes_base64_wav(self) -> None:
         seen = {}
@@ -79,10 +109,7 @@ class DoubaoAdapterTests(unittest.TestCase):
             }
             seen["timeout"] = timeout
             seen["payload"] = json.loads(req.data.decode("utf-8"))
-            return _Response(
-                {"code": 0, "message": "success", "audio": base64.b64encode(b"RIFF").decode("ascii")},
-                {"X-Tt-Logid": "provider-log-secret"},
-            )
+            return _Response(successful_payload(), {"X-Tt-Logid": "provider-log-secret"})
 
         result = DoubaoAdapter(
             api_key="top-secret",
@@ -94,6 +121,10 @@ class DoubaoAdapterTests(unittest.TestCase):
         self.assertEqual(result.bytes, b"RIFF")
         self.assertEqual(result.declaredFormat, "audio/wav")
         self.assertEqual(result.providerRequestId, "sha256:7eb66142094e7485")
+        self.assertIsNotNone(result.providerSubtitleBytes)
+        sidecar = json.loads(result.providerSubtitleBytes.decode("utf-8"))
+        self.assertEqual(sidecar["model"], "seed-audio-1.0")
+        self.assertEqual(sidecar["subtitle"]["sentences"][0]["words"][1]["text"], "。")
         self.assertEqual(seen["headers"]["x-api-key"], "top-secret")
         self.assertEqual(seen["headers"]["x-api-request-id"], "client-request-id")
         self.assertEqual(seen["timeout"], 5)
@@ -110,7 +141,7 @@ class DoubaoAdapterTests(unittest.TestCase):
         result = DoubaoAdapter(
             api_key="top-secret",
             opener=lambda *_args, **_kwargs: _Response(
-                {"audio": base64.b64encode(b"RIFF").decode("ascii")}
+                successful_payload(include_code=False)
             ),
             queue_interval_seconds=0,
         ).synthesize(request())
